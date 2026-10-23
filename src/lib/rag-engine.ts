@@ -1,15 +1,18 @@
 /**
- * RAG 检索引擎 —— BM25 相关度打分 + 知识分块 + 引用溯源
+ * RAG 检索引擎 —— BM25 + 向量混合检索（Hybrid Search, RRF 融合）+ 知识分块 + 引用溯源
  *
  * 设计目标（面试可讲）：
  * 1. 知识库 chunk 化：78 张牌 × (牌面叙事 / 正位牌意 / 逆位牌意 / 关键词) 多字段切分，
  *    每个 chunk 自带元数据（牌 id、字段类型、中文名），可溯源、可引用
  * 2. BM25（Okapi BM25）打分：经典 TF-IDF 改进版，k1=1.5 b=0.75，
  *    中文按“连续 2-gram”切词（无需分词器依赖，兼顾匹配召回与实现简洁）
- * 3. 命中结果带 score / snippet / source，注入 prompt 的同时透出给前端做“知识面板”可视化
+ * 3. 混合检索：BM25（稀疏/字面）+ 向量（稠密/语义，transformers.js 本地推理）两路召回，
+ *    RRF（Reciprocal Rank Fusion, k=60）融合排序——工业界标准做法
+ * 4. 命中结果带 score / snippet / source / 命中通道，注入 prompt 的同时透出给前端做“知识面板”可视化
  */
 
 import { TAROT_CARDS, type TarotCard } from "./tarot-cards";
+import { vectorSearch } from "./vector-engine";
 
 /* ------------------------------------------------------------------ */
 /* 知识分块                                                             */
@@ -99,10 +102,11 @@ export interface RagHit {
   cardId: string;
   cardNameZh: string;
   field: ChunkField;
-  score: number;      // BM25 归一化分数（0~1）
-  rawScore: number;   // 原始 BM25 分
+  score: number;      // 融合后归一化分数（0~1）
+  rawScore: number;   // RRF 原始分
   snippet: string;    // 命中片段（截断）
   source: string;     // 引用来源描述
+  channels: string[]; // 命中通道：bm25 / vector / hybrid
 }
 
 export function ragSearch(query: string, topK = 5, filterCardIds?: string[]): RagHit[] {
@@ -164,8 +168,94 @@ export function ragSearch(query: string, topK = 5, filterCardIds?: string[]): Ra
         source: `tarot-lab · ${chunk.cardNameZh} · ${
           chunk.field === "description" ? "牌面叙事" : chunk.field === "upright" ? "正位牌意" : chunk.field === "reversed" ? "逆位牌意" : "关键词"
         }`,
-      };
+        channels: ["bm25"],
+      } satisfies RagHit;
     });
+}
+
+/* ------------------------------------------------------------------ */
+/* 混合检索（Hybrid）：BM25 + 向量 RRF 融合                             */
+/* ------------------------------------------------------------------ */
+
+const RRF_K = 60; // Reciprocal Rank Fusion 常数
+
+/**
+ * 混合检索入口（Agent 的 rag_search 工具实际调用这里）
+ * 两路召回 → RRF 融合 → 每牌去重 → 归一化返回
+ */
+export async function hybridSearch(query: string, topK = 5): Promise<RagHit[]> {
+  // 向量通道软超时：无论模型加载/嵌入多慢，最多等 8 秒，超时按无命中处理（纯 BM25 兜底）
+  const VECTOR_SOFT_TIMEOUT_MS = 8_000;
+  const vecWithTimeout = Promise.race([
+    vectorSearch(query, topK * 2),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), VECTOR_SOFT_TIMEOUT_MS)),
+  ]).catch(() => null);
+
+  // 两路并行召回（各多取一些，融合后截断）
+  const [bm25Hits, vecHits] = await Promise.all([
+    Promise.resolve(ragSearch(query, topK * 2)),
+    vecWithTimeout,
+  ]);
+
+  if (bm25Hits.length === 0 && (!vecHits || vecHits.length === 0)) return [];
+  // 向量通道不可用（未装模型/降级/软超时）→ 纯 BM25
+  if (!vecHits || vecHits.length === 0) return ragSearch(query, topK);
+
+  // 向量命中转为通用 RagHit 形状（补齐 rawScore/source/channels）
+  const vecAsRag: RagHit[] = vecHits.map((v) => ({
+    chunkId: v.chunkId,
+    cardId: v.cardId,
+    cardNameZh: v.cardNameZh,
+    field: v.field,
+    score: v.score,
+    rawScore: v.score,
+    snippet: v.snippet,
+    source: `tarot-lab · ${v.cardNameZh} · ${
+      v.field === "description" ? "牌面叙事" : v.field === "upright" ? "正位牌意" : v.field === "reversed" ? "逆位牌意" : "关键词"
+    }`,
+    channels: ["vector"],
+  }));
+
+  // RRF 融合：score = Σ 1/(k + rank)
+  const fused = new Map<string, RagHit & { rrf: number; chans: Set<string> }>();
+  const addRank = (hits: RagHit[], channel: string) => {
+    hits.forEach((h, idx) => {
+      const rrf = 1 / (RRF_K + idx + 1);
+      const prev = fused.get(h.chunkId);
+      if (prev) {
+        prev.rrf += rrf;
+        prev.chans.add(channel);
+        // 保留更长 snippet
+        if (h.snippet.length > prev.snippet.length) prev.snippet = h.snippet;
+      } else {
+        fused.set(h.chunkId, { ...h, rrf, chans: new Set([channel]) });
+      }
+    });
+  };
+  addRank(bm25Hits, "bm25");
+  addRank(vecAsRag, "vector");
+
+  // 融合排序 → 每牌去重 → top-k
+  const sorted = [...fused.values()].sort((a, b) => b.rrf - a.rrf);
+  const seenCards = new Set<string>();
+  const out: RagHit[] = [];
+  for (const h of sorted) {
+    if (seenCards.has(h.cardId)) continue;
+    if (out.length >= topK) break;
+    seenCards.add(h.cardId);
+    out.push({
+      chunkId: h.chunkId,
+      cardId: h.cardId,
+      cardNameZh: h.cardNameZh,
+      field: h.field,
+      score: Math.round((h.rrf / (sorted[0].rrf || 1)) * 100) / 100,
+      rawScore: Math.round(h.rrf * 10000) / 10000,
+      snippet: h.snippet,
+      source: h.source,
+      channels: [...h.chans],
+    });
+  }
+  return out;
 }
 
 /** 把命中结果组装为注入 prompt 的知识上下文（含引用编号） */

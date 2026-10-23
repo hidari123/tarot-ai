@@ -5,6 +5,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import StardustCursor from "@/components/StardustCursor";
 import AgentTrace, { type ToolCall } from "@/components/AgentTrace";
 import KnowledgePanel, { type RagHitView } from "@/components/KnowledgePanel";
+import CardFan, { type FanCard } from "@/components/CardFan";
+import ReviewCard, { type ReviewData } from "@/components/ReviewCard";
+import SubAgentPipeline, { type SubAgentEvent } from "@/components/SubAgentPipeline";
 
 /* ---------------- 类型 ---------------- */
 
@@ -16,21 +19,29 @@ interface AgentCard {
   pos: string;
 }
 
-type Phase = "analyze" | "retrieve" | "draw" | "interpret" | "wait_user" | "done" | "error";
+interface PersonaView {
+  id: string;
+  name: string;
+  emoji: string;
+  desc: string;
+}
+
+type Phase = "analyze" | "retrieve" | "draw" | "interpret" | "wait_user" | "review" | "done" | "error";
 
 const PHASE_TEXT: Record<Phase, { title: string; icon: string }> = {
   analyze: { title: "凝听问题", icon: "🔮" },
-  draw: { title: "命运抽牌", icon: "🃏" },
+  draw: { title: "命运之牌", icon: "🃏" },
   retrieve: { title: "翻阅典籍", icon: "📖" },
   interpret: { title: "撰写命运之卷", icon: "✍️" },
   wait_user: { title: "等待你的回应", icon: "💭" },
+  review: { title: "审校检视", icon: "🧐" },
   done: { title: "解读完成", icon: "✨" },
   error: { title: "波动", icon: "⚠️" },
 };
 
-const PHASE_ORDER: Phase[] = ["analyze", "draw", "retrieve", "interpret", "done"];
+const PHASE_ORDER: Phase[] = ["analyze", "draw", "retrieve", "interpret", "review", "done"];
 
-/* ---------------- 星空背景 ---------------- */
+/* ---------------- 星空 & 魔法阵 ---------------- */
 
 function StarField() {
   const [stars, setStars] = useState<{ x: number; y: number; s: number; d: number; delay: number }[]>([]);
@@ -78,17 +89,7 @@ function MagicCircle() {
 
 /* ---------------- 卡牌组件 ---------------- */
 
-function TarotCardView({
-  card,
-  index,
-  flipped,
-  onFlip,
-}: {
-  card: AgentCard;
-  index: number;
-  flipped: boolean;
-  onFlip: (i: number) => void;
-}) {
+function TarotCardView({ card, index, flipped, onFlip }: { card: AgentCard; index: number; flipped: boolean; onFlip: (i: number) => void }) {
   return (
     <motion.div
       initial={{ y: 60, opacity: 0 }}
@@ -103,7 +104,6 @@ function TarotCardView({
         onClick={() => onFlip(index)}
         whileHover={{ y: -6 }}
       >
-        {/* 牌背 */}
         <div className="absolute inset-0 backface-hidden rounded-2xl glow-border overflow-hidden bg-[#160b26]">
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="w-16 h-16 md:w-20 md:h-20 rounded-full border-2 border-purple-400/60 flex items-center justify-center rune-breathe">
@@ -112,7 +112,6 @@ function TarotCardView({
           </div>
           <div className="absolute inset-2 rounded-xl border border-purple-500/25" />
         </div>
-        {/* 牌面 */}
         <div className="absolute inset-0 backface-hidden rotate-y-180 rounded-2xl overflow-hidden glow-border bg-[#0d0716]">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
@@ -145,31 +144,23 @@ function TarotCardView({
 /* ---------------- Agent 状态条 ---------------- */
 
 function AgentStatusBar({ phase }: { phase: Phase | null }) {
-  // 动态顺序：实际发生过的阶段按发生顺序展示
   const order = useMemo(() => {
     if (!phase) return PHASE_ORDER;
-    const seen = new Set<Phase>();
-    const seq: Phase[] = [];
-    for (const p of PHASE_ORDER) {
-      seq.push(p);
-      seen.add(p);
-      if (p === phase) break;
-    }
-    return seq;
+    const idx = PHASE_ORDER.indexOf(phase);
+    return PHASE_ORDER.slice(0, Math.max(idx + 1, 1));
   }, [phase]);
-
   const curIdx = phase ? PHASE_ORDER.indexOf(phase) : -1;
 
   return (
-    <div className="flex items-center gap-2 flex-wrap justify-center">
+    <div className="flex items-center gap-1.5 flex-wrap justify-center">
       {order.map((p, i) => {
         const active = i === curIdx;
         const past = i < curIdx;
         return (
-          <div key={p} className="flex items-center gap-2">
-            {i > 0 && <span className={`text-xs ${past ? "text-purple-400/70" : "text-zinc-700"}`}>→</span>}
+          <div key={p} className="flex items-center gap-1.5">
+            {i > 0 && <span className={`text-[10px] ${past ? "text-purple-400/70" : "text-zinc-700"}`}>→</span>}
             <div
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs md:text-sm transition-all duration-500 ${
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] md:text-xs transition-all duration-500 ${
                 active
                   ? "bg-purple-900/50 border border-purple-400/60 text-purple-100 shadow-[0_0_16px_rgba(168,85,247,0.35)]"
                   : past
@@ -192,6 +183,8 @@ function AgentStatusBar({ phase }: { phase: Phase | null }) {
 
 export default function TarotApp() {
   const [question, setQuestion] = useState("");
+  const [persona, setPersona] = useState<PersonaView | null>(null);
+  const [personas, setPersonas] = useState<PersonaView[]>([]);
   const [stage, setStage] = useState<"input" | "drawing" | "reading">("input");
   const [sessionId, setSessionId] = useState("");
   const [phase, setPhase] = useState<Phase | null>(null);
@@ -202,14 +195,26 @@ export default function TarotApp() {
   const [ragHits, setRagHits] = useState<RagHitView[]>([]);
   const [cards, setCards] = useState<AgentCard[]>([]);
   const [flipped, setFlipped] = useState<boolean[]>([]);
-  const [ask, setAsk] = useState<{ question: string; options?: string[] } | null>(null);
+  const [ask, setAsk] = useState<{ question: string; options?: string[]; cardSelection?: boolean; crossroads?: boolean } | null>(null);
+  const [fanCards, setFanCards] = useState<FanCard[]>([]);
+  const [fanCount, setFanCount] = useState(3);
   const [answerInput, setAnswerInput] = useState("");
   const [followup, setFollowup] = useState("");
-  const [followupMode, setFollowupMode] = useState(false);
+  const [subagentEvents, setSubagentEvents] = useState<SubAgentEvent[]>([]);
+  const [review, setReview] = useState<ReviewData | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState("");
+  const [listening, setListening] = useState(false);
   const readingBoxRef = useRef<HTMLDivElement>(null);
   const askInputRef = useRef<HTMLInputElement>(null);
+
+  /* 拉取人格列表 */
+  useEffect(() => {
+    fetch("/api/personas")
+      .then((r) => r.json())
+      .then((d) => setPersonas(d.personas ?? []))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const el = readingBoxRef.current;
@@ -217,10 +222,10 @@ export default function TarotApp() {
   }, [reading, streaming]);
 
   useEffect(() => {
-    if (ask) askInputRef.current?.focus();
+    if (ask && !ask.cardSelection) askInputRef.current?.focus();
   }, [ask]);
 
-  /* SSE 消费：解析事件流 */
+  /* SSE 消费 */
   const consumeStream = useCallback(async (res: Response) => {
     if (!res.ok || !res.body) {
       const err = await res.json().catch(() => ({ error: "解读失败" }));
@@ -262,8 +267,19 @@ export default function TarotApp() {
               setFlipped((p.cards ?? []).map(() => false));
               break;
             case "ask_user":
-              setAsk({ question: p.ask.question, options: p.ask.options });
+              setAsk({ question: p.ask.question, options: p.ask.options, cardSelection: p.cardSelection, crossroads: p.crossroads });
+              if (p.cardSelection) {
+                // 候选扇面由 ask_user 事件直接携带（7 张随机牌）
+                if (Array.isArray(p.fanCards) && p.fanCards.length > 0) setFanCards(p.fanCards);
+                setFanCount(p.fanCount ?? 3);
+              }
               setPhase("wait_user");
+              break;
+            case "subagent":
+              setSubagentEvents((prev) => [...prev, p.subagent]);
+              break;
+            case "review":
+              setReview(p.review);
               break;
             case "delta":
               setReading((prev) => prev + p.delta);
@@ -295,9 +311,11 @@ export default function TarotApp() {
     setCards([]);
     setFlipped([]);
     setAsk(null);
+    setFanCards([]);
+    setSubagentEvents([]);
+    setReview(null);
     setPhase(null);
     setPhaseLabel("");
-    setFollowupMode(false);
     setStage("drawing");
     setStreaming(true);
 
@@ -305,7 +323,7 @@ export default function TarotApp() {
       const res = await fetch("/api/interpret", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q }),
+        body: JSON.stringify({ question: q, persona: persona?.id }),
       });
       await consumeStream(res);
     } catch (e) {
@@ -313,9 +331,9 @@ export default function TarotApp() {
     } finally {
       setStreaming(false);
     }
-  }, [question, consumeStream]);
+  }, [question, persona, consumeStream]);
 
-  /* 回答占卜师的问题（HITL） */
+  /* HITL 应答 */
   const answerAsk = useCallback(async (answer: string) => {
     if (!answer.trim() || !sessionId) return;
     setAsk(null);
@@ -326,11 +344,15 @@ export default function TarotApp() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, answer: answer.trim() }),
       });
-      // SSE 流仍在服务端挂着，事件会继续推来
     } catch {
       setError("回应发送失败，请重试");
     }
   }, [sessionId]);
+
+  /* 选牌确认 */
+  const confirmFanSelection = useCallback((payload: string) => {
+    answerAsk(payload);
+  }, [answerAsk]);
 
   /* 追问 */
   const sendFollowup = useCallback(async () => {
@@ -354,7 +376,29 @@ export default function TarotApp() {
     }
   }, [followup, sessionId, consumeStream]);
 
-  /** 翻牌（不可翻回） */
+  /* 语音输入 */
+  const startVoice = useCallback(() => {
+    const w = window as unknown as Record<string, any>;
+    const SRC = w.SpeechRecognition ?? w.webkitSpeechRecognition;
+    if (!SRC) {
+      setError("当前浏览器不支持语音输入");
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rec: any = new SRC();
+    rec.lang = "zh-CN";
+    rec.interimResults = false;
+    rec.onresult = (e: any) => {
+      const text = Array.from(e.results).map((r: any) => r[0].transcript).join("");
+      setQuestion((prev) => (prev ? prev + text : text));
+      setListening(false);
+    };
+    rec.onerror = () => setListening(false);
+    rec.onend = () => setListening(false);
+    rec.start();
+    setListening(true);
+  }, []);
+
   const handleFlip = useCallback((i: number) => {
     setFlipped((prev) => {
       if (prev[i]) return prev;
@@ -375,18 +419,20 @@ export default function TarotApp() {
     setTools([]);
     setRagHits([]);
     setAsk(null);
+    setFanCards([]);
+    setSubagentEvents([]);
+    setReview(null);
     setPhase(null);
     setPhaseLabel("");
     setError("");
     setStreaming(false);
-    setFollowupMode(false);
   }, []);
 
   const allFlipped = flipped.length > 0 && flipped.every(Boolean);
   const done = phase === "done" && !streaming;
 
   return (
-    <main className="relative min-h-screen overflow-hidden flex flex-col items-center pt-14 md:pt-20 px-4">
+    <main className="relative min-h-screen overflow-hidden flex flex-col items-center pt-12 md:pt-16 px-4">
       <StardustCursor />
       <StarField />
       <MagicCircle />
@@ -411,7 +457,7 @@ export default function TarotApp() {
         倾听星辰的低语 · 窥探命运的轨迹
       </motion.p>
 
-      <div className="h-10" />
+      <div className="h-8" />
 
       {/* ---------- 输入阶段 ---------- */}
       {stage === "input" && (
@@ -421,19 +467,51 @@ export default function TarotApp() {
           transition={{ delay: 0.3, duration: 0.7 }}
           className="w-full max-w-xl z-10"
         >
+          {/* 人格选择 */}
+          <div className="mb-5">
+            <p className="text-xs text-purple-300/50 mb-2 tracking-wider">选择你的占卜师</p>
+            <div className="grid grid-cols-3 gap-2">
+              {personas.map((p) => (
+                <motion.button
+                  key={p.id}
+                  whileHover={{ scale: 1.03, y: -2 }}
+                  whileTap={{ scale: 0.97 }}
+                  onClick={() => setPersona(p)}
+                  className={`rounded-2xl border px-3 py-3 text-left transition-all ${
+                    persona?.id === p.id
+                      ? "border-purple-400/70 bg-purple-900/40 shadow-[0_0_20px_rgba(168,85,247,0.3)]"
+                      : "border-purple-500/20 bg-purple-950/20 hover:border-purple-400/40"
+                  }`}
+                >
+                  <div className="text-xl mb-1">{p.emoji}</div>
+                  <div className="text-sm text-purple-100/90" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>{p.name}</div>
+                  <div className="text-[10px] text-purple-300/50 mt-0.5 leading-tight">{p.desc}</div>
+                </motion.button>
+              ))}
+            </div>
+          </div>
+
           <div className="flex flex-col sm:flex-row gap-3">
-            <input
-              className="flex-1 px-5 py-4 text-lg rounded-2xl bg-purple-950/30 backdrop-blur-md border border-purple-500/30 text-purple-50 placeholder-purple-300/40 focus:outline-none focus:border-purple-400/70 focus:shadow-[0_0_24px_rgba(168,85,247,0.25)] transition-all"
-              style={{ fontFamily: "'Ma Shan Zheng', serif" }}
-              placeholder="在此写下你的困惑…"
-              value={question}
-              onChange={(e) => {
-                setQuestion(e.target.value);
-                setError("");
-              }}
-              onKeyDown={(e) => e.key === "Enter" && startDivination()}
-              maxLength={100}
-            />
+            <div className="relative flex-1">
+              <input
+                className="w-full px-5 py-4 pr-12 text-lg rounded-2xl bg-purple-950/30 backdrop-blur-md border border-purple-500/30 text-purple-50 placeholder-purple-300/40 focus:outline-none focus:border-purple-400/70 focus:shadow-[0_0_24px_rgba(168,85,247,0.25)] transition-all"
+                style={{ fontFamily: "'Ma Shan Zheng', serif" }}
+                placeholder="在此写下你的困惑…"
+                value={question}
+                onChange={(e) => { setQuestion(e.target.value); setError(""); }}
+                onKeyDown={(e) => e.key === "Enter" && startDivination()}
+                maxLength={100}
+              />
+              <button
+                onClick={startVoice}
+                title="语音输入"
+                className={`absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center transition-all ${
+                  listening ? "bg-rose-500/30 text-rose-300 animate-pulse" : "text-purple-300/60 hover:text-purple-200"
+                }`}
+              >
+                {listening ? "◉" : "🎙"}
+              </button>
+            </div>
             <motion.button
               whileHover={{ scale: 1.04 }}
               whileTap={{ scale: 0.96 }}
@@ -445,13 +523,13 @@ export default function TarotApp() {
             </motion.button>
           </div>
           {error && <p className="mt-3 text-purple-400/90 text-sm text-center sm:text-left">{error}</p>}
-          <p className="mt-6 text-center text-purple-300/40 text-sm tracking-wide">
-            AI 占卜师会与你对话澄清困惑 · 亲手见证命运之牌 · 解读引用塔罗典籍
+          <p className="mt-5 text-center text-purple-300/40 text-sm tracking-wide">
+            {persona ? `${persona.emoji} ${persona.name}将主持这场占卜` : "AI 占卜师与你对话澄清 · 亲手选牌 · 典籍引用 · 审校质检"}
           </p>
         </motion.div>
       )}
 
-      {/* ---------- 占卜中阶段 ---------- */}
+      {/* ---------- 占卜阶段 ---------- */}
       {stage !== "input" && (
         <motion.div
           initial={{ opacity: 0, y: 24 }}
@@ -459,8 +537,8 @@ export default function TarotApp() {
           transition={{ duration: 0.6 }}
           className="w-full max-w-4xl z-10 flex flex-col items-center"
         >
-          {/* 抽牌等待提示 */}
-          {cards.length === 0 && !ask && (
+          {/* 等待提示 */}
+          {cards.length === 0 && !ask && fanCards.length === 0 && (
             <div className="flex flex-col items-center gap-5 py-10">
               <motion.div
                 animate={{ rotate: [0, -8, 8, -6, 6, 0], scale: [1, 1.05, 1, 1.08, 1, 1] }}
@@ -475,46 +553,74 @@ export default function TarotApp() {
             </div>
           )}
 
-          {/* 卡牌区 */}
-          {cards.length > 0 && (
-            <div className="flex gap-3 md:gap-8 justify-center flex-wrap">
-              {cards.map((card, i) => (
-                <TarotCardView key={`${card.id}-${i}`} card={card} index={i} flipped={flipped[i]} onFlip={handleFlip} />
-              ))}
-            </div>
+          {/* 选牌扇面（正常路径：事件携带候选牌） */}
+          {ask?.cardSelection && fanCards.length > 0 && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="w-full">
+              <CardFan cards={fanCards} count={fanCount} onConfirm={confirmFanSelection} />
+            </motion.div>
           )}
 
-          {/* HITL 问答区 */}
-          <AnimatePresence>
-            {ask && (
-              <motion.div
-                initial={{ opacity: 0, y: 20, scale: 0.96 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -10, scale: 0.97 }}
-                className="w-full max-w-xl mt-8 rounded-3xl border border-emerald-500/30 bg-emerald-950/15 backdrop-blur-md p-6 md:p-7 shadow-[0_0_40px_rgba(16,185,129,0.12)]"
+          {/* 选牌兜底：事件未携带候选牌时，从前端牌库随机出 7 张（防止白屏死等） */}
+          {ask?.cardSelection && fanCards.length === 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="w-full max-w-xl mt-6 rounded-3xl border border-emerald-500/30 bg-emerald-950/15 backdrop-blur-md p-6 text-center"
+            >
+              <p className="text-lg text-purple-50/95 mb-4" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>
+                {ask.question}
+              </p>
+              <p className="text-xs text-emerald-200/60 animate-pulse">命运之牌正在洗牌归位…（扇面数据未送达，已请求降级选牌）</p>
+              <button
+                onClick={() => answerAsk("random")}
+                className="mt-4 px-6 py-3 rounded-xl bg-gradient-to-r from-purple-700 to-indigo-700 text-white text-sm"
               >
-                <div className="flex items-center gap-2 mb-3">
-                  <span className="text-xl">💭</span>
-                  <span className="text-emerald-200/90 text-sm tracking-wider">占卜师想要了解你</span>
+                ✦ 代替我随机抽 3 张
+              </button>
+            </motion.div>
+          )}
+
+          {/* 普通问答 / 岔路 */}
+          {ask && !ask.cardSelection && (
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -10 }}
+              className={`w-full max-w-xl mt-6 rounded-3xl backdrop-blur-md p-6 md:p-7 ${
+                ask.crossroads
+                  ? "border border-amber-500/30 bg-amber-950/10 shadow-[0_0_40px_rgba(245,158,11,0.12)]"
+                  : "border border-emerald-500/30 bg-emerald-950/15 shadow-[0_0_40px_rgba(16,185,129,0.12)]"
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-xl">{ask.crossroads ? "🔮" : "💭"}</span>
+                <span className={`text-sm tracking-wider ${ask.crossroads ? "text-amber-200/90" : "text-emerald-200/90"}`}>
+                  {ask.crossroads ? "命运走到了岔路口" : "占卜师想要了解你"}
+                </span>
+              </div>
+              <p className="text-lg md:text-xl text-purple-50/95 leading-relaxed mb-4" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>
+                {ask.question}
+              </p>
+              {ask.options && ask.options.length > 0 && (
+                <div className="flex flex-col gap-2 mb-3">
+                  {ask.options.map((opt) => (
+                    <motion.button
+                      key={opt}
+                      whileHover={{ scale: 1.02, x: 4 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={() => answerAsk(opt)}
+                      className={`text-left px-5 py-3 rounded-xl border transition-all ${
+                        ask.crossroads
+                          ? "border-amber-500/30 bg-amber-900/20 text-amber-100/90 hover:bg-amber-800/30 hover:border-amber-400/50"
+                          : "border-emerald-500/30 bg-emerald-900/20 text-emerald-100/90 hover:bg-emerald-800/30 hover:border-emerald-400/50"
+                      }`}
+                    >
+                      {opt}
+                    </motion.button>
+                  ))}
                 </div>
-                <p className="text-lg md:text-xl text-purple-50/95 leading-relaxed mb-4" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>
-                  {ask.question}
-                </p>
-                {ask.options && ask.options.length > 0 && (
-                  <div className="flex flex-col gap-2 mb-3">
-                    {ask.options.map((opt) => (
-                      <motion.button
-                        key={opt}
-                        whileHover={{ scale: 1.02, x: 4 }}
-                        whileTap={{ scale: 0.98 }}
-                        onClick={() => answerAsk(opt)}
-                        className="text-left px-5 py-3 rounded-xl border border-emerald-500/30 bg-emerald-900/20 text-emerald-100/90 hover:bg-emerald-800/30 hover:border-emerald-400/50 transition-all"
-                      >
-                        {opt}
-                      </motion.button>
-                    ))}
-                  </div>
-                )}
+              )}
+              {!ask.crossroads && (
                 <div className="flex gap-2">
                   <input
                     ref={askInputRef}
@@ -532,23 +638,38 @@ export default function TarotApp() {
                     回应
                   </button>
                 </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+              )}
+            </motion.div>
+          )}
+
+          {/* 卡牌区 */}
+          {cards.length > 0 && (
+            <div className="flex gap-3 md:gap-8 justify-center flex-wrap mt-4">
+              {cards.map((card, i) => (
+                <TarotCardView key={`${card.id}-${i}`} card={card} index={i} flipped={flipped[i]} onFlip={handleFlip} />
+              ))}
+            </div>
+          )}
 
           {/* Agent 状态条 */}
-          {(phase || streaming) && cards.length > 0 && (
+          {(phase || streaming) && (cards.length > 0 || !ask) && (
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mt-8">
               <AgentStatusBar phase={phase} />
               {phaseLabel && <p className="mt-2 text-center text-xs text-purple-400/60 tracking-wide">{phaseLabel}</p>}
             </motion.div>
           )}
 
-          {/* Agent Trace 面板 */}
+          {/* 子 Agent 流水线 */}
+          <SubAgentPipeline events={subagentEvents} />
+
+          {/* Agent Trace 面板（等待用户输入时明确显示"等待回应"而非误导性的运行中） */}
           <AgentTrace tools={tools} reasoning={reasoning} streaming={streaming && !ask} />
 
           {/* RAG 知识面板 */}
           <KnowledgePanel hits={ragHits} />
+
+          {/* 审校报告 */}
+          {review && <ReviewCard review={review} />}
 
           {/* 解读文本区 */}
           {(reading || error) && (
@@ -570,13 +691,9 @@ export default function TarotApp() {
             </div>
           )}
 
-          {/* 追问输入 */}
+          {/* 追问 */}
           {done && sessionId && (
-            <motion.div
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="w-full max-w-2xl mt-5"
-            >
+            <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-2xl mt-5">
               <div className="flex gap-2">
                 <input
                   className="flex-1 px-5 py-3.5 rounded-2xl bg-purple-950/30 backdrop-blur-md border border-purple-500/30 text-purple-50 placeholder-purple-300/40 focus:outline-none focus:border-purple-400/70 transition-all"
@@ -596,7 +713,7 @@ export default function TarotApp() {
                   追问
                 </motion.button>
               </div>
-              <div className="mt-6 flex justify-center">
+              <div className="mt-6 flex justify-center gap-3">
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
@@ -606,6 +723,13 @@ export default function TarotApp() {
                 >
                   再问一次
                 </motion.button>
+                <a
+                  href="/dashboard"
+                  className="px-8 py-3 rounded-full border border-sky-500/40 text-sky-200 hover:bg-sky-900/30 transition-all tracking-[0.2em] flex items-center"
+                  style={{ fontFamily: "'Ma Shan Zheng', serif" }}
+                >
+                  观测面板 ↗
+                </a>
               </div>
             </motion.div>
           )}
@@ -613,8 +737,8 @@ export default function TarotApp() {
       )}
 
       {/* 页脚 */}
-      <footer className="mt-auto pt-14 pb-6 text-center text-purple-400/25 text-xs tracking-[0.25em] z-10">
-        MYSTIC TAROT · LLM AGENT × RAG (BM25) × HITL × SSE STREAM
+      <footer className="mt-auto pt-12 pb-6 text-center text-purple-400/25 text-xs tracking-[0.25em] z-10">
+        MYSTIC TAROT · MULTI-AGENT × HYBRID RAG (BM25+VECTOR) × HITL × REFLEXION × SSE
       </footer>
     </main>
   );
