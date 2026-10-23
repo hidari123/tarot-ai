@@ -1,0 +1,123 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: #05020a;
+  --color-foreground: #e8dcc8;
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/* ------------------------------------------------------------------ */
+/* 3D 卡牌工具类                                                       */
+/* ------------------------------------------------------------------ */
+.perspective-1200 {
+  perspective: 1200px;
+}
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+.backface-hidden {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+.rotate-y-180 {
+  transform: rotateY(180deg);
+}
+
+/* 神秘流光边框 */
+.glow-border {
+  box-shadow:
+    0 0 18px rgba(168, 85, 247, 0.35),
+    0 0 60px rgba(109, 40, 217, 0.18),
+    inset 0 0 14px rgba(168, 85, 247, 0.14);
+  border: 1px solid rgba(168, 85, 247, 0.55);
+}
+
+/* 牌背符文呼吸 */
+@keyframes rune-breathe {
+  0%, 100% { opacity: 0.7; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.06); }
+}
+.rune-breathe {
+  animation: rune-breathe 3.2s ease-in-out infinite;
+}
+
+/* 魔法阵缓旋 */
+@keyframes spin-slow {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+@keyframes spin-slow-reverse {
+  from { transform: translate(-50%, -50%) rotate(360deg); }
+  to { transform: translate(-50%, -50%) rotate(0deg); }
+}
+.magic-ring-1 {
+  animation: spin-slow 70s linear infinite;
+}
+.magic-ring-2 {
+  animation: spin-slow-reverse 50s linear infinite;
+}
+.magic-ring-3 {
+  animation: spin-slow 110s linear infinite;
+}
+
+/* 星光闪烁 */
+@keyframes twinkle {
+  0%, 100% { opacity: 0.15; }
+  50% { opacity: 0.9; }
+}
+
+/* 渐变文字流光 */
+@keyframes shimmer-text {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+.text-shimmer {
+  background: linear-gradient(110deg, #c084fc 20%, #f0abfc 40%, #818cf8 60%, #c084fc 80%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer-text 6s linear infinite;
+}
+
+/* 解读文本打字光标 */
+@keyframes cursor-blink {
+  0%, 45% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.typing-cursor {
+  animation: cursor-blink 1s steps(1) infinite;
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(30, 20, 45, 0.5);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.35);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 92, 246, 0.6);
+}
+
+body {
+  background: #05020a;
+  color: #e8dcc8;
+}
+
+/* ------------------------------------------------------------------ */
+/* 星尘光标：隐藏默认光标（触屏/reduced-motion 由组件回退）              */
+/* ------------------------------------------------------------------ */
+@media (pointer: fine) {
+  html.has-stardust-cursor,
+  html.has-stardust-cursor * {
+    cursor: none !important;
+  }
+}
