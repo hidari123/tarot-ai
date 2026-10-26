@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 
 /**
@@ -193,40 +193,109 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
 
 export default function ShareCardButton({ data }: { data: ShareCardData }) {
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
+  const [error, setError] = useState("");
+  /** 预览弹窗：先看到图，再决定是否下载 */
+  const [preview, setPreview] = useState<string | null>(null);
+  const previewUrlRef = useRef<string | null>(null);
+  const [downloaded, setDownloaded] = useState(false);
 
   const handleGenerate = useCallback(async () => {
     if (busy) return;
     setBusy(true);
+    setError("");
     try {
       const blob = await renderShareCard(data);
       if (!blob) throw new Error("canvas 渲染失败");
+      // 关闭旧预览时释放旧 URL
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `mystic-tarot-${(data.sessionId ?? Date.now()).toString().slice(0, 8)}.png`;
-      a.click();
-      // 释放 blob URL（给下载留时间）
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-      setDone(true);
-      setTimeout(() => setDone(false), 2500);
+      previewUrlRef.current = url;
+      setPreview(url);
+      setDownloaded(false);
     } catch {
-      setDone(false);
+      setError("生成失败，请重试");
     } finally {
       setBusy(false);
     }
   }, [busy, data]);
 
+  /** 下载按钮：保存到本地下载文件夹 */
+  const handleDownload = useCallback(() => {
+    if (!previewUrlRef.current) return;
+    const a = document.createElement("a");
+    a.href = previewUrlRef.current;
+    a.download = `mystic-tarot-${(data.sessionId ?? Date.now()).toString().slice(0, 8)}.png`;
+    a.click();
+    setDownloaded(true);
+    setTimeout(() => setDownloaded(false), 2500);
+  }, [data.sessionId]);
+
+  /** 关闭预览：释放 blob URL，避免内存泄漏 */
+  const closePreview = useCallback(() => {
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    previewUrlRef.current = null;
+    setPreview(null);
+  }, []);
+
+  /** 组件卸载时释放 */
+  useEffect(() => {
+    return () => {
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    };
+  }, []);
+
   return (
-    <motion.button
-      whileHover={{ scale: 1.05 }}
-      whileTap={{ scale: 0.95 }}
-      onClick={handleGenerate}
-      disabled={busy}
-      className="px-8 py-3 rounded-full border border-amber-500/40 text-amber-200 hover:bg-amber-900/30 transition-all tracking-[0.2em] disabled:opacity-50"
-      style={{ fontFamily: "'Ma Shan Zheng', serif" }}
-    >
-      {busy ? "绘制中…" : done ? "已保存 ✓" : "生成分享卡"}
-    </motion.button>
+    <>
+      <motion.button
+        whileHover={{ scale: 1.05 }}
+        whileTap={{ scale: 0.95 }}
+        onClick={handleGenerate}
+        disabled={busy}
+        className="px-8 py-3 rounded-full border border-amber-500/40 text-amber-200 hover:bg-amber-900/30 transition-all tracking-[0.2em] disabled:opacity-50"
+        style={{ fontFamily: "'Ma Shan Zheng', serif" }}
+      >
+        {busy ? "绘制中…" : "生成分享卡"}
+      </motion.button>
+      {error && <p className="w-full text-center text-xs text-red-300/80 mt-1">{error}</p>}
+
+      {/* 分享卡预览弹窗 */}
+      {preview && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          onClick={closePreview}
+        >
+          <div
+            className="relative max-w-[90vw] max-h-[85vh] flex flex-col items-center gap-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={preview}
+              alt="塔罗分享卡"
+              className="max-w-full max-h-[70vh] rounded-2xl border border-amber-500/30 shadow-[0_0_60px_rgba(251,191,36,0.25)]"
+            />
+            <div className="flex gap-3">
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={handleDownload}
+                className="px-6 py-2.5 rounded-full bg-gradient-to-r from-amber-600 to-orange-600 text-white font-medium shadow-[0_0_20px_rgba(251,191,36,0.4)]"
+              >
+                {downloaded ? "已保存到下载文件夹 ✓" : "保存图片"}
+              </motion.button>
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={closePreview}
+                className="px-6 py-2.5 rounded-full border border-purple-400/40 text-purple-200 hover:bg-purple-900/40"
+              >
+                关闭
+              </motion.button>
+            </div>
+            <p className="text-xs text-purple-300/50">保存位置：浏览器默认下载文件夹（如 C:\Users\...\Downloads）</p>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
