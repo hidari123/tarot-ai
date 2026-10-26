@@ -653,7 +653,8 @@ export default function TarotApp() {
               <p className="text-lg md:text-xl text-purple-50/95 leading-relaxed mb-4" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>
                 {ask.question}
               </p>
-              {ask.options && ask.options.length > 0 && (
+              {/* 选项区：无选项时给出明确提示（不能留空白死锁） */}
+              {ask.options && ask.options.length > 0 ? (
                 <div className="flex flex-col gap-2 mb-3">
                   {ask.options.map((opt) => (
                     <motion.button
@@ -671,8 +672,14 @@ export default function TarotApp() {
                     </motion.button>
                   ))}
                 </div>
+              ) : (
+                <p className="text-xs text-amber-200/60 mb-3">
+                  ⏳ 占卜师正在铺开选项，请稍候…（也可以直接输入你的想法）
+                </p>
               )}
-              {!ask.crossroads && (
+              {/* 自由输入：普通问答恒显示；岔路场景在"有选项"或"选项异常"时可输入
+                  （此前 crossroads 时完全隐藏输入框 → options 为空时彻底死锁） */}
+              {(!ask.crossroads || !ask.options || ask.options.length === 0) && (
                 <div className="flex gap-2">
                   <input
                     ref={askInputRef}

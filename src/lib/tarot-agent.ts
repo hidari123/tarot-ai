@@ -622,15 +622,19 @@ const TOOLS = [
     function: {
       name: "fate_crossroads",
       description:
-        "命运岔路：解读中段，向用户呈现 2~3 条命运走向让其选择，后续解读（尤其未来牌）按选择分支。让用户参与塑造自己的解读，增强人机协同。",
+        "命运岔路：解读中段，向用户呈现 2~3 条命运走向让其选择，后续解读（尤其未来牌）按选择分支。让用户参与塑造自己的解读，增强人机协同。\n" +
+        "【必须同时提供 prompt 和 branches】branches 是给用户点击的选项列表（2~3 条，每条不超过 30 字）；" +
+        "**不要把选项写进 prompt 里**——prompt 只是引子，选项必须放在 branches 数组里，否则用户看不到可选项。",
       parameters: {
         type: "object",
         properties: {
-          prompt: { type: "string", description: "岔路引子，如\"宝剑八显示你可能被困于沉默——\"" },
+          prompt: { type: "string", description: "岔路引子（20~60 字），只写情境铺垫，不要列举选项" },
           branches: {
             type: "array",
             items: { type: "string" },
-            description: "2~3 条走向描述（简短）",
+            minItems: 2,
+            maxItems: 4,
+            description: "2~3 条走向描述（每条不超过 30 字），用户将从中选择一条",
           },
         },
         required: ["prompt", "branches"],
@@ -700,6 +704,61 @@ function extractEmotionTags(text: string): string[] {
     if (words.some((w) => text.includes(w))) tags.push(tag);
   }
   return tags.slice(0, 3); // 最多 3 个，避免堆砌
+}
+
+/**
+ * 从叙述性 prompt 里抠出候选分支（模型漏传 branches 时的兜底）。
+ *
+ * 识别常见编号格式：
+ *   "1. xxx" / "①xxx" / "A. xxx" / "一、xxx"
+ * 以及被引号包裹的并列项："…，或「这个」「那个」…"
+ * 抠不出则返回空数组，由调用方用通用选项兜底（绝不返回空导致 UI 死锁）。
+ *
+ * 自检：scripts/test-crossroads-fallback.cjs（改算法时同步两处）
+ */
+function extractBranchesFromPrompt(prompt: string): string[] {
+  const branches: string[] = [];
+
+  // ① 编号项
+  //    两步走：先单独匹配"编号标记"（不含前置条件，避免吃掉分隔符），
+  //           再按标记位置切分文本，逐段清洗。
+  //    两种标记形态：
+  //      A. 数字/中文数字/字母 + 分隔符（1. / 一、 / A.）
+  //      B. 圆圈数字（自带分隔符，后面直接跟内容：①继续坚持）
+  const marker = /[（(]?\s*((?:[0-9]{1,2}|[一二三四五六七八九十]|[A-Ha-h])[）).、．:：]|[①②③④⑤⑥⑦⑧⑨⑩])\s*/g;
+  const marks: Array<{ start: number; end: number }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = marker.exec(prompt)) !== null) {
+    // 排除"1.5"小数、"2024年"年份：标记前不能是数字
+    const before = prompt[m.index - 1] ?? "";
+    if (/[0-9]/.test(before) && /^[0-9]/.test(m[1])) continue;
+    marks.push({ start: m.index, end: marker.lastIndex });
+  }
+  if (marks.length >= 2) {
+    for (let i = 0; i < marks.length; i++) {
+      const start = marks[i].end;
+      const end = i + 1 < marks.length ? marks[i + 1].start : prompt.length;
+      const body = prompt.slice(start, end).replace(/[；;。\n、，]+$/, "").trim();
+      if (body.length >= 2 && body.length <= 60) branches.push(body);
+    }
+    if (branches.length >= 2) return branches.slice(0, 4);
+  }
+
+  // ② 引号并列：「xxx」「xxx」
+  const quoted = prompt.match(/[「『【]([^」』】]{2,50})[」』】]/g);
+  if (quoted) {
+    const cleaned = quoted.map((q) => q.replace(/^[「『【]|[」』】]$/g, "").trim()).filter((q) => q.length >= 2);
+    if (cleaned.length >= 2) return cleaned.slice(0, 4);
+  }
+
+  // ③ 或字并列
+  const alt = prompt.split(/[，,]\s*(?:或者|还是|或是|或)\s*/);
+  if (alt.length >= 2) {
+    const parts = alt.map((s) => s.trim()).filter((s) => s.length >= 3 && s.length <= 60);
+    if (parts.length >= 2) return parts.slice(0, 4);
+  }
+
+  return branches;
 }
 
 async function execRagSearch(query: string, topK: number, session: AgentSession) {
@@ -1205,8 +1264,15 @@ export async function* runAgent(
     // ---- P1.2：决策附带文本作为对话回应流出 ----
     // supervisor 决策时常带 content（"嗯，我听到了，你其实很在意…"），
     // 此前被丢弃——用户答完话得到死寂。现在流出来，占卜师"每步有回应"。
-    // 注意：只在已有交互历史后流出（首轮的寒暄意义不大），且不作为解读正文入库
-    if (decision.message.content && session.messages.length > 3) {
+    //
+    // ⚠️ 但当本轮同时要发起 HITL 交互（ask_user/fate_crossroads/选牌）时**不流出**：
+    //    模型的 content 往往是"岔路口叙述"（"你打算怎么走？"），
+    //    若先流出再弹选项面板，用户会看到一段像提问又没选项的正文——反而更困惑。
+    const toolCalls = decision.message.tool_calls;
+    const hasHitl = (toolCalls ?? []).some((tc) =>
+      ["ask_user", "offer_card_selection", "fate_crossroads"].includes(tc.function.name)
+    );
+    if (decision.message.content && session.messages.length > 3 && !hasHitl) {
       const intro = decision.message.content.trim();
       if (intro) {
         for (const chunk of intro.match(/[\s\S]{1,6}/g) ?? []) {
@@ -1217,9 +1283,7 @@ export async function* runAgent(
       }
     }
 
-    const toolCalls = decision.message.tool_calls;
-    if (!toolCalls || toolCalls.length === 0) {
-      // ---- 无工具调用分支 ----
+    if (!toolCalls || toolCalls.length === 0) {      // ---- 无工具调用分支 ----
       // 追问模式：纯文本回答是正常路径
       const isFollowup = opts?.followup !== undefined && session.messages.length > 2;
       if (isFollowup) {
@@ -1395,12 +1459,24 @@ export async function* runAgent(
         } else {
           // fate_crossroads
           const prompt = String(args.prompt || "命运走到了岔路口");
-          const branches = Array.isArray(args.branches) ? (args.branches as string[]).map(String) : [];
+          let branches = Array.isArray(args.branches)
+            ? (args.branches as unknown[]).map(String).filter((b) => b.trim().length > 0)
+            : [];
+          // ⚠️ 兜底：模型偶尔只写 prompt 叙述而漏传 branches
+          // （实测 DB 里出现过 branches(NOT ARRAY)）→ 前端 options 为空 + crossroads=true
+          //    会导致"既没选项也没输入框"的彻底死锁。
+          // 这里从 prompt 里抠出选项；抠不出就给通用选项，保证一定能继续。
+          if (branches.length === 0) {
+            branches = extractBranchesFromPrompt(prompt);
+          }
+          if (branches.length === 0) {
+            branches = ["跟着直觉走", "稳妥为先", "先不决定，再想想"];
+          }
           askPrompt = prompt;
           options = branches;
           askEvent = {
             type: "ask_user",
-            ask: { question: prompt, options: branches, allowFree: false, prompt },
+            ask: { question: prompt, options: branches, allowFree: true, prompt },
           };
           (askEvent as AgentEvent & { crossroads?: boolean }).crossroads = true;
         }

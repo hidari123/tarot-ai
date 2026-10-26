@@ -1,0 +1,31 @@
+fix: crossroads dead-lock — options missing when model omits branches
+
+User report: "命运走到了岔路口…但是没有选项呀 也没有对话框"
+
+Root cause (forensics via tool_calls.args_json): the model occasionally calls
+fate_crossroads with only `prompt` and omits `branches` entirely (DB had a
+row with branches(NOT ARRAY)). Backend then sent ask_user with
+options=[] and crossroads=true, while the frontend hides the free-text input
+whenever crossroads=true — so the panel rendered with zero buttons AND zero
+input: a hard dead-lock.
+
+Additionally, the P1.2 decision-text streaming surfaced the model's
+"岔路口叙述" as body text before the panel appeared, making it look like a
+question with no options.
+
+Fixes (defense in depth, 4 layers):
+- Tool schema: explicit "branches 必须提供，选项不要写进 prompt" instruction
+  + minItems/maxItems on branches
+- Backend fallback: extractBranchesFromPrompt() parses options out of the
+  prompt (numbered 1./①/一、/A., quoted 「」, 或/还是 conjunctions);
+  if nothing parses, generic options are used so the flow always continues
+- Frontend: crossroads now allows free text as well (allowFree), and an
+  empty options array shows a "占卜师正在铺开选项" hint plus the input box
+  instead of a blank panel
+- Streaming: supervisor decision text is no longer streamed when the same
+  turn triggers a HITL tool (avoids the "narration without options" state)
+
+Tests: scripts/test-crossroads-fallback.cjs (7 cases: 4 numbering styles,
+quoted, conjunction, and the no-structure case) — all pass.
+Verified live: fate_crossroads now emits crossroads=true with 3 options and
+allowFree=true. Eval regression 97%.
