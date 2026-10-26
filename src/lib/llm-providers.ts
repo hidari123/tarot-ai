@@ -23,11 +23,11 @@ export interface LLMProvider {
 
 /** 从环境变量构建 provider 列表（主 → 备） */
 export function buildProviders(): LLMProvider[] {
-  const list: LLMProvider[] = [];
+  const candidates: LLMProvider[] = [];
 
   const mainKey = process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
   if (mainKey) {
-    list.push({
+    candidates.push({
       name: process.env.OPENAI_MODEL || "deepseek-chat",
       apiKey: mainKey,
       baseURL: process.env.OPENAI_BASE_URL || "https://api.deepseek.com/v1",
@@ -37,7 +37,7 @@ export function buildProviders(): LLMProvider[] {
 
   const fbKey = process.env.FALLBACK_API_KEY;
   if (fbKey) {
-    list.push({
+    candidates.push({
       name: process.env.FALLBACK_MODEL || "fallback",
       apiKey: fbKey,
       baseURL: process.env.FALLBACK_BASE_URL || "https://api.minimaxi.com/v1",
@@ -45,7 +45,18 @@ export function buildProviders(): LLMProvider[] {
     });
   }
 
-  return list;
+  // ---- 按 PRIMARY_PROVIDER 排序 ----
+  // 例：PRIMARY_PROVIDER=MiniMax-M3 → MiniMax 为主，glm 为备
+  const primary = process.env.PRIMARY_PROVIDER;
+  if (primary) {
+    const idx = candidates.findIndex((p) => p.name === primary || p.model === primary);
+    if (idx > 0) {
+      const [picked] = candidates.splice(idx, 1);
+      candidates.unshift(picked);
+    }
+  }
+
+  return candidates;
 }
 
 /** provider 是否可用（无 key 的跳过） */
@@ -106,4 +117,55 @@ export function isFailoverError(e: unknown, httpStatus?: number): boolean {
     if (/LLM 调用失败\(5\d\d\)/.test(msg)) return true;
   }
   return false;
+}
+
+/* ------------------------------------------------------------------ */
+/* 启动主动探测                                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 启动时并发探测所有 provider，把不可用的直接标记失败。
+ *
+ * 为什么需要：failover 是"事后切换"——首个请求仍要先撞一次主模型的
+ * 连接失败。内网地址不可达时，Windows TCP 连接要 20~80 秒才报错，
+ * 用户的第一个请求会白等这么久。启动探测把它挪到服务启动阶段。
+ */
+export async function probeProviders(timeoutMs = 8000): Promise<void> {
+  const all = buildProviders();
+  if (all.length === 0) return;
+
+  const results = await Promise.all(
+    all.map(async (p) => {
+      const t0 = Date.now();
+      try {
+        const res = await fetch(`${p.baseURL}/models`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${p.apiKey}` },
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (res.ok) {
+          markHealthy(p);
+          return { name: p.name, ok: true, ms: Date.now() - t0 };
+        }
+        // 有些网关不实现 /models，但 chat 可用 —— 不算失败
+        if (res.status === 404 || res.status === 405) {
+          return { name: p.name, ok: true, ms: Date.now() - t0, note: "无 /models 端点" };
+        }
+        markFailed(p);
+        return { name: p.name, ok: false, ms: Date.now() - t0, status: res.status };
+      } catch (e) {
+        markFailed(p);
+        return {
+          name: p.name, ok: false, ms: Date.now() - t0,
+          error: e instanceof Error ? e.message : String(e),
+        };
+      }
+    })
+  );
+
+  const healthy = results.filter((r) => r.ok).map((r) => r.name);
+  const failed = results.filter((r) => !r.ok).map((r) => r.name);
+  console.error(
+    `[llm-probe] 可用: ${healthy.join(", ") || "无"}${failed.length ? ` | 不可用: ${failed.join(", ")}` : ""}`
+  );
 }

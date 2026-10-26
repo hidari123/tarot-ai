@@ -15,9 +15,19 @@ interface Stats {
   totalTokens: number;
   avgLlmLatencyMs: number;
   toolBreakdown: { tool: string; count: number; avgMs: number }[];
+  staleSessions: { id: string; question: string; createdAt: number; ageMinutes: number }[];
+  errorBreakdown: { reason: string; count: number }[];
+  agentStats: {
+    agent: string; calls: number; avgPromptTokens: number; avgCompletionTokens: number; avgMs: number;
+  }[];
+  promptVersions: {
+    version: string; sessions: number; doneSessions: number;
+    avgReadingChars: number; avgGrounding: number;
+  }[];
   recentSessions: {
     id: string; question: string; persona: string; status: string;
     reading: string; cards: { nameZh: string; reversed: boolean; pos: string }[]; createdAt: number;
+    errorReason?: string;
   }[];
 }
 
@@ -29,6 +39,23 @@ const TOOL_LABEL: Record<string, string> = {
   fate_crossroads: "🔮 命运岔路",
   write_reading: "✍️ 解读撰写",
   analyze: "🔍 牌意分析",
+};
+
+const AGENT_LABEL: Record<string, string> = {
+  supervisor: "🎭 编排者",
+  analyst: "🔍 分析师",
+  writer: "✍️ 撰写者",
+  reviewer: "🧐 审校者",
+};
+
+const ERROR_REASON_LABEL: Record<string, string> = {
+  client_disconnect: "客户端断开",
+  engine_exception: "引擎异常",
+  llm_error: "模型调用失败",
+  deadline_exceeded: "超时中止",
+  max_rounds: "超出最大轮次",
+  stale_timeout: "僵死超时",
+  unknown: "未知原因",
 };
 
 export default function Dashboard() {
@@ -87,6 +114,104 @@ export default function Dashboard() {
                 </motion.div>
               ))}
             </div>
+
+            {/* ⚠️ 卡死会话警告 */}
+            {stats.staleSessions.length > 0 && (
+              <div className="rounded-2xl border border-amber-500/30 bg-amber-950/10 backdrop-blur p-5 mb-8">
+                <h2 className="text-sm text-amber-200/90 tracking-wider mb-3">
+                  ⚠️ 卡死会话（{stats.staleSessions.length}）· 超过 10 分钟仍在运行
+                </h2>
+                <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                  {stats.staleSessions.map((s) => (
+                    <div key={s.id} className="flex items-center gap-3 text-xs">
+                      <span className="text-amber-300/80 font-mono shrink-0">{s.ageMinutes}min</span>
+                      <span className="text-purple-200/70 truncate flex-1">{s.question}</span>
+                      <span className="text-purple-400/40 font-mono shrink-0">{s.id.slice(-8)}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-3 text-[11px] text-amber-200/50">
+                  这些会话在进程重启或客户端断开后遗留，服务启动时会自动对账清理（&gt;30min）。
+                </p>
+              </div>
+            )}
+
+            {/* 错误原因分布 */}
+            {stats.errorBreakdown.length > 0 && (
+              <div className="rounded-2xl border border-rose-500/20 bg-rose-950/10 backdrop-blur p-5 mb-8">
+                <h2 className="text-sm text-rose-200/90 tracking-wider mb-3">❌ 异常会话原因分布</h2>
+                <div className="flex flex-wrap gap-2">
+                  {stats.errorBreakdown.map((e) => (
+                    <span
+                      key={e.reason}
+                      className="px-3 py-1.5 rounded-lg bg-rose-500/10 border border-rose-400/20 text-xs text-rose-200/80"
+                    >
+                      {ERROR_REASON_LABEL[e.reason] ?? e.reason}
+                      <span className="ml-2 font-mono text-rose-300/70">{e.count}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 各 Agent 的 token / 耗时明细（Trace 时间轴数据源） */}
+            <div className="rounded-2xl border border-purple-500/20 bg-purple-950/20 backdrop-blur p-5 mb-8">
+              <h2 className="text-sm text-purple-200/80 tracking-wider mb-4">🤖 各 Agent 性能明细</h2>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-purple-400/50 border-b border-purple-500/15">
+                      <th className="text-left py-2 pr-3">Agent</th>
+                      <th className="text-right py-2 px-3">调用次数</th>
+                      <th className="text-right py-2 px-3">平均 prompt tok</th>
+                      <th className="text-right py-2 px-3">平均输出 tok</th>
+                      <th className="text-right py-2 pl-3">平均耗时</th>
+                    </tr>
+                  </thead>
+                  <tbody className="font-mono">
+                    {stats.agentStats.map((a) => (
+                      <tr key={a.agent} className="border-b border-purple-500/8">
+                        <td className="py-2 pr-3 text-purple-200/80 font-sans">
+                          {AGENT_LABEL[a.agent] ?? a.agent}
+                        </td>
+                        <td className="text-right py-2 px-3 text-purple-300/70">{a.calls}</td>
+                        <td className="text-right py-2 px-3 text-purple-300/70">{a.avgPromptTokens}</td>
+                        <td className="text-right py-2 px-3 text-purple-300/70">{a.avgCompletionTokens}</td>
+                        <td
+                          className={`text-right py-2 pl-3 ${
+                            a.avgMs > 15000 ? "text-amber-300/90" : "text-purple-300/70"
+                          }`}
+                        >
+                          {a.avgMs}ms
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {stats.agentStats.length === 0 && <p className="text-purple-300/40 text-sm py-4 text-center">暂无数据</p>}
+            </div>
+
+            {/* prompt 版本对比 */}
+            {stats.promptVersions.length > 0 && (
+              <div className="rounded-2xl border border-purple-500/20 bg-purple-950/20 backdrop-blur p-5 mb-8">
+                <h2 className="text-sm text-purple-200/80 tracking-wider mb-4">📝 Prompt 版本效果</h2>
+                <div className="space-y-2">
+                  {stats.promptVersions.map((p) => (
+                    <div key={p.version} className="flex items-center gap-3 text-xs">
+                      <span className="px-2 py-0.5 rounded bg-purple-500/20 border border-purple-400/30 text-purple-200 font-mono">
+                        {p.version}
+                      </span>
+                      <span className="text-purple-300/60">{p.sessions} 会话</span>
+                      <span className="text-emerald-300/70">{p.doneSessions} 完成</span>
+                      <span className="text-purple-300/50 ml-auto">
+                        平均解读 {p.avgReadingChars} 字
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* 工具调用统计 */}
             <div className="rounded-2xl border border-purple-500/20 bg-purple-950/20 backdrop-blur p-5 mb-8">

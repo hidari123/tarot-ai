@@ -99,9 +99,18 @@ async function getPipeline() {
   if (modelLoadFailed) throw new Error("模型加载此前已失败，本进程降级哈希向量");
   const { pipeline: createPipeline, env } = await import("@huggingface/transformers");
   env.cacheDir = CACHE_DIR;
+  // 本地模型目录（models--org--name/snapshots/main 与 org/name 两种结构都放一份）
+  env.localModelPath = CACHE_DIR;
   // 国内网络优先走 HF 镜像（HF_ENDPOINT 显式设置则尊重）
   if (!process.env.HF_ENDPOINT) {
     env.remoteHost = "https://hf-mirror.com";
+  }
+  // 若本地已存在模型文件，则禁用远程加载（完全离线，杜绝下载挂起）
+  const localModelFile = join(CACHE_DIR, "Xenova", "all-MiniLM-L6-v2", "onnx", "model_quantized.onnx");
+  const hasLocalModel = existsSync(localModelFile);
+  if (hasLocalModel) {
+    env.allowRemoteModels = false;
+    env.allowLocalModels = true;
   }
   // Node 原生 fetch 不读 HTTPS_PROXY —— 注入 undici ProxyAgent
   const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
@@ -113,7 +122,7 @@ async function getPipeline() {
   }
   // 硬超时保护：模型下载（HF 域名不可达时会无限挂起）超过时限即放弃
   pipeline = await Promise.race([
-    createPipeline("feature-extraction", MODEL_ID),
+    createPipeline("feature-extraction", MODEL_ID, { dtype: "q8" }),
     new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error(`模型加载超时(${MODEL_TIMEOUT_MS}ms)，降级哈希向量`)), MODEL_TIMEOUT_MS)
     ),

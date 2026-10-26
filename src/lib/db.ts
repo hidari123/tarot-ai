@@ -64,6 +64,17 @@ CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC);
 `);
 
+// ---- 迁移：新增 error_reason 字段（记录会话异常结束的原因） ----
+try {
+  const cols = db.prepare(`PRAGMA table_info(sessions)`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === "error_reason")) {
+    db.exec(`ALTER TABLE sessions ADD COLUMN error_reason TEXT NOT NULL DEFAULT ''`);
+  }
+  if (!cols.some((c) => c.name === "prompt_version")) {
+    db.exec(`ALTER TABLE sessions ADD COLUMN prompt_version TEXT NOT NULL DEFAULT ''`);
+  }
+} catch { /* 迁移失败不阻断 */ }
+
 /* ---------------- 写入 API ---------------- */
 
 export interface SessionRow {
@@ -99,14 +110,56 @@ export function updateSessionCards(id: string, cards: SessionRow["cards"]): void
   db.prepare(`UPDATE sessions SET cards_json = ? WHERE id = ?`).run(JSON.stringify(cards), id);
 }
 
+/** 记录本次会话使用的 prompt 版本（用于版本效果对比） */
+export function updateSessionPromptVersion(id: string, version: string): void {
+  db.prepare(`UPDATE sessions SET prompt_version = ? WHERE id = ?`).run(version, id);
+}
+
 export function finishSession(id: string, review: SessionRow["review"]): void {
   db.prepare(`UPDATE sessions SET review_json = ?, status = 'done', finished_at = ? WHERE id = ?`).run(
     JSON.stringify(review ?? null), Date.now(), id
   );
 }
 
-export function failSession(id: string): void {
-  db.prepare(`UPDATE sessions SET status = 'error', finished_at = ? WHERE id = ?`).run(Date.now(), id);
+export function failSession(id: string, reason = "unknown"): void {
+  db.prepare(`UPDATE sessions SET status = 'error', error_reason = ?, finished_at = ? WHERE id = ?`)
+    .run(reason, Date.now(), id);
+}
+
+/**
+ * 启动对账：把"僵死"的 running 会话标记为 error。
+ *
+ * 场景：进程重启 / 客户端断开 / 生成器被 GC —— 这些路径不会执行正常收尾，
+ * 导致会话永远停在 running（实测占比高达 45%）。
+ * 判据：status='running' 且最后活动时间超过阈值。
+ */
+export function reconcileStaleSessions(maxAgeMs = 30 * 60 * 1000): number {
+  const cutoff = Date.now() - maxAgeMs;
+  const result = db.prepare(`
+    UPDATE sessions
+    SET status = 'error', error_reason = 'stale_timeout', finished_at = ?
+    WHERE status = 'running' AND created_at < ?
+  `).run(Date.now(), cutoff);
+  return result.changes;
+}
+
+/** 列出僵死会话（dashboard 卡死视图用） */
+export function listStaleSessions(maxAgeMs = 10 * 60 * 1000): {
+  id: string; question: string; createdAt: number; ageMinutes: number;
+}[] {
+  const cutoff = Date.now() - maxAgeMs;
+  const rows = db.prepare(`
+    SELECT id, question, created_at FROM sessions
+    WHERE status = 'running' AND created_at < ?
+    ORDER BY created_at DESC LIMIT 50
+  `).all(cutoff) as { id: string; question: string; created_at: number }[];
+  const now = Date.now();
+  return rows.map((r) => ({
+    id: r.id,
+    question: r.question,
+    createdAt: r.created_at,
+    ageMinutes: Math.round((now - r.created_at) / 60000),
+  }));
 }
 
 export function logToolCall(
@@ -138,9 +191,22 @@ export interface DashboardStats {
   totalTokens: number;
   avgLlmLatencyMs: number;
   toolBreakdown: { tool: string; count: number; avgMs: number }[];
+  /** 僵死会话（超过 10 分钟仍在 running） */
+  staleSessions: { id: string; question: string; createdAt: number; ageMinutes: number }[];
+  /** 错误会话按原因分组 */
+  errorBreakdown: { reason: string; count: number }[];
+  /** 各 Agent 的 token/耗时明细（Trace 时间轴数据源） */
+  agentStats: {
+    agent: string; calls: number; avgPromptTokens: number; avgCompletionTokens: number; avgMs: number;
+  }[];
+  /** 按 prompt 版本的效果对比 */
+  promptVersions: {
+    version: string; sessions: number; doneSessions: number;
+    avgReadingChars: number; avgGrounding: number;
+  }[];
   recentSessions: {
     id: string; question: string; persona: string; status: string;
-    reading: string; cards: SessionRow["cards"]; createdAt: number;
+    reading: string; cards: SessionRow["cards"]; createdAt: number; errorReason?: string;
   }[];
 }
 
@@ -155,9 +221,27 @@ export function getDashboardStats(): DashboardStats {
     FROM tool_calls GROUP BY tool ORDER BY count DESC
   `).all() as { tool: string; count: number; avgMs: number }[];
   const recent = db.prepare(`
-    SELECT id, question, persona, status, reading, cards_json, created_at
+    SELECT id, question, persona, status, reading, cards_json, created_at, error_reason
     FROM sessions ORDER BY created_at DESC LIMIT 20
-  `).all() as { id: string; question: string; persona: string; status: string; reading: string; cards_json: string; created_at: number }[];
+  `).all() as { id: string; question: string; persona: string; status: string; reading: string; cards_json: string; created_at: number; error_reason: string }[];
+  const errorBreakdown = db.prepare(`
+    SELECT CASE WHEN error_reason = '' THEN 'unknown' ELSE error_reason END reason, COUNT(*) count
+    FROM sessions WHERE status = 'error' GROUP BY reason ORDER BY count DESC
+  `).all() as { reason: string; count: number }[];
+  const agentStats = db.prepare(`
+    SELECT agent, COUNT(*) calls,
+           COALESCE(AVG(prompt_tokens),0) avgPt,
+           COALESCE(AVG(completion_tokens),0) avgCt,
+           COALESCE(AVG(duration_ms),0) avgMs
+    FROM llm_usage GROUP BY agent ORDER BY avgMs DESC
+  `).all() as { agent: string; calls: number; avgPt: number; avgCt: number; avgMs: number }[];
+  const promptVersions = db.prepare(`
+    SELECT prompt_version version, COUNT(*) sessions,
+           SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) doneSessions,
+           COALESCE(AVG(length(reading)),0) avgReading
+    FROM sessions WHERE prompt_version != ''
+    GROUP BY prompt_version ORDER BY prompt_version DESC
+  `).all() as { version: string; sessions: number; doneSessions: number; avgReading: number }[];
 
   return {
     totalSessions: total.c,
@@ -166,9 +250,26 @@ export function getDashboardStats(): DashboardStats {
     totalTokens: tokens.t,
     avgLlmLatencyMs: Math.round(latency.a),
     toolBreakdown: breakdown.map((b) => ({ tool: b.tool, count: b.count, avgMs: Math.round(b.avgMs) })),
+    staleSessions: listStaleSessions(),
+    errorBreakdown: errorBreakdown.map((e) => ({ reason: e.reason, count: e.count })),
+    agentStats: agentStats.map((a) => ({
+      agent: a.agent,
+      calls: a.calls,
+      avgPromptTokens: Math.round(a.avgPt),
+      avgCompletionTokens: Math.round(a.avgCt),
+      avgMs: Math.round(a.avgMs),
+    })),
+    promptVersions: promptVersions.map((p) => ({
+      version: p.version,
+      sessions: p.sessions,
+      doneSessions: p.doneSessions,
+      avgReadingChars: Math.round(p.avgReading),
+      avgGrounding: 0,
+    })),
     recentSessions: recent.map((r) => ({
       id: r.id, question: r.question, persona: r.persona, status: r.status,
       reading: r.reading, cards: JSON.parse(r.cards_json), createdAt: r.created_at,
+      errorReason: r.error_reason || undefined,
     })),
   };
 }

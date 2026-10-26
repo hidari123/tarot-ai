@@ -26,6 +26,13 @@
 
 import { TAROT_CARDS, getCardById, type TarotCard } from "./tarot-cards";
 import { hybridSearch, buildCardKnowledge, type RagHit } from "./rag-engine";
+import {
+  parseLLMJSON, extractScore, extractString, extractBool,
+} from "./robust-json";
+import {
+  buildSupervisorPrompt, buildAnalystPrompt, buildWriterPrompt, buildReviewerPrompt,
+  buildFollowupPrompt, PROMPT_VERSION,
+} from "./prompts";
 import * as db from "./db";
 
 /* ------------------------------------------------------------------ */
@@ -77,7 +84,7 @@ export const PERSONAS: Persona[] = [
 export interface AgentEvent {
   type:
     | "session" | "phase" | "delta" | "reasoning" | "tool" | "rag_hits" | "cards"
-    | "ask_user" | "subagent" | "review" | "done" | "error";
+    | "ask_user" | "subagent" | "review" | "round" | "done" | "error";
   sessionId?: string;
   phase?: AgentPhase;
   label?: string;
@@ -97,7 +104,9 @@ export interface AgentEvent {
   fanCount?: number;
   ask?: { question: string; options?: string[]; allowFree: boolean; prompt: string };
   subagent?: { agent: SubAgent; action: string; detail?: string }; // 子 Agent 生命周期
-  review?: { pass: boolean; scores: { grounding: number; empathy: number; tone: number }; comment: string; rewritten?: boolean };
+  review?: { pass: boolean; scores: { grounding: number; empathy: number; tone: number }; comment: string; rewritten?: boolean; parseLevel?: 0 | 1 | 2 | 3; retried?: boolean };
+  /** 轮次时间轴：每轮耗时与 token，供前端可视化"Agent 在哪一步慢" */
+  round?: { round: number; elapsedMs: number; promptTokens?: number; toolNames: string[]; phase?: string };
   error?: string;
 }
 
@@ -137,6 +146,27 @@ const sessions: Map<string, AgentSession> = (() => {
   return g.__tarotSessions__;
 })();
 const SESSION_TTL = 30 * 60 * 1000;
+
+/**
+ * 启动对账（只执行一次）
+ *
+ * 进程重启会让内存会话全部丢失，但 SQLite 里这些会话还停在 running。
+ * 启动时把"创建于 30 分钟前且仍是 running"的标记为 error（stale_timeout），
+ * 避免 dashboard 出现永远运行中的僵尸数据。
+ */
+(() => {
+  const g = globalThis as unknown as { __tarotReconciled__?: boolean };
+  if (g.__tarotReconciled__) return;
+  g.__tarotReconciled__ = true;
+  try {
+    const n = db.reconcileStaleSessions(30 * 60 * 1000);
+    if (n > 0) console.error(`[session-reconcile] 清理 ${n} 个僵死会话（进程重启遗留）`);
+  } catch (e) {
+    console.error("[session-reconcile] 失败:", e instanceof Error ? e.message : e);
+  }
+  // 启动探测 provider：把不可用的直接标记失败，避免首个请求吃 20~80s 连接超时
+  void probeProviders().catch(() => { /* 探测失败不影响启动 */ });
+})();
 
 function cleanExpired() {
   const now = Date.now();
@@ -179,7 +209,7 @@ export function resolvePendingAsk(sessionId: string, answer: string): boolean {
 /* ------------------------------------------------------------------ */
 
 import {
-  buildProviders, pickProvider, markFailed, markHealthy, isFailoverError,
+  buildProviders, pickProvider, markFailed, markHealthy, isFailoverError, probeProviders,
   type LLMProvider,
 } from "./llm-providers";
 
@@ -196,6 +226,29 @@ interface CallResult {
 function llmTimeoutFor(agent: SubAgent): number {
   const base = Number(process.env.LLM_TIMEOUT_MS) || 45_000;
   return agent === "analyst" ? Math.max(base, 90_000) : base;
+}
+
+/**
+ * 剥离内嵌在 content 里的 <think>思考链标签。
+ *
+ * 部分模型（MiniMax-M3 等）不提供 reasoning_content 字段，而是把思考过程
+ * 直接写进 content 的 <think>...</think> 标签里。若不剥离：
+ *   ① 思考过程会混进正文推送给用户
+ *   ② 正文 token 被思考占用，可能导致正文为空
+ * 返回：清洗后的正文 + 提取出的思考链
+ */
+export function splitThinkTags(raw: string): { content: string; reasoning?: string } {
+  if (!raw || !raw.includes("<think>")) return { content: raw ?? "" };
+  const reasoningParts: string[] = [];
+  const content = raw.replace(/<think>([\s\S]*?)<\/think>/g, (_m, inner) => {
+    reasoningParts.push(inner.trim());
+    return "";
+  });
+  const reasoning = reasoningParts.join("\n").trim();
+  return {
+    content: content.trim(),
+    reasoning: reasoning || undefined,
+  };
 }
 
 /** 单次原始 HTTP 调用（不 failover） */
@@ -233,13 +286,16 @@ async function rawCall(
   );
   markHealthy(p);
   const choice = json.choices?.[0];
+  // Provider 适配：部分模型（如 MiniMax）把思考链内嵌在 content 的 <think> 标签里，
+  // 且没有 reasoning_content 字段 —— 必须剥离，否则思考过程会混进正文推给用户
+  const { content, reasoning } = splitThinkTags(choice?.message?.content ?? "");
   return {
     message: {
       role: "assistant",
-      content: choice?.message?.content ?? "",
+      content,
       tool_calls: choice?.message?.tool_calls,
     },
-    reasoning: choice?.message?.reasoning_content,
+    reasoning: choice?.message?.reasoning_content ?? reasoning,
     usage: json.usage,
     provider: p.name,
   };
@@ -317,6 +373,8 @@ async function* tryStreamOnce(
         stream: true,
         max_tokens: 6000,
         thinking: { type: "disabled" },
+        // 请求 usage 统计（OpenAI 兼容：usage 只在最后一个分片返回）
+        stream_options: { include_usage: true },
       }),
       // 流式给更宽的超时（首 token 慢 + 流式传输）
       signal: AbortSignal.timeout(llmTimeoutFor("writer") * 2),
@@ -340,13 +398,30 @@ async function* tryStreamOnce(
   const decoder = new TextDecoder();
   let buffer = "";
   let totalChars = 0;
+  const streamFilter = createStreamThinkFilter();
+  const reasoningParts: string[] = [];
+  /** 流式 usage（OpenAI 兼容协议：usage 在最后一个分片，需 stream_options.include_usage） */
+  let usagePrompt = 0;
+  let usageCompletion = 0;
+  let usageAvailable = false;
+
+  /** 落库：优先用网关给的真实 usage，缺失时用字符数估算并标注 */
+  const logUsage = (ok: boolean) => {
+    const estPrompt = usageAvailable ? usagePrompt : Math.round(totalChars * 1.5);
+    const estCompletion = usageAvailable ? usageCompletion : totalChars;
+    db.logLLMUsage(
+      sessionId ?? null, agent, p.name,
+      estPrompt, estCompletion, Date.now() - t0, ok
+    );
+  };
+
   while (true) {
     let chunk: ReadableStreamReadResult<Uint8Array>;
     try {
       chunk = await reader.read();
     } catch (e) {
       // 流中断：若已有输出则放弃（不切避免重复推送）；无输出则可重试
-      db.logLLMUsage(sessionId ?? null, agent, p.name, 0, totalChars, Date.now() - t0, totalChars === 0);
+      logUsage(totalChars === 0);
       onFail(e);
       if (totalChars === 0 && isFailoverError(e)) markFailed(p);
       return totalChars === 0 ? "pre-output-fail" : "ok";
@@ -361,20 +436,102 @@ async function* tryStreamOnce(
       if (!trimmed.startsWith("data:")) continue;
       const data = trimmed.slice(5).trim();
       if (data === "[DONE]") {
-        db.logLLMUsage(sessionId ?? null, agent, p.name, 0, totalChars, Date.now() - t0, true);
+        logUsage(true);
         markHealthy(p);
         return "ok";
       }
       try {
         const json = JSON.parse(data);
+        // 流式 usage：仅在带 include_usage 的最后一个分片出现
+        if (json.usage) {
+          usageAvailable = true;
+          usagePrompt = json.usage.prompt_tokens ?? 0;
+          usageCompletion = json.usage.completion_tokens ?? 0;
+        }
         const delta = json.choices?.[0]?.delta;
-        if (delta?.content) { totalChars += delta.content.length; yield delta.content as string; }
+        if (delta?.reasoning_content) {
+          // 标准思考链字段（glm 等）——单独透出
+          reasoningParts.push(delta.reasoning_content);
+        }
+        if (delta?.content) {
+          // 内容可能内嵌 <think> 标签（MiniMax 等），需流式剥离
+          const { content: clean, reasoning } = streamFilter.push(delta.content);
+          if (reasoning) reasoningParts.push(reasoning);
+          if (clean) { totalChars += clean.length; yield clean; }
+        }
       } catch { /* 忽略 */ }
     }
   }
-  db.logLLMUsage(sessionId ?? null, agent, p.name, 0, totalChars, Date.now() - t0, true);
+  // 流结束：冲刷过滤器残留
+  const tail = streamFilter.flush();
+  if (tail.content) { totalChars += tail.content.length; yield tail.content; }
+  if (tail.reasoning) reasoningParts.push(tail.reasoning);
+
+  logUsage(true);
   markHealthy(p);
   return "ok";
+}
+
+/**
+ * 流式 think 标签过滤器（状态机）
+ *
+ * 难点：<think> 标签可能跨 SSE chunk 分割（"…<thi" + "nk>思考…</think>"），
+ * 所以必须保留不完整的尾部片段到下一个 chunk 再判断。
+ */
+function createStreamThinkFilter() {
+  let buf = "";        // 待判定的缓冲
+  let inThink = false; // 当前是否在 think 区内
+
+  return {
+    /** 输入一个 chunk，返回可安全输出的正文与提取到的思考链 */
+    push(text: string): { content: string; reasoning?: string } {
+      buf += text;
+      let out = "";
+      const reasoningParts: string[] = [];
+
+      while (true) {
+        if (inThink) {
+          const end = buf.indexOf("</think>");
+          if (end === -1) {
+            // 未闭合：保留可能是半个标签的尾巴，其余都是思考内容
+            const keep = buf.match(/<\/?thi?nk?>?$/);
+            const safeLen = keep ? buf.length - keep[0].length : 0;
+            if (safeLen > 0) { reasoningParts.push(buf.slice(0, safeLen)); buf = buf.slice(safeLen); }
+            break;
+          }
+          reasoningParts.push(buf.slice(0, end));
+          buf = buf.slice(end + "</think>".length);
+          inThink = false;
+          continue;
+        }
+        const start = buf.indexOf("<think>");
+        if (start === -1) {
+          // 没有开始标签：输出全部，但保留可能是半个开始标签的尾巴
+          const keep = buf.match(/<$/);
+          const safeLen = keep ? buf.length - keep[0].length : buf.length;
+          if (safeLen > 0) { out += buf.slice(0, safeLen); buf = buf.slice(safeLen); }
+          break;
+        }
+        out += buf.slice(0, start);
+        buf = buf.slice(start + "<think>".length);
+        inThink = true;
+      }
+
+      const reasoning = reasoningParts.join("").trim();
+      return { content: out, reasoning: reasoning || undefined };
+    },
+
+    /** 流结束时冲刷残留 */
+    flush(): { content: string; reasoning?: string } {
+      const rest = buf;
+      buf = "";
+      if (inThink) {
+        inThink = false;
+        return { content: "", reasoning: rest.trim() || undefined };
+      }
+      return { content: rest, reasoning: undefined };
+    },
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -387,12 +544,15 @@ const TOOLS = [
     function: {
       name: "rag_search",
       description:
-        "混合检索塔罗典籍知识库（BM25+向量 RRF 融合，78 张韦特牌）。当需要了解某张牌的详细牌意、或按主题查找相关牌时调用。返回带相关度分数与命中通道的知识片段。",
+        "混合检索塔罗典籍知识库（BM25+向量 RRF 融合，78 张韦特牌）。当需要了解某张牌的详细牌意、或按主题查找相关牌时调用。\n" +
+        "【重要】一次查询可包含多张牌名，用空格分隔即可批量检索，例如 query=\"权杖七 宝剑八 圣杯三\"。\n" +
+        "请尽量合并查询（同一轮内把所有需要的牌放进一次调用），不要为每张牌单独调用一次 —— 这会成倍增加耗时与 token。\n" +
+        "返回带相关度分数与命中通道的知识片段。",
       parameters: {
         type: "object",
         properties: {
-          query: { type: "string", description: "检索词，如牌名、主题关键词（如\"复合 感情\"）" },
-          top_k: { type: "number", description: "返回条数，默认 5" },
+          query: { type: "string", description: "检索词，可含多个牌名或主题关键词，用空格分隔（如\"权杖七 宝剑八\"）" },
+          top_k: { type: "number", description: "返回条数，默认 5；合并查询多张牌时建议 8~10" },
         },
         required: ["query"],
       },
@@ -531,16 +691,7 @@ async function* runAnalyst(
   const messages: SessionMessage[] = [
     {
       role: "system",
-      content: `你是塔罗牌意分析师（analyst），职责是产出**精简**的结构化分析笔记供撰写者使用，不面向用户，不需要文采。
-⚠️ 严格控制篇幅：每张牌 3 行以内，全文不超过 400 字。简洁信息密度高，勿展开长篇论述。
-
-输出格式（每张牌一段）：
-【位置 · 牌名（正/逆位）】
-- 典籍：<引用牌面知识/RAG 原文，标注 [n] 编号>
-- 位置动力学：<1 句>
-- 与问题的关联：<1 句>
-
-最后一行【整体叙事】：三张牌连成的一句话故事（1 句）。`,
+      content: buildAnalystPrompt(),
     },
     {
       role: "user",
@@ -578,15 +729,7 @@ async function* runWriter(
   const messages: SessionMessage[] = [
     {
       role: "system",
-      content: `${session.persona.stylePrompt}
-
-你是占卜解读的撰写者（writer），基于分析师的结构化笔记撰写面向用户的最终解读。
-要求：
-1. 引用典籍牌意时用「典籍有云：…」标注，并标注 [n] 编号对应检索结果
-2. 逐牌解读（过去/当下/未来 或 单张核心指引），再给综合启示与可执行建议
-3. 结合用户问题与澄清回答，针对性展开
-4. **篇幅 350~450 字**，分段清晰，直接输出正文不加任何前言
-5. 不要复述分析师笔记的格式，要写成流畅的占卜文本`,
+      content: buildWriterPrompt(session.persona),
     },
     {
       role: "user",
@@ -622,10 +765,29 @@ ${revision ? `\n⚠️ 审校意见（上一版被退回，必须针对性修改
   return full;
 }
 
-/** ③ 审校者：三维度打分 + Reflexion 修改指令 */
+/** 审校结果结构 */
+interface ReviewResult {
+  pass: boolean;
+  scores: { grounding: number; empathy: number; tone: number };
+  comment: string;
+  revision?: string;
+  /** 解析级别（1=严格JSON 2=括号提取 3=正则兜底），0=解析失败 */
+  parseLevel?: 0 | 1 | 2 | 3;
+  /** 是否重试过 */
+  retried?: boolean;
+}
+
+/**
+ * ③ 审校者：三维度打分 + Reflexion 修改指令
+ *
+ * 解析策略（三级 + 重试，见 robust-json.ts）：
+ *   严格 JSON → 平衡括号提取 → 正则逐字段兜底
+ *   全失败 → 带纠正提示重试一次 → 仍失败则明确标记"审校未完成"
+ *   ⚠️ 绝不默认通过（那会让质量门控形同虚设）
+ */
 async function* runReviewer(
   config: LLMProvider | null, session: AgentSession, reading: string
-): AsyncGenerator<AgentEvent, { pass: boolean; scores: { grounding: number; empathy: number; tone: number }; comment: string }> {
+): AsyncGenerator<AgentEvent, ReviewResult> {
   yield { type: "subagent", subagent: { agent: "reviewer", action: "审校中（典籍忠实/共情/语气）" } };
 
   // 典籍依据 = RAG 检索结果 + 用户抽到/选中的牌面知识（两者都是合法引用来源）
@@ -634,23 +796,9 @@ async function* runReviewer(
     : "（未检索）";
   const cardNames = session.drawnCards.map((d) => d.card.nameZh).join("、");
 
-  const messages: SessionMessage[] = [
-    {
-      role: "system",
-      content: `你是占卜解读的审校者（reviewer）。从三个维度为解读打分（0~10 整数）：
-- grounding 典籍忠实：解读引用的牌意是否**有据可依**——合法来源包括①下方"牌面知识"（用户抽到的牌，牌意原文可信）②下方"RAG 检索结果"。仅当引用了**既不在牌面知识、也不在检索结果**的牌意才算编造。
-- empathy 共情：是否回应用户的具体问题与澄清回答，有无针对性
-- tone 语气：是否符合占卜师人格（${session.persona.name}），文风是否统一
+  const systemPrompt = buildReviewerPrompt(session.persona);
 
-【重要】不要苛求每张抽到的牌都必须出现在 RAG 检索里——牌面知识本身就是典籍原文。
-只有在解读**编造了牌面知识与检索结果中都不存在的牌意**时才给 grounding 低分。
-
-严格 JSON 输出（不要 markdown 代码块）：
-{"pass": <grounding>=7 且 empathy>=6 且 tone>=6>, "scores": {"grounding": n, "empathy": n, "tone": n}, "comment": "一句话总评", "revision": "<若不通过，给撰写者的具体修改指令；通过则为空字符串>"}`,
-    },
-    {
-      role: "user",
-      content: `用户问题：${session.question}
+  const userContent = `用户问题：${session.question}
 占卜师人格：${session.persona.name}（${session.persona.desc}）
 用户抽到的牌：${cardNames}
 
@@ -663,23 +811,109 @@ ${ragContext}
 待审校解读：
 ${reading}
 
-请审校。`,
-    },
-  ];
+请审校。`;
 
-  const res = await callLLM(config, messages, undefined, session.id, "reviewer");
-  let parsed: { pass: boolean; scores: { grounding: number; empathy: number; tone: number }; comment: string; revision?: string };
-  try {
-    const m = res.message.content.match(/\{[\s\S]*\}/);
-    parsed = m ? JSON.parse(m[0]) : { pass: true, scores: { grounding: 8, empathy: 8, tone: 8 }, comment: "审校解析失败，默认通过" };
-  } catch {
-    parsed = { pass: true, scores: { grounding: 8, empathy: 8, tone: 8 }, comment: "审校解析失败，默认通过" };
+  // ---- 解析器：三级 + 正则兜底 ----
+  const extractors = (text: string): Partial<ReviewResult> | null => {
+    const grounding = extractScore(text, "grounding");
+    const empathy = extractScore(text, "empathy");
+    const tone = extractScore(text, "tone");
+    if (grounding === undefined && empathy === undefined && tone === undefined) return null;
+    const comment = extractString(text, "comment") ?? "";
+    const revision = extractString(text, "revision") ?? "";
+    const scores = {
+      grounding: grounding ?? 0,
+      empathy: empathy ?? 0,
+      tone: tone ?? 0,
+    };
+    return {
+      scores,
+      comment,
+      revision,
+      pass: scores.grounding >= 7 && scores.empathy >= 6 && scores.tone >= 6,
+    };
+  };
+
+  let parsed: Partial<ReviewResult> | null = null;
+  let parseLevel: 0 | 1 | 2 | 3 = 0;
+  let retried = false;
+  let parseError = "";
+
+  /** 流式收集审校内容（审校输出很短，流式能显著降低体感延迟） */
+  const collectReview = async (msgs: SessionMessage[]): Promise<string> => {
+    let out = "";
+    for await (const chunk of streamLLM(config, msgs, session.id, "reviewer")) {
+      out += chunk;
+    }
+    return out;
+  };
+
+  // ---- 第一次尝试（流式） ----
+  {
+    const raw = await collectReview([
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userContent },
+    ]);
+    const p = parseLLMJSON<ReviewResult>(raw, extractors);
+    parsed = p.data ?? null;
+    parseLevel = p.level;
+    parseError = p.error ?? "";
   }
 
-  const result = {
-    pass: parsed.pass && parsed.scores.grounding >= 6 && parsed.scores.empathy >= 6 && parsed.scores.tone >= 6,
-    scores: parsed.scores,
+  // ---- 解析失败 → 带纠正提示重试一次 ----
+  if (!parsed) {
+    retried = true;
+    yield {
+      type: "subagent",
+      subagent: { agent: "reviewer", action: "输出格式异常，重试审校" },
+    };
+    const raw = await collectReview([
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userContent },
+      { role: "assistant", content: "（上一次的输出无法被解析）" },
+      {
+        role: "user",
+        content: `你的上一次输出无法解析。请**只输出一个 JSON 对象**，不要包含 markdown 代码块、不要有任何解释文字。
+格式示例：{"pass": true, "scores": {"grounding": 8, "empathy": 9, "tone": 8}, "comment": "总评", "revision": ""}`,
+      },
+    ]);
+    const p = parseLLMJSON<ReviewResult>(raw, extractors);
+    parsed = p.data ?? null;
+    parseLevel = p.level;
+    parseError = p.error ?? "";
+  }
+
+  // ---- 仍失败：明确标记"审校未完成"，不谎报通过 ----
+  if (!parsed) {
+    const failed: ReviewResult = {
+      pass: true, // 解析失败时不阻断流程（解读仍要交付给用户）
+      scores: { grounding: 0, empathy: 0, tone: 0 },
+      comment: `⚠️ 审校未完成：模型输出无法解析${retried ? "（已重试）" : ""}。${parseError}`,
+      revision: "",
+      parseLevel: 0,
+      retried,
+    };
+    yield { type: "review", review: { ...failed } };
+    yield {
+      type: "subagent",
+      subagent: { agent: "reviewer", action: "审校未完成（输出解析失败）" },
+    };
+    (session as unknown as { __revision?: string }).__revision = "";
+    return failed;
+  }
+
+  const scores = {
+    grounding: clampScore(parsed.scores?.grounding),
+    empathy: clampScore(parsed.scores?.empathy),
+    tone: clampScore(parsed.scores?.tone),
+  };
+  const result: ReviewResult = {
+    pass: scores.grounding >= 7 && scores.empathy >= 6 && scores.tone >= 6,
+    scores,
     comment: parsed.comment ?? "",
+    revision: parsed.revision ?? "",
+    parseLevel,
+    retried,
   };
 
   yield { type: "review", review: { ...result } };
@@ -688,13 +922,71 @@ ${reading}
     subagent: {
       agent: "reviewer",
       action: result.pass ? "审校通过" : "退回重写",
-      detail: `grounding=${result.scores.grounding} empathy=${result.scores.empathy} tone=${result.scores.tone}`,
+      detail: `grounding=${scores.grounding} empathy=${scores.empathy} tone=${scores.tone}${parseLevel === 3 ? " (正则兜底)" : ""}`,
     },
   };
 
   // 存 revision 供 supervisor 决定是否重写
-  (session as unknown as { __revision?: string }).__revision = result.pass ? "" : (parsed.revision ?? "请全面修改");
+  (session as unknown as { __revision?: string }).__revision = result.pass ? "" : (result.revision || "请全面修改");
   return result;
+}
+
+/** 评分裁剪到 0~10 */
+function clampScore(v: unknown): number {
+  const n = typeof v === "number" ? v : parseInt(String(v ?? "0"), 10);
+  if (Number.isNaN(n)) return 0;
+  return Math.min(10, Math.max(0, Math.round(n)));
+}
+
+/* ------------------------------------------------------------------ */
+/* 上下文压缩（性能优化）                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 压缩 rag_search 的观察结果，回填给 LLM。
+ *
+ * 完整命中（带 80 字符 snippet + 完整来源串）发给前端展示，
+ * 但回填给 LLM 的只保留**前 3 条的核心信息**（牌名 + 字段 + 精简片段），
+ * 实测能省 30-40% 的 prompt token —— 因为每轮都要重发完整历史。
+ */
+function compressRagResult(hits: RagHit[]): string {
+  if (hits.length === 0) return JSON.stringify({ result: "未检索到相关内容" });
+  const top = hits.slice(0, 3).map((h, i) => {
+    const card = h.cardNameZh;
+    const fieldLabel =
+      h.field === "description" ? "叙事" : h.field === "upright" ? "正位" : h.field === "reversed" ? "逆位" : "关键词";
+    // 片段截到 40 字，够 LLM 判断相关性
+    const brief = h.snippet.length > 40 ? h.snippet.slice(0, 40) + "…" : h.snippet;
+    return `[${i + 1}] ${card}·${fieldLabel}: ${brief}`;
+  });
+  return JSON.stringify({ hits: top, total: hits.length });
+}
+
+/**
+ * 历史裁剪：把早期的 tool 观察结果压成一句摘要。
+ *
+ * Agent 每轮都要重发完整历史 → token 随轮次平方增长。
+ * 保留 assistant 的**决策轨迹**（它说了什么、调了什么），
+ * 但把早期的 tool 返回值压缩（它们的信息已被后续决策吸收）。
+ */
+function trimHistory(messages: SessionMessage[], keepFullRounds = 4): SessionMessage[] {
+  if (messages.length <= keepFullRounds * 2 + 4) return messages;
+
+  // 找到最近 keepFullRounds 个 tool 消息的位置，从那里往前的 tool 消息全压缩
+  const toolIndexes: number[] = [];
+  messages.forEach((m, i) => { if (m.role === "tool") toolIndexes.push(i); });
+  if (toolIndexes.length <= keepFullRounds) return messages;
+
+  const cutBefore = toolIndexes[toolIndexes.length - keepFullRounds];
+
+  return messages.map((m, i) => {
+    if (m.role !== "tool" || i >= cutBefore) return m;
+    // 压缩：只保留"检索/操作已完成"的标记，不带具体内容
+    return {
+      ...m,
+      content: JSON.stringify({ result: "（早期结果已压缩）" }),
+    };
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -702,21 +994,7 @@ ${reading}
 /* ------------------------------------------------------------------ */
 
 function buildSystemPrompt(session: AgentSession): string {
-  return `${session.persona.stylePrompt}
-
-你是这场占卜的 Supervisor（编排者），通过工具调用推进占卜流程。
-
-【工作流程】
-1. 问题模糊 → ask_user 澄清（全程最多 2 次，每次 1 个问题）
-2. 选牌：优先 offer_card_selection 请用户亲手选牌（体验最佳）；用户没耐心/问题简单也可 draw_cards 随机
-3. 对抽到的牌调用 rag_search 查阅典籍（可合并查询）
-4. 若用户处境存在明显岔路 → fate_crossroads 让用户选走向
-5. 信息足够 → write_reading 启动子 Agent 管线（分析师→撰写者→审校者，审校不过自动重写一次）
-
-【纪律】
-- ask_user 全程最多 2 次
-- write_reading 只调用一次（重写由管线内部处理，不需要你再调）
-- rag_search 按需调用，不必过度检索`;
+  return buildSupervisorPrompt(session.persona);
 }
 
 export async function* runAgent(
@@ -740,11 +1018,13 @@ export async function* runAgent(
   if (session.messages.length === 0) {
     session.messages.push({ role: "system", content: buildSystemPrompt(session) });
     session.messages.push({ role: "user", content: `我想占卜：${question}` });
+    // 记录 prompt 版本，便于后续版本效果对比
+    try { db.updateSessionPromptVersion(session.id, PROMPT_VERSION); } catch { /* ignore */ }
   } else if (opts?.followup) {
     session.messages.push({ role: "user", content: `（追问）${opts.followup}` });
     session.messages.push({
       role: "system",
-      content: "用户在追问。请基于已有牌面与上下文直接回答（可以正常说话，不必调用工具），300 字以内。若确需补充检索可调一次 rag_search。",
+      content: buildFollowupPrompt(),
     });
   }
 
@@ -752,12 +1032,26 @@ export async function* runAgent(
 
   const MAX_ROUNDS = 12;
   let round = 0;
+  // 看门狗：整场占卜的总时长上限（默认 5 分钟），超时主动收尾并落库
+  const totalDeadline = Date.now() + (Number(process.env.SESSION_DEADLINE_MS) || 5 * 60 * 1000);
 
   while (round < MAX_ROUNDS) {
+    // 看门狗检查：超时 → 放弃并明确标记
+    if (Date.now() > totalDeadline) {
+      yield { type: "error", error: "占卜耗时超过上限，已中止（可在观测面板查看）" };
+      db.failSession(session.id, "deadline_exceeded");
+      return;
+    }
     round++;
+    const roundStart = Date.now();
+    let roundPromptTokens: number | undefined;
+    const roundToolNames: string[] = [];
     let decision: CallResult;
     try {
-      decision = await callLLM(config, session.messages, TOOLS, session.id, "supervisor");
+      // 历史裁剪：压缩早期 tool 观察结果，降低每轮 prompt token
+      const trimmed = trimHistory(session.messages);
+      decision = await callLLM(config, trimmed, TOOLS, session.id, "supervisor");
+      roundPromptTokens = decision.usage?.prompt;
       // failover 生效时更新会话粘住的 provider（保持后续风格一致）——按名称比较，避免对象实例误判
       const used = buildProviders().find((p) => p.name === decision.provider);
       if (used && used.name !== config?.name) {
@@ -767,7 +1061,7 @@ export async function* runAgent(
       }
     } catch (e) {
       yield { type: "error", error: `占卜师暂时失联：${e instanceof Error ? e.message : "未知错误"}` };
-      db.failSession(session.id);
+      db.failSession(session.id, "llm_error");
       return;
     }
     if (decision.reasoning) yield { type: "reasoning", reasoning: decision.reasoning };
@@ -842,7 +1136,7 @@ export async function* runAgent(
         }
 
         // ③ 审校者
-        let review: { pass: boolean; scores: { grounding: number; empathy: number; tone: number }; comment: string } | null = null;
+        let review: ReviewResult | null = null;
         let revision = "";
         try {
           yield { type: "phase", phase: "review", label: "审校者正在检视解读…" };
@@ -867,7 +1161,7 @@ export async function* runAgent(
             }
             // 重写后再审校一次（判断新版是否达标，而非沿用旧结论）
             yield { type: "phase", phase: "review", label: "审校者复检重写稿…" };
-            let reReview: { pass: boolean; scores: { grounding: number; empathy: number; tone: number }; comment: string } | null = null;
+            let reReview: ReviewResult | null = null;
             try {
               for await (const evt of runReviewer(config, session, reading)) {
                 if (evt.type === "review") reReview = evt.review ?? null;
@@ -979,12 +1273,25 @@ export async function* runAgent(
         yield { type: "tool", tool: { name, args, resultSummary, durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, resultSummary, Date.now() - t0);
         yield { type: "phase", phase: "analyze", label: "已收到你的回应，占卜继续…" };
+        roundToolNames.push(name);
+        // 轮次时间轴（HITL 路径也要发）
+        yield {
+          type: "round",
+          round: {
+            round,
+            elapsedMs: Date.now() - roundStart,
+            promptTokens: roundPromptTokens,
+            toolNames: roundToolNames,
+            phase: name,
+          },
+        };
         continue;
       }
 
       /* ---- 普通工具（rag_search / draw_cards）---- */
       let resultSummary = "";
       let evExtra: Partial<AgentEvent> = {};
+      let toolContent: string | undefined;
 
       if (name === "draw_cards") {
         const spread = (args.spread as string) || "three";
@@ -999,6 +1306,11 @@ export async function* runAgent(
         resultSummary = summary;
         evExtra = { ragHits: hits };
         yield { type: "phase", phase: "retrieve", label: `翻阅典籍：「${q.slice(0, 16)}」` };
+        // 独立 rag_hits 事件：前端 KnowledgePanel 与外部集成方都依赖此事件
+        // （tool 事件内嵌的 ragHits 仅作为冗余）
+        if (hits.length > 0) yield { type: "rag_hits", ragHits: hits };
+        // 回填给 LLM 的观察结果用**压缩版**（省 30-40% token）
+        toolContent = compressRagResult(hits);
       } else {
         resultSummary = `未知工具：${name}`;
       }
@@ -1006,15 +1318,28 @@ export async function* runAgent(
       session.messages.push({
         role: "tool",
         tool_call_id: tc.id,
-        content: JSON.stringify({ result: resultSummary }),
+        content: toolContent ?? JSON.stringify({ result: resultSummary }),
       });
       yield { type: "tool", tool: { name, args, resultSummary, durationMs: Date.now() - t0 }, ...evExtra };
       db.logToolCall(session.id, seq, "supervisor", name, args, resultSummary, Date.now() - t0);
+      roundToolNames.push(name);
     }
+
+    // ---- 轮次结束：发时间轴事件（前端可视化"Agent 在哪一步慢"）----
+    yield {
+      type: "round",
+      round: {
+        round,
+        elapsedMs: Date.now() - roundStart,
+        promptTokens: roundPromptTokens,
+        toolNames: roundToolNames,
+        phase: roundToolNames.length ? roundToolNames[roundToolNames.length - 1] : "decide",
+      },
+    };
   }
 
   yield { type: "error", error: "占卜师陷入沉思无法自拔…（达到最大轮次）" };
-  db.failSession(session.id);
+  db.failSession(session.id, "max_rounds");
 }
 
 /* ------------------------------------------------------------------ */

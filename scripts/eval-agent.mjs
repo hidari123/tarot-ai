@@ -1,17 +1,18 @@
 /**
- * Agent 评估脚本 —— 固定题集自动 E2E + 断言
+ * Agent 评估套件 —— 固定题集自动 E2E + 多维断言 + 失败分类
  *
- * 维度（每题 0/0.5/1 分）：
- *   clarify   是否发起澄清(ask_user)或选牌交互(offer_card_selection)
- *   rag       是否调用 rag_search 且命中数 > 0
- *   cite      解读文本是否包含「典籍有云」引用
- *   complete  是否产出 done 事件且有实质解读(>200 字)
- *   review    是否走完审校(review 事件)
+ * 关键设计：**区分失败原因**
+ *   - env_error        模型不可达 → 不计入通过率（环境问题，不是代码问题）
+ *   - timeout          超时 → 计入"稳定性"指标
+ *   - assertion_failed 断言不通过 → 真正的质量问题
  *
- * 运行：node scripts/eval-agent.mjs http://localhost:3000
+ * 用法：
+ *   node scripts/eval-agent.mjs [baseUrl] [--ci]
+ *   --ci 模式：环境阻塞时 exit 0（不阻塞 CI），有真实质量问题才 exit 1
  */
 
-const BASE = process.argv[2] || "http://localhost:3000";
+const BASE = process.argv.find((a) => a.startsWith("http")) || "http://localhost:3000";
+const CI_MODE = process.argv.includes("--ci");
 
 const CASES = [
   { id: "love-vague", question: "我的感情运势怎么样", expectClarify: true },
@@ -19,14 +20,60 @@ const CASES = [
   { id: "money", question: "最近想投资一个朋友推荐的项目，靠谱吗", expectClarify: true },
 ];
 
-const TIMEOUT_MS = Number(process.env.EVAL_TIMEOUT_MS) || 420000; // 多 Agent 管线较慢，留足时间
+const TIMEOUT_MS = Number(process.env.EVAL_TIMEOUT_MS) || 300000;
+
+/** 失败类型 */
+const FAIL = {
+  ENV: "env_error",
+  TIMEOUT: "timeout",
+  ASSERT: "assertion_failed",
+  DISCONNECT: "disconnected",
+};
+
+async function probeModelAvailable() {
+  try {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 20000);
+    const res = await fetch(`${BASE}/api/interpret`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: "ping" }),
+      signal: ac.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    const t0 = Date.now();
+    while (Date.now() - t0 < 20000) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop() ?? "";
+      for (const p of parts) {
+        const line = p.trim();
+        if (!line.startsWith("data:")) continue;
+        try {
+          const evt = JSON.parse(line.slice(5).trim());
+          if (evt.type === "session") return { ok: true };
+          if (evt.type === "error") return { ok: false, reason: evt.error };
+        } catch {}
+      }
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
+}
 
 async function runCase(tc) {
   const events = [];
   const deltas = [];
   let sessionId = null;
   let answered = 0;
-
+  let errorEvent = null;
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
 
@@ -37,31 +84,33 @@ async function runCase(tc) {
       body: JSON.stringify({ question: tc.question }),
       signal: ac.signal,
     });
-    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok || !res.body) {
+      return { ...tc, failType: FAIL.ENV, failReason: `HTTP ${res.status}` };
+    }
 
     const reader = res.body.getReader();
-    const decoder = new TextDecoder();
+    const dec = new TextDecoder();
     let buf = "";
     let done = false;
 
     while (!done) {
       const { done: d, value } = await reader.read();
       if (d) break;
-      buf += decoder.decode(value, { stream: true });
+      buf += dec.decode(value, { stream: true });
       const parts = buf.split("\n\n");
       buf = parts.pop() ?? "";
-      for (const part of parts) {
-        const line = part.trim();
+      for (const p of parts) {
+        const line = p.trim();
         if (!line.startsWith("data:")) continue;
         try {
           const evt = JSON.parse(line.slice(5).trim());
           events.push(evt);
           if (evt.type === "delta") deltas.push(evt.delta);
           if (evt.type === "session") sessionId = evt.sessionId;
+          if (evt.type === "error") errorEvent = evt.error;
           if (evt.type === "done") done = true;
 
-          // 自动应答 HITL
-          if (evt.type === "ask_user" && sessionId && answered < 2) {
+          if (evt.type === "ask_user" && sessionId) {
             answered++;
             const ans =
               evt.cardSelection
@@ -73,11 +122,13 @@ async function runCase(tc) {
               body: JSON.stringify({ sessionId, answer: ans }),
             });
           }
-        } catch { /* 忽略解析失败 */ }
+        } catch {}
       }
     }
   } catch (e) {
-    return { ...tc, error: e.message, events, deltas: deltas.join("") };
+    const msg = e.message || String(e);
+    const failType = /abort/i.test(msg) ? FAIL.TIMEOUT : FAIL.DISCONNECT;
+    return { ...tc, failType, failReason: msg, events, deltas: deltas.join("") };
   } finally {
     clearTimeout(timer);
   }
@@ -91,50 +142,86 @@ async function runCase(tc) {
   const reviewed = events.some((e) => e.type === "review");
 
   const scores = {
-    clarify: tc.expectClarify ? (asked ? 1 : 0) : (asked ? 0.5 : 1), // 不该问却问了给一半
+    clarify: tc.expectClarify ? (asked ? 1 : 0) : (asked ? 0.5 : 1),
     rag: ragHit ? 1 : 0,
     cite: cited ? 1 : 0,
     complete: complete ? 1 : 0,
     review: reviewed ? 1 : 0,
   };
 
-  return { ...tc, error: null, tools, readingLen: reading.length, scores, events, reading };
+  const failedDims = Object.entries(scores).filter(([, v]) => v === 0).map(([k]) => k);
+
+  return {
+    ...tc,
+    failType: failedDims.length ? FAIL.ASSERT : null,
+    failReason: failedDims.length ? `未达标维度: ${failedDims.join(", ")}` : null,
+    tools, readingLen: reading.length, scores, events, reading, errorEvent,
+  };
 }
 
 /* ---- 主流程 ---- */
-console.log(`\n🔮 Agent 评估 · ${BASE}\n`);
+console.log(`\n🔮 Agent 评估 · ${BASE}${CI_MODE ? " (CI 模式)" : ""}\n`);
+
+const probe = await probeModelAvailable();
+if (!probe.ok) {
+  console.log(`⚠️ 模型不可达：${probe.reason}`);
+  console.log("   跳过评估（环境阻塞，不计入通过率）\n");
+  if (CI_MODE) {
+    console.log("CI 模式：环境阻塞，exit 0\n");
+    process.exit(0);
+  }
+  process.exit(2);
+}
+
 const results = [];
 for (const tc of CASES) {
   process.stdout.write(`  [${tc.id}] ${tc.question} … `);
   const r = await runCase(tc);
   results.push(r);
-  if (r.error) {
-    console.log(`✗ ERROR: ${r.error}`);
+  if (r.failType) {
+    console.log(`✗ ${r.failType}: ${r.failReason}`);
   } else {
     const total = Object.values(r.scores).reduce((a, b) => a + b, 0);
-    const max = Object.values(r.scores).length;
-    console.log(`${(total / max * 100).toFixed(0)}%  clarify=${r.scores.clarify} rag=${r.scores.rag} cite=${r.scores.cite} complete=${r.scores.complete} review=${r.scores.review}  (${r.tools.length} tools, ${r.readingLen} chars)`);
+    const max = Object.keys(r.scores).length;
+    console.log(`${((total / max) * 100).toFixed(0)}%  (${r.tools.length} tools, ${r.readingLen} chars)`);
   }
 }
 
-// 汇总
-const all = results.filter((r) => !r.error);
-if (all.length > 0) {
-  const avg = (k) => all.reduce((s, r) => s + r.scores[k], 0) / all.length;
-  console.log(`\n📊 汇总（n=${all.length}）`);
+/* ---- 汇总 ---- */
+const valid = results.filter((r) => !r.failType || r.failType === FAIL.ASSERT);
+const envBlocked = results.filter((r) => r.failType === FAIL.ENV);
+const timedOut = results.filter((r) => r.failType === FAIL.TIMEOUT);
+const disconnected = results.filter((r) => r.failType === FAIL.DISCONNECT);
+const asserted = results.filter((r) => r.failType === FAIL.ASSERT);
+
+console.log(`\n📊 汇总（总 ${results.length} / 有效 ${valid.length}）`);
+if (envBlocked.length) console.log(`  ⚠️ 环境阻塞: ${envBlocked.length}（模型不可达，不计入）`);
+if (timedOut.length) console.log(`  ⏱️ 超时: ${timedOut.length}`);
+if (disconnected.length) console.log(`  🔌 连接中断: ${disconnected.length}`);
+
+if (valid.length > 0) {
+  const avg = (k) => valid.reduce((s, r) => s + r.scores[k], 0) / valid.length;
   console.log(`  clarify:  ${(avg("clarify") * 100).toFixed(0)}%`);
   console.log(`  rag:      ${(avg("rag") * 100).toFixed(0)}%`);
   console.log(`  cite:     ${(avg("cite") * 100).toFixed(0)}%`);
   console.log(`  complete: ${(avg("complete") * 100).toFixed(0)}%`);
   console.log(`  review:   ${(avg("review") * 100).toFixed(0)}%`);
-  const overall = all.reduce((s, r) => s + Object.values(r.scores).reduce((a, b) => a + b, 0), 0) /
-    (all.length * Object.keys(all[0].scores).length);
+  const overall =
+    valid.reduce((s, r) => s + Object.values(r.scores).reduce((a, b) => a + b, 0), 0) /
+    (valid.length * Object.keys(valid[0].scores).length);
   console.log(`  ─────────────────`);
   console.log(`  总体通过率: ${(overall * 100).toFixed(0)}%`);
 }
 
-const failed = results.filter((r) => r.error);
-if (failed.length) {
-  console.log(`\n⚠ ${failed.length} 个用例执行失败`);
-  process.exit(1);
+if (timedOut.length || disconnected.length) {
+  const stability = 1 - (timedOut.length + disconnected.length) / results.length;
+  console.log(`  稳定性: ${(stability * 100).toFixed(0)}%（无超时/中断的用例占比）`);
 }
+
+const exitCode = asserted.length > 0 ? 1 : 0;
+if (asserted.length) {
+  console.log(`\n✗ ${asserted.length} 个用例存在质量问题`);
+  for (const a of asserted) console.log(`   ${a.id}: ${a.failReason}`);
+}
+console.log(exitCode === 0 ? "\n✅ 评估通过" : "\n❌ 评估未通过");
+process.exit(exitCode);

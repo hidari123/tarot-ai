@@ -5,6 +5,7 @@ import {
   runAgent,
   type AgentEvent,
 } from "@/lib/tarot-agent";
+import { failSession } from "@/lib/db";
 
 /**
  * 解读接口：Supervisor 工具调用循环 + 子 Agent 管线 + HITL + SSE
@@ -12,6 +13,9 @@ import {
  * POST /api/interpret
  *   首次: { question, persona? }
  *   追问: { sessionId, followup }
+ *
+ * SSE 事件（12 类）：session / phase / reasoning / tool / rag_hits / cards /
+ *                    ask_user / subagent / review / delta / done / error
  */
 export async function POST(req: Request) {
   let body: { question?: string; followup?: string; sessionId?: string; persona?: string };
@@ -44,20 +48,50 @@ export async function POST(req: Request) {
   }
 
   const encoder = new TextEncoder();
+  const sid = session.id;
 
   const stream = new ReadableStream({
     async start(controller) {
+      let closed = false;
+      let aborted = false;
+
       const send = (evt: AgentEvent) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(evt)}\n\n`));
+        if (closed || aborted) return;
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(evt)}\n\n`));
+        } catch {
+          closed = true;
+        }
       };
+
+      // ---- 客户端断开检测 ----
+      // 浏览器关闭标签页 / 网络中断 → req.signal 触发 abort。
+      // 不处理的话会话永远停在 running（实测占比高达 45%）。
+      const onAbort = () => {
+        aborted = true;
+        try { failSession(sid, "client_disconnect"); } catch { /* ignore */ }
+        try { controller.close(); } catch { /* 已关闭 */ }
+      };
+      req.signal.addEventListener("abort", onAbort, { once: true });
+
       try {
         for await (const evt of runAgent(session, question, { followup })) {
           send(evt);
+          if (aborted) break;
+        }
+        // 生成器结束但客户端已断开 → 标记为断开而非完成
+        if (aborted) {
+          try { failSession(sid, "client_disconnect"); } catch { /* ignore */ }
         }
       } catch (e) {
-        send({ type: "error", error: e instanceof Error ? e.message : "占卜引擎异常" });
+        if (!aborted) {
+          send({ type: "error", error: e instanceof Error ? e.message : "占卜引擎异常" });
+          try { failSession(sid, "engine_exception"); } catch { /* ignore */ }
+        }
       } finally {
-        controller.close();
+        closed = true;
+        req.signal.removeEventListener("abort", onAbort);
+        try { controller.close(); } catch { /* 已关闭 */ }
       }
     },
   });

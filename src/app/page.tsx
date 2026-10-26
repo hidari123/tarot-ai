@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import StardustCursor from "@/components/StardustCursor";
-import AgentTrace, { type ToolCall } from "@/components/AgentTrace";
+import AgentTrace, { type ToolCall, type RoundInfo } from "@/components/AgentTrace";
 import KnowledgePanel, { type RagHitView } from "@/components/KnowledgePanel";
+import CitedReading from "@/components/CitedReading";
+import ShareCardButton from "@/components/ShareCard";
 import CardFan, { type FanCard } from "@/components/CardFan";
 import ReviewCard, { type ReviewData } from "@/components/ReviewCard";
 import SubAgentPipeline, { type SubAgentEvent } from "@/components/SubAgentPipeline";
@@ -44,8 +46,11 @@ const PHASE_ORDER: Phase[] = ["analyze", "draw", "retrieve", "interpret", "revie
 /* ---------------- 星空 & 魔法阵 ---------------- */
 
 function StarField() {
-  const [stars, setStars] = useState<{ x: number; y: number; s: number; d: number; delay: number }[]>([]);
+  // 星点在挂载后生成（客户端专属）：Math.random 不能进预渲染
+  const [stars, setStars] = useState<Array<{ x: number; y: number; s: number; d: number; delay: number }>>([]);
   useEffect(() => {
+    // Next.js 16 预渲染禁用 Math.random（会被烘进静态壳），必须 defer 到客户端 effect
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setStars(
       Array.from({ length: 90 }, () => ({
         x: Math.random() * 100,
@@ -56,6 +61,7 @@ function StarField() {
       }))
     );
   }, []);
+  if (stars.length === 0) return null;
   return (
     <div className="absolute inset-0 overflow-hidden pointer-events-none">
       {stars.map((st, i) => (
@@ -179,6 +185,32 @@ function AgentStatusBar({ phase }: { phase: Phase | null }) {
   );
 }
 
+/** 等待反馈：显示已等待时长，超过 10 秒提示模型较慢 */
+function WaitingHint({ since }: { since: number }) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!since) return;
+    const t = setInterval(() => setElapsed(Math.floor((Date.now() - since) / 1000)), 500);
+    return () => clearInterval(t);
+  }, [since]);
+
+  if (!since || elapsed < 3) return null;
+  const slow = elapsed >= 10;
+
+  return (
+    <motion.p
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className={`mt-1.5 text-center text-xs tracking-wide ${slow ? "text-amber-300/80" : "text-purple-400/50"}`}
+    >
+      {slow
+        ? `模型仍在思考… 已等待 ${elapsed}s（模型较慢，可查看下方时间轴定位瓶颈）`
+        : `思考中… ${elapsed}s`}
+    </motion.p>
+  );
+}
+
 /* ---------------- 主页面 ---------------- */
 
 export default function TarotApp() {
@@ -192,6 +224,7 @@ export default function TarotApp() {
   const [reading, setReading] = useState("");
   const [reasoning, setReasoning] = useState("");
   const [tools, setTools] = useState<ToolCall[]>([]);
+  const [rounds, setRounds] = useState<RoundInfo[]>([]);
   const [ragHits, setRagHits] = useState<RagHitView[]>([]);
   const [cards, setCards] = useState<AgentCard[]>([]);
   const [flipped, setFlipped] = useState<boolean[]>([]);
@@ -205,6 +238,7 @@ export default function TarotApp() {
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState("");
   const [listening, setListening] = useState(false);
+  const [streamStart, setStreamStart] = useState(0);
   const readingBoxRef = useRef<HTMLDivElement>(null);
   const askInputRef = useRef<HTMLInputElement>(null);
 
@@ -258,6 +292,11 @@ export default function TarotApp() {
               break;
             case "tool":
               setTools((prev) => [...prev, p.tool]);
+              // 冗余通道：rag_search 的 tool 事件也内嵌 ragHits，
+              // 万一独立 rag_hits 事件丢失，前端仍能渲染知识面板
+              if (p.tool?.name === "rag_search" && Array.isArray(p.ragHits)) {
+                setRagHits(p.ragHits);
+              }
               break;
             case "rag_hits":
               setRagHits(p.ragHits ?? []);
@@ -277,6 +316,9 @@ export default function TarotApp() {
               break;
             case "subagent":
               setSubagentEvents((prev) => [...prev, p.subagent]);
+              break;
+            case "round":
+              setRounds((prev) => [...prev, p.round]);
               break;
             case "review":
               setReview(p.review);
@@ -307,6 +349,7 @@ export default function TarotApp() {
     setReading("");
     setReasoning("");
     setTools([]);
+    setRounds([]);
     setRagHits([]);
     setCards([]);
     setFlipped([]);
@@ -318,6 +361,7 @@ export default function TarotApp() {
     setPhaseLabel("");
     setStage("drawing");
     setStreaming(true);
+    setStreamStart(Date.now());
 
     try {
       const res = await fetch("/api/interpret", {
@@ -361,6 +405,7 @@ export default function TarotApp() {
     setFollowup("");
     setReading((prev) => prev + `\n\n【追问】${f}\n`);
     setStreaming(true);
+    setStreamStart(Date.now());
     setError("");
     try {
       const res = await fetch("/api/interpret", {
@@ -378,18 +423,25 @@ export default function TarotApp() {
 
   /* 语音输入 */
   const startVoice = useCallback(() => {
-    const w = window as unknown as Record<string, any>;
+    type SpeechRecognitionLike = {
+      lang: string;
+      interimResults: boolean;
+      onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+      onerror: (() => void) | null;
+      onend: (() => void) | null;
+      start: () => void;
+    };
+    const w = window as unknown as Record<string, (new () => SpeechRecognitionLike) | undefined>;
     const SRC = w.SpeechRecognition ?? w.webkitSpeechRecognition;
     if (!SRC) {
       setError("当前浏览器不支持语音输入");
       return;
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rec: any = new SRC();
+    const rec = new SRC();
     rec.lang = "zh-CN";
     rec.interimResults = false;
-    rec.onresult = (e: any) => {
-      const text = Array.from(e.results).map((r: any) => r[0].transcript).join("");
+    rec.onresult = (e) => {
+      const text = Array.from(e.results).map((r) => r[0].transcript).join("");
       setQuestion((prev) => (prev ? prev + text : text));
       setListening(false);
     };
@@ -417,6 +469,7 @@ export default function TarotApp() {
     setReading("");
     setReasoning("");
     setTools([]);
+    setRounds([]);
     setRagHits([]);
     setAsk(null);
     setFanCards([]);
@@ -428,7 +481,6 @@ export default function TarotApp() {
     setStreaming(false);
   }, []);
 
-  const allFlipped = flipped.length > 0 && flipped.every(Boolean);
   const done = phase === "done" && !streaming;
 
   return (
@@ -656,6 +708,8 @@ export default function TarotApp() {
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mt-8">
               <AgentStatusBar phase={phase} />
               {phaseLabel && <p className="mt-2 text-center text-xs text-purple-400/60 tracking-wide">{phaseLabel}</p>}
+              {/* 等待反馈：当前步骤已耗时，超过 10 秒提示模型较慢 */}
+              {streaming && !ask && <WaitingHint since={streamStart} />}
             </motion.div>
           )}
 
@@ -663,7 +717,7 @@ export default function TarotApp() {
           <SubAgentPipeline events={subagentEvents} />
 
           {/* Agent Trace 面板（等待用户输入时明确显示"等待回应"而非误导性的运行中） */}
-          <AgentTrace tools={tools} reasoning={reasoning} streaming={streaming && !ask} />
+          <AgentTrace tools={tools} reasoning={reasoning} streaming={streaming && !ask} rounds={rounds} />
 
           {/* RAG 知识面板 */}
           <KnowledgePanel hits={ragHits} />
@@ -680,13 +734,7 @@ export default function TarotApp() {
               {error ? (
                 <p className="text-purple-300/90 text-center py-6">{error}</p>
               ) : (
-                <pre
-                  className="whitespace-pre-wrap text-purple-50/90 text-base md:text-lg leading-loose tracking-wide"
-                  style={{ fontFamily: "'Ma Shan Zheng', serif" }}
-                >
-                  {reading}
-                  {streaming && <span className="typing-cursor text-purple-300">▍</span>}
-                </pre>
+                <CitedReading text={reading} maxCite={ragHits.length} streaming={streaming} />
               )}
             </div>
           )}
@@ -713,7 +761,7 @@ export default function TarotApp() {
                   追问
                 </motion.button>
               </div>
-              <div className="mt-6 flex justify-center gap-3">
+              <div className="mt-6 flex justify-center gap-3 flex-wrap">
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
@@ -723,6 +771,17 @@ export default function TarotApp() {
                 >
                   再问一次
                 </motion.button>
+                {cards.length > 0 && (
+                  <ShareCardButton
+                    data={{
+                      question,
+                      cards: cards.map((c) => ({ nameZh: c.nameZh, image: c.image, reversed: c.reversed, pos: c.pos })),
+                      summary: reading.replace(/\s+/g, " ").slice(0, 120),
+                      personaName: persona?.name,
+                      sessionId,
+                    }}
+                  />
+                )}
                 <a
                   href="/dashboard"
                   className="px-8 py-3 rounded-full border border-sky-500/40 text-sky-200 hover:bg-sky-900/30 transition-all tracking-[0.2em] flex items-center"

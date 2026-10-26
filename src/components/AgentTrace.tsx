@@ -16,21 +16,34 @@ export interface ToolCall {
   durationMs: number;
 }
 
+/** 轮次时间轴数据 */
+export interface RoundInfo {
+  round: number;
+  elapsedMs: number;
+  promptTokens?: number;
+  toolNames: string[];
+  phase?: string;
+}
+
 const TOOL_META: Record<string, { icon: string; label: string; color: string }> = {
   rag_search: { icon: "📖", label: "典籍检索", color: "text-sky-300" },
   draw_cards: { icon: "🃏", label: "命运抽牌", color: "text-amber-300" },
   ask_user: { icon: "💭", label: "询问求卜者", color: "text-emerald-300" },
   write_reading: { icon: "✍️", label: "撰写命运之卷", color: "text-fuchsia-300" },
+  offer_card_selection: { icon: "🎴", label: "亲手选牌", color: "text-purple-300" },
+  fate_crossroads: { icon: "🔮", label: "命运岔路", color: "text-rose-300" },
 };
 
 export default function AgentTrace({
   tools,
   reasoning,
   streaming,
+  rounds,
 }: {
   tools: ToolCall[];
   reasoning: string;
   streaming: boolean;
+  rounds?: RoundInfo[];
 }) {
   const [open, setOpen] = useState(true);
   const [showReasoning, setShowReasoning] = useState(false);
@@ -41,7 +54,10 @@ export default function AgentTrace({
     if (el && open) el.scrollTop = el.scrollHeight;
   }, [tools.length, open]);
 
-  if (tools.length === 0 && !reasoning && !streaming) return null;
+  if (tools.length === 0 && !reasoning && !streaming && (!rounds || rounds.length === 0)) return null;
+
+  // 时间轴最大耗时（用于比例条）
+  const maxRoundMs = Math.max(...(rounds?.map((r) => r.elapsedMs) ?? [1]), 1);
 
   return (
     <div className="w-full max-w-2xl mt-6 rounded-2xl border border-purple-500/25 bg-[#0d0716]/80 backdrop-blur-md overflow-hidden">
@@ -56,11 +72,49 @@ export default function AgentTrace({
           </span>
           <span className="text-purple-300/60 text-xs">
             {tools.length > 0 && `${tools.length} 次工具调用`}
+            {rounds && rounds.length > 0 && ` · ${rounds.length} 轮决策`}
             {streaming && " · 运行中"}
           </span>
         </div>
         <span className={`text-purple-400/60 text-xs transition-transform ${open ? "rotate-180" : ""}`}>▼</span>
       </button>
+
+      {/* 轮次时间轴：可视化"Agent 在哪一步慢" */}
+      {rounds && rounds.length > 0 && (
+        <div className="px-4 py-2.5 border-b border-purple-500/10">
+          <div className="text-[10px] text-purple-400/50 mb-2 tracking-wider">⏱ 决策时间轴</div>
+          <div className="flex items-end gap-1 h-12">
+            {rounds.map((r, i) => {
+              const h = Math.max(8, Math.round((r.elapsedMs / maxRoundMs) * 100));
+              const slow = r.elapsedMs > 15000;
+              const last = i === rounds.length - 1;
+              return (
+                <div key={i} className="flex-1 flex flex-col items-center gap-1 group relative">
+                  <motion.div
+                    initial={{ height: 0 }}
+                    animate={{ height: `${h}%` }}
+                    transition={{ duration: 0.4, ease: "easeOut" }}
+                    className={`w-full rounded-t ${
+                      slow
+                        ? "bg-gradient-to-t from-amber-600/70 to-amber-400/90"
+                        : last
+                        ? "bg-gradient-to-t from-purple-600/70 to-purple-400/90"
+                        : "bg-gradient-to-t from-purple-800/50 to-purple-500/70"
+                    }`}
+                  />
+                  <span className="text-[9px] text-purple-500/50 font-mono">R{r.round}</span>
+                  {/* hover 详情 */}
+                  <div className="absolute bottom-full mb-1 hidden group-hover:block z-10 whitespace-nowrap rounded-lg bg-black/90 border border-purple-500/30 px-2 py-1 text-[10px] text-purple-100/90">
+                    第{r.round}轮 · {(r.elapsedMs / 1000).toFixed(1)}s
+                    {r.promptTokens ? ` · ${r.promptTokens} tok` : ""}
+                    {r.toolNames.length ? ` · ${r.toolNames.join(",")}` : ""}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* 思考链折叠条 */}
       {reasoning && (
