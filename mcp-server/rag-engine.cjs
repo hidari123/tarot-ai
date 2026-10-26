@@ -1,5 +1,7 @@
 /**
  * MCP Server 用的 BM25 检索（从 rag-engine 移植核心逻辑，无 TS alias）
+ * 同步说明：src/lib/rag-engine.ts 增加"牌名精确通道"后，这里同步精确匹配逻辑
+ * （MCP 的 tarot_search 工具同样受益：查"宝剑十"不再被"权杖十/星币十"污染）
  */
 
 const { TAROT_CARDS } = require("./tarot-cards.cjs");
@@ -38,9 +40,44 @@ function idf(token) {
   return Math.log(1 + (N - df + 0.5) / (df + 0.5));
 }
 
+/* ---- 牌名精确通道（与 src/lib/rag-engine.ts 同步）---- */
+
+const CARD_NAME_INDEX = TAROT_CARDS.map((c) => ({ names: [c.nameZh, c.nameEn], cardId: c.id }));
+
+function extractMentionedCards(query) {
+  const found = [];
+  for (const { names, cardId } of CARD_NAME_INDEX) {
+    if (names.some((n) => n && query.includes(n))) found.push(cardId);
+  }
+  return found;
+}
+
+/** 精确通道命中：显式提到的牌取正位/逆位/关键词 3 字段置顶 */
+function exactCardHits(cardIds) {
+  const WANTED = ["upright", "reversed", "keywords"];
+  const hits = [];
+  for (const cid of cardIds) {
+    for (const chunk of KNOWLEDGE_CHUNKS) {
+      if (chunk.cardId !== cid || !WANTED.includes(chunk.field)) continue;
+      hits.push({
+        chunkId: chunk.id, cardId: chunk.cardId, cardNameZh: chunk.cardNameZh, field: chunk.field,
+        score: 1,
+        snippet: chunk.text.length > 80 ? chunk.text.slice(0, 80) + "…" : chunk.text,
+        source: `tarot-lab · ${chunk.cardNameZh} · ${chunk.field === "upright" ? "正位牌意" : chunk.field === "reversed" ? "逆位牌意" : "关键词"}`,
+        channels: ["exact"],
+      });
+    }
+  }
+  return hits;
+}
+
+/** 检索入口：精确通道置顶 + BM25 语义补充（MCP 环境无向量模型，纯同步） */
 function ragSearch(query, topK = 5) {
   const qTokens = tokenize(query);
   if (qTokens.length === 0) return [];
+
+  const exact = exactCardHits(extractMentionedCards(query));
+
   const qSet = new Set(qTokens);
 
   const scored = KNOWLEDGE_CHUNKS.map((chunk) => {
@@ -68,14 +105,28 @@ function ragSearch(query, topK = 5) {
     }, { hits: [], seen: new Set() })
     .hits;
 
-  if (deduped.length === 0) return [];
-  const top = deduped[0].score;
-  return deduped.map(({ chunk, score }) => ({
-    chunkId: chunk.id, cardId: chunk.cardId, cardNameZh: chunk.cardNameZh, field: chunk.field,
-    score: Math.round((score / top) * 100) / 100,
-    snippet: chunk.text.length > 80 ? chunk.text.slice(0, 80) + "…" : chunk.text,
-    source: `tarot-lab · ${chunk.cardNameZh} · ${chunk.field === "description" ? "牌面叙事" : chunk.field === "upright" ? "正位牌意" : chunk.field === "reversed" ? "逆位牌意" : "关键词"}`,
-  }));
+  // 融合：精确命中的牌置顶（去重），BM25 结果补位
+  const out = [];
+  const seen = new Set();
+  for (const h of exact) {
+    if (seen.has(h.cardId) || out.length >= topK) continue;
+    seen.add(h.cardId);
+    out.push(h);
+  }
+  for (const s of deduped) {
+    if (seen.has(s.chunk.cardId) || out.length >= topK) continue;
+    seen.add(s.chunk.cardId);
+    const chunk = s.chunk;
+    out.push({
+      chunkId: chunk.id, cardId: chunk.cardId, cardNameZh: chunk.cardNameZh, field: chunk.field,
+      score: Math.round((s.score / (deduped[0].score || 1)) * 100) / 100,
+      snippet: chunk.text.length > 80 ? chunk.text.slice(0, 80) + "…" : chunk.text,
+      source: `tarot-lab · ${chunk.cardNameZh} · ${chunk.field === "description" ? "牌面叙事" : chunk.field === "upright" ? "正位牌意" : chunk.field === "reversed" ? "逆位牌意" : "关键词"}`,
+      channels: ["bm25"],
+    });
+  }
+  if (out.length === 0) return [];
+  return out;
 }
 
-module.exports = { ragSearch, KNOWLEDGE_CHUNKS };
+module.exports = { ragSearch, KNOWLEDGE_CHUNKS, extractMentionedCards };

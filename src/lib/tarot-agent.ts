@@ -27,7 +27,7 @@
 import { TAROT_CARDS, getCardById, type TarotCard } from "./tarot-cards";
 import { hybridSearch, buildCardKnowledge, type RagHit } from "./rag-engine";
 import {
-  parseLLMJSON, extractScore, extractString, extractBool,
+  parseLLMJSON, extractScore, extractString,
 } from "./robust-json";
 import {
   buildSupervisorPrompt, buildAnalystPrompt, buildWriterPrompt, buildReviewerPrompt,
@@ -269,6 +269,10 @@ async function rawCall(
       ...(tools ? { tools } : {}),
       stream: false,
       max_tokens: agent === "analyst" ? 3000 : agent === "reviewer" ? 2000 : undefined,
+      // 思维链分级（实测教训）：
+      // - supervisor 决策必须保留推理：无思维链时模型会跳过工具直接文本回答
+      //   （实测 money 用例 10 tools → 0 tools，退化成聊天机器人）
+      // - analyst/reviewer 是结构化任务，关掉提速
       ...(agent === "supervisor" ? {} : { thinking: { type: "disabled" } }),
     }),
     signal: AbortSignal.timeout(llmTimeoutFor(agent)),
@@ -371,7 +375,8 @@ async function* tryStreamOnce(
         model: p.model,
         messages,
         stream: true,
-        max_tokens: 6000,
+        // 流式调用方：writer（6000，长文创作）与 analyst（2500，精简笔记）
+        max_tokens: agent === "analyst" ? 2500 : 6000,
         thinking: { type: "disabled" },
         // 请求 usage 统计（OpenAI 兼容：usage 只在最后一个分片返回）
         stream_options: { include_usage: true },
@@ -665,12 +670,21 @@ function execDrawCards(spread: string, session: AgentSession) {
 
 async function execRagSearch(query: string, topK: number, session: AgentSession) {
   const k = Math.min(Math.max(topK || 5, 1), 10);
-  const hits = await hybridSearch(query, k);
-  session.ragHits = hits;
-  const summary = hits.length
-    ? `检索到 ${hits.length} 条：${hits.slice(0, 3).map((h) => `${h.cardNameZh}(${h.score},${h.channels.join("+")})`).join("、")}${hits.length > 3 ? "…" : ""}`
-    : "无相关命中";
-  return { summary, hits };
+  const currentHits = await hybridSearch(query, k);
+  // ⚠️ 累积而非覆盖：supervisor 一场占卜常检索多次（每张牌一次），
+  // 覆盖会导致解读里的 [n] 编号对应不上知识面板（引文闭环断裂）。
+  // 按 chunkId 去重合并，编号即检索顺序，知识面板与 [n] 永远一致。
+  const seen = new Set(session.ragHits.map((h) => h.chunkId));
+  for (const h of currentHits) {
+    if (!seen.has(h.chunkId)) {
+      session.ragHits.push(h);
+      seen.add(h.chunkId);
+    }
+  }
+  // 上限保护：累积命中过多时保留最新的（旧牌通常已被使用）
+  if (session.ragHits.length > 12) session.ragHits = session.ragHits.slice(-12);
+  const summary = `检索到 ${currentHits.length} 条：${currentHits.slice(0, 3).map((h) => `${h.cardNameZh}(${h.score},${h.channels.join("+")})`).join("、")}${currentHits.length > 3 ? "…" : ""}（累计 ${session.ragHits.length} 条）`;
+  return { summary, currentHits, allHits: session.ragHits };
 }
 
 /* ------------------------------------------------------------------ */
@@ -703,12 +717,16 @@ RAG 检索结果：\n${ragContext}
     },
   ];
 
-  const res = await callLLM(config, messages, undefined, session.id, "analyst");
-  if (res.reasoning) yield { type: "reasoning", reasoning: `[分析师] ${res.reasoning}` };
-  session.analystNotes = res.message.content;
+  // 流式收集分析师笔记：边产出边推给前端（消灭 analyst 完成→writer 首token之间的静默期）
+  let notes = "";
+  for await (const chunk of streamLLM(config, messages, session.id, "analyst")) {
+    notes += chunk;
+    yield { type: "reasoning", reasoning: chunk };
+  }
+  session.analystNotes = notes.trim();
   yield {
     type: "subagent",
-    subagent: { agent: "analyst", action: "分析完成", detail: `笔记 ${res.message.content.length} 字` },
+    subagent: { agent: "analyst", action: "分析完成", detail: `笔记 ${session.analystNotes.length} 字` },
   };
 }
 
@@ -1024,7 +1042,14 @@ export async function* runAgent(
     session.messages.push({ role: "user", content: `（追问）${opts.followup}` });
     session.messages.push({
       role: "system",
-      content: buildFollowupPrompt(),
+      content: buildFollowupPrompt({
+        // 牌面知识常驻：追问时模型手里要有牌意原文，防止凭记忆编造
+        cardKnowledge: buildCardKnowledge(session.drawnCards),
+        // 检索摘要：压缩版（牌名+字段），不占太多 token
+        ragDigest: session.ragHits.length
+          ? session.ragHits.map((h) => `${h.cardNameZh}·${h.field === "upright" ? "正位" : h.field === "reversed" ? "逆位" : h.field === "keywords" ? "关键词" : "叙事"}: ${h.snippet.slice(0, 40)}`).slice(0, 6).join("\n")
+          : "（未检索）",
+      }),
     });
   }
 
@@ -1032,6 +1057,8 @@ export async function* runAgent(
 
   const MAX_ROUNDS = 12;
   let round = 0;
+  // 模型跳过工具直接回答的纠偏计数（首答模式防行为漂移）
+  let noToolRetries = 0;
   // 看门狗：整场占卜的总时长上限（默认 5 分钟），超时主动收尾并落库
   const totalDeadline = Date.now() + (Number(process.env.SESSION_DEADLINE_MS) || 5 * 60 * 1000);
 
@@ -1069,7 +1096,38 @@ export async function* runAgent(
 
     const toolCalls = decision.message.tool_calls;
     if (!toolCalls || toolCalls.length === 0) {
-      // 直接文本回答（追问模式的正常路径）
+      // ---- 无工具调用分支 ----
+      // 追问模式：纯文本回答是正常路径
+      const isFollowup = opts?.followup !== undefined && session.messages.length > 2;
+      if (isFollowup) {
+        const text = decision.message.content;
+        if (text) {
+          for (const chunk of text.match(/[\s\S]{1,6}/g) ?? []) {
+            yield { type: "delta", delta: chunk };
+          }
+          db.updateSessionReading(session.id, text);
+        }
+        yield { type: "done" };
+        session.finished = true;
+        return;
+      }
+
+      // 首答模式：模型跳过工具直接回答 = 无效占卜（没有牌面依据）。
+      // 不放行——注入纠偏消息强制其走工具流程，最多重试 2 次（防模型行为漂移）。
+      noToolRetries++;
+      if (noToolRetries <= 2) {
+        yield {
+          type: "phase",
+          phase: "analyze",
+          label: "占卜师整理仪轨（未开牌，重新进入流程）…",
+        };
+        session.messages.push({
+          role: "user",
+          content: "⚠️ 你还没有抽取塔罗牌，不能直接给出解读。请立即调用工具：先 offer_card_selection 或 draw_cards 抽牌（若问题仍模糊可先 ask_user 澄清一次）。不要输出任何文本解释。",
+        });
+        continue;
+      }
+      // 两次纠偏仍不调工具：接受文本但标注（极小概率）
       const text = decision.message.content;
       if (text) {
         for (const chunk of text.match(/[\s\S]{1,6}/g) ?? []) {
@@ -1081,6 +1139,7 @@ export async function* runAgent(
       session.finished = true;
       return;
     }
+    noToolRetries = 0;
 
     for (const tc of toolCalls) {
       const name = tc.function.name;
@@ -1302,15 +1361,16 @@ export async function* runAgent(
       } else if (name === "rag_search") {
         const q = String(args.query || "");
         const topK = Number(args.top_k) || 5;
-        const { summary, hits } = await execRagSearch(q, topK, session);
+        const { summary, currentHits, allHits } = await execRagSearch(q, topK, session);
         resultSummary = summary;
-        evExtra = { ragHits: hits };
+        // 前端知识面板拿到**累计命中**（与解读 [n] 编号一致）
+        evExtra = { ragHits: allHits };
         yield { type: "phase", phase: "retrieve", label: `翻阅典籍：「${q.slice(0, 16)}」` };
         // 独立 rag_hits 事件：前端 KnowledgePanel 与外部集成方都依赖此事件
         // （tool 事件内嵌的 ragHits 仅作为冗余）
-        if (hits.length > 0) yield { type: "rag_hits", ragHits: hits };
-        // 回填给 LLM 的观察结果用**压缩版**（省 30-40% token）
-        toolContent = compressRagResult(hits);
+        if (allHits.length > 0) yield { type: "rag_hits", ragHits: allHits };
+        // 回填给 LLM 的观察结果用**压缩版**（只含本次命中的相对编号，省 30-40% token）
+        toolContent = compressRagResult(currentHits);
       } else {
         resultSummary = `未知工具：${name}`;
       }
@@ -1373,9 +1433,9 @@ async function* runLocalFallback(session: AgentSession, question: string): Async
 
   // 模拟 RAG
   await sleep(400);
-  const { summary: ragSummary, hits } = await execRagSearch(question + " " + cards.map((c) => c.nameZh).join(" "), 5, session);
+  const { summary: ragSummary, allHits } = await execRagSearch(question + " " + cards.map((c) => c.nameZh).join(" "), 5, session);
   yield { type: "phase", phase: "retrieve", label: `翻阅典籍：「${question.slice(0, 12)}…」` };
-  yield { type: "rag_hits", ragHits: hits };
+  yield { type: "rag_hits", ragHits: allHits };
   yield { type: "tool", tool: { name: "rag_search", args: { query: question.slice(0, 20) }, resultSummary: ragSummary, durationMs: 80 } };
 
   // 模拟子 Agent

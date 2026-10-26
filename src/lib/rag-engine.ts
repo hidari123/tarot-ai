@@ -174,14 +174,71 @@ export function ragSearch(query: string, topK = 5, filterCardIds?: string[]): Ra
 }
 
 /* ------------------------------------------------------------------ */
-/* 混合检索（Hybrid）：BM25 + 向量 RRF 融合                             */
+/* 牌名精确通道（第三通道：结构化精确匹配）                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 从查询中抽取显式提到的牌名。
+ *
+ * 为什么需要：BM25 是 2-gram 字面匹配，"宝剑十"会命中"权杖十""星币十"
+ * （共享"剑十/杖十/币十"里的"X十" gram，且"十"字 IDF 极低）——
+ * top-5 里 4 条是无关牌，真正要查的牌只占 1 条。
+ * 牌名是封闭词表（78 张，全量已知），精确匹配零歧义，
+ * 这正是"结构化字段走精确通道、自由文本走模糊通道"的生产 RAG 分层。
+ */
+const CARD_NAME_INDEX: Array<{ names: string[]; cardId: string }> = TAROT_CARDS.map((c) => ({
+  names: [c.nameZh, c.nameEn],
+  cardId: c.id,
+}));
+
+/** 返回查询中显式提到的牌 id（含别名命中） */
+export function extractMentionedCards(query: string): string[] {
+  const found: string[] = [];
+  for (const { names, cardId } of CARD_NAME_INDEX) {
+    if (names.some((n) => n && query.includes(n))) found.push(cardId);
+  }
+  return found;
+}
+
+/* ------------------------------------------------------------------ */
+/* 混合检索（Hybrid）：精确 + BM25 + 向量，RRF 融合                       */
 /* ------------------------------------------------------------------ */
 
 const RRF_K = 60; // Reciprocal Rank Fusion 常数
 
+/** 精确通道命中（查询显式提到的牌，取正位/逆位/关键词 3 个最常用字段，通道标记 exact） */
+function exactCardHits(cardIds: string[]): RagHit[] {
+  // 只取解读最常用的 3 个字段：正位 / 逆位 / 关键词
+  // （叙事字段太长，LLM 回填的压缩片段放不下；且 4 字段全进池会挤占其他语义相关牌的名额）
+  const WANTED: ChunkField[] = ["upright", "reversed", "keywords"];
+  const hits: RagHit[] = [];
+  for (const cid of cardIds) {
+    for (const chunk of KNOWLEDGE_CHUNKS) {
+      if (chunk.cardId !== cid || !WANTED.includes(chunk.field)) continue;
+      hits.push({
+        chunkId: chunk.id,
+        cardId: chunk.cardId,
+        cardNameZh: chunk.cardNameZh,
+        field: chunk.field,
+        score: 1,
+        rawScore: 1,
+        snippet: chunk.text.length > 80 ? chunk.text.slice(0, 80) + "…" : chunk.text,
+        source: `tarot-lab · ${chunk.cardNameZh} · ${
+          chunk.field === "description" ? "牌面叙事" : chunk.field === "upright" ? "正位牌意" : chunk.field === "reversed" ? "逆位牌意" : "关键词"
+        }`,
+        channels: ["exact"],
+      });
+    }
+  }
+  return hits;
+}
+
 /**
  * 混合检索入口（Agent 的 rag_search 工具实际调用这里）
- * 两路召回 → RRF 融合 → 每牌去重 → 归一化返回
+ * 三路召回：牌名精确 → BM25 → 向量 → RRF 融合 → 每牌去重 → 归一化返回
+ *
+ * 精确通道的意义：显式提到的牌必进 top-k 且置顶（RRF 里 3 通道同时命中排名最高），
+ * 彻底解决"查宝剑十返回权杖十/星币十"的字面污染问题。
  */
 export async function hybridSearch(query: string, topK = 5): Promise<RagHit[]> {
   // 向量通道软超时：无论模型加载/嵌入多慢，最多等 8 秒，超时按无命中处理（纯 BM25 兜底）
@@ -191,15 +248,21 @@ export async function hybridSearch(query: string, topK = 5): Promise<RagHit[]> {
     new Promise<null>((resolve) => setTimeout(() => resolve(null), VECTOR_SOFT_TIMEOUT_MS)),
   ]).catch(() => null);
 
+  // 牌名精确通道（同步、零成本）
+  const mentioned = extractMentionedCards(query);
+  const exactHits = exactCardHits(mentioned);
+
   // 两路并行召回（各多取一些，融合后截断）
   const [bm25Hits, vecHits] = await Promise.all([
     Promise.resolve(ragSearch(query, topK * 2)),
     vecWithTimeout,
   ]);
 
-  if (bm25Hits.length === 0 && (!vecHits || vecHits.length === 0)) return [];
-  // 向量通道不可用（未装模型/降级/软超时）→ 纯 BM25
-  if (!vecHits || vecHits.length === 0) return ragSearch(query, topK);
+  if (exactHits.length === 0 && bm25Hits.length === 0 && (!vecHits || vecHits.length === 0)) return [];
+  // 向量通道不可用（未装模型/降级/软超时）→ 精确 + BM25
+  if (!vecHits || vecHits.length === 0) {
+    return fuseAndDedup(exactHits, ragSearch(query, topK), [], topK);
+  }
 
   // 向量命中转为通用 RagHit 形状（补齐 rawScore/source/channels）
   const vecAsRag: RagHit[] = vecHits.map((v) => ({
@@ -216,7 +279,15 @@ export async function hybridSearch(query: string, topK = 5): Promise<RagHit[]> {
     channels: ["vector"],
   }));
 
-  // RRF 融合：score = Σ 1/(k + rank)
+  return fuseAndDedup(exactHits, bm25Hits, vecAsRag, topK);
+}
+
+/** RRF 融合 + 每牌去重 + 归一化（三通道通用） */
+function fuseAndDedup(exactHits: RagHit[], bm25Hits: RagHit[], vecHits: RagHit[], topK: number): RagHit[] {
+  // 无精确命中时退化为原两路
+  if (exactHits.length === 0 && bm25Hits.length === 0 && vecHits.length === 0) return [];
+
+  // RRF 融合：score = Σ 1/(k + rank)；同一 chunk 多通道命中排名叠加
   const fused = new Map<string, RagHit & { rrf: number; chans: Set<string> }>();
   const addRank = (hits: RagHit[], channel: string) => {
     hits.forEach((h, idx) => {
@@ -232,8 +303,10 @@ export async function hybridSearch(query: string, topK = 5): Promise<RagHit[]> {
       }
     });
   };
+  // 精确通道优先加入（排名最靠前），再 BM25、向量
+  addRank(exactHits, "exact");
   addRank(bm25Hits, "bm25");
-  addRank(vecAsRag, "vector");
+  addRank(vecHits, "vector");
 
   // 融合排序 → 每牌去重 → top-k
   const sorted = [...fused.values()].sort((a, b) => b.rrf - a.rrf);

@@ -33,6 +33,10 @@ export function buildSupervisorPrompt(persona: Persona): string {
 
 你是这场占卜的 Supervisor（编排者），通过工具调用推进占卜流程。
 
+【铁律】你**只能**通过调用工具推进流程。禁止直接输出文本回答用户——
+没有牌面的解读是无效占卜。每次回复必须包含至少一个工具调用。
+唯一例外：用户追问时（消息以（追问）开头），可以纯文本回答。
+
 【工作流程】
 1. 问题模糊 → ask_user 澄清（全程最多 2 次，每次 1 个问题）
 2. 选牌：优先 offer_card_selection 请用户亲手选牌（体验最佳）；用户没耐心/问题简单也可 draw_cards 随机
@@ -98,8 +102,24 @@ pass 的判定：grounding>=7 且 empathy>=6 且 tone>=6`;
 /* Follow-up（追问）                                                    */
 /* ------------------------------------------------------------------ */
 
-export function buildFollowupPrompt(): string {
-  return "用户在追问。请基于已有牌面与上下文直接回答（可以正常说话，不必调用工具），300 字以内。若确需补充检索可调一次 rag_search。";
+/**
+ * 追问 prompt：附牌面知识 + 检索摘要（防瞎编）。
+ *
+ * 为什么：历史裁剪会把早期 tool 结果压成"（早期结果已压缩）"，
+ * 追问"权杖六是什么意思"时模型手里只剩牌名、没有牌意原文——
+ * 这是幻觉高发场景。牌面知识是本场占卜的核心事实，必须常驻。
+ */
+export function buildFollowupPrompt(args: {
+  cardKnowledge: string;
+  ragDigest: string;
+}): string {
+  return `用户在追问。请基于已有牌面与上下文直接回答（可以正常说话，不必调用工具），300 字以内。若确需补充检索可调一次 rag_search。
+
+【本场占卜的牌面知识】（回答牌意问题必须以此为准，不得凭记忆编造）
+${args.cardKnowledge}
+
+【本场已检索到的典籍要点】
+${args.ragDigest}`;
 }
 
 /* ------------------------------------------------------------------ */

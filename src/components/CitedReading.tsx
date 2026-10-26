@@ -12,6 +12,9 @@ import { motion } from "framer-motion";
  *
  * 这是"RAG 可信度可视化"的最后一环：
  * 面试官可以逐条核对"解读里的每句话来自哪条典籍"。
+ *
+ * v2：段落感知 —— 「【追问】xxx」行渲染为右对齐用户气泡，
+ * 与占卜师回答在视觉上分离（多轮对话的信息架构）。
  */
 
 interface CitedReadingProps {
@@ -19,6 +22,30 @@ interface CitedReadingProps {
   /** 有效引文上限（命中条数） */
   maxCite: number;
   streaming?: boolean;
+}
+
+/** 一个段落（追问气泡 或 正文段落） */
+interface Paragraph {
+  kind: "followup" | "body";
+  /** 气泡里的问题文本（kind=followup 时） */
+  question?: string;
+  /** 正文文本（kind=body 时） */
+  text?: string;
+}
+
+/** 按空行拆段落；「【追问】」开头的行识别为用户气泡 */
+function splitParagraphs(text: string): Paragraph[] {
+  const paras: Paragraph[] = [];
+  for (const block of text.split(/\n\s*\n/)) {
+    const t = block.trim();
+    if (!t) continue;
+    if (/^【追问】/.test(t)) {
+      paras.push({ kind: "followup", question: t.replace(/^【追问】/, "").trim() });
+    } else {
+      paras.push({ kind: "body", text: t });
+    }
+  }
+  return paras;
 }
 
 /** 把文本切成 { text } 与 { cite: n } 片段 */
@@ -37,8 +64,54 @@ function splitCitations(text: string): Array<{ text?: string; cite?: number }> {
   return parts;
 }
 
-export default function CitedReading({ text, maxCite, streaming }: CitedReadingProps) {
+/** 正文片段渲染（含可点击引文角标） */
+function BodyText({ text, maxCite, activeCite, onCite }: {
+  text: string;
+  maxCite: number;
+  activeCite: number | null;
+  onCite: (n: number) => void;
+}) {
   const parts = useMemo(() => splitCitations(text), [text]);
+  return (
+    <pre
+      className="whitespace-pre-wrap text-purple-50/90 text-base md:text-lg leading-loose tracking-wide"
+      style={{ fontFamily: "'Ma Shan Zheng', serif" }}
+    >
+      {parts.map((p, i) =>
+        p.cite !== undefined ? (
+          <motion.button
+            key={i}
+            type="button"
+            onClick={() => onCite(p.cite as number)}
+            whileHover={p.cite <= maxCite ? { scale: 1.15 } : undefined}
+            whileTap={p.cite <= maxCite ? { scale: 0.9 } : undefined}
+            className={
+              p.cite <= maxCite
+                ? `inline-block align-super cursor-pointer mx-0.5 px-1.5 py-0 rounded-md text-[10px] md:text-[11px] font-mono border transition-colors ${
+                    activeCite === p.cite
+                      ? "bg-amber-400/30 border-amber-300/70 text-amber-100 shadow-[0_0_14px_rgba(251,191,36,0.5)]"
+                      : "bg-sky-500/10 border-sky-400/40 text-sky-300/90 hover:bg-sky-400/25 hover:border-sky-300/70"
+                  }`
+                : "inline-block align-super mx-0.5 px-1 py-0 rounded-md text-[10px] md:text-[11px] font-mono border border-red-400/30 text-red-300/60 cursor-not-allowed"
+            }
+            title={
+              p.cite <= maxCite
+                ? `查看典籍命中 ${p.cite} 的原文出处`
+                : `引文 ${p.cite} 超出命中范围（${maxCite} 条）——可能是模型幻觉`
+            }
+          >
+            [{p.cite}]
+          </motion.button>
+        ) : (
+          <Fragment key={i}>{p.text}</Fragment>
+        )
+      )}
+    </pre>
+  );
+}
+
+export default function CitedReading({ text, maxCite, streaming }: CitedReadingProps) {
+  const paragraphs = useMemo(() => splitParagraphs(text), [text]);
   const [activeCite, setActiveCite] = useState<number | null>(null);
 
   /** 点击角标：广播高亮事件（page.tsx 监听并滚动 KnowledgePanel） */
@@ -52,41 +125,32 @@ export default function CitedReading({ text, maxCite, streaming }: CitedReadingP
   };
 
   return (
-    <pre
-      className="whitespace-pre-wrap text-purple-50/90 text-base md:text-lg leading-loose tracking-wide"
-      style={{ fontFamily: "'Ma Shan Zheng', serif" }}
-    >
-      {parts.map((p, i) =>
-        p.cite !== undefined ? (
-          <Fragment key={i}>
-            <motion.button
-              type="button"
-              onClick={() => handleCiteClick(p.cite as number)}
-              whileHover={p.cite <= maxCite ? { scale: 1.15 } : undefined}
-              whileTap={p.cite <= maxCite ? { scale: 0.9 } : undefined}
-              className={
-                p.cite <= maxCite
-                  ? `inline-block align-super cursor-pointer mx-0.5 px-1.5 py-0 rounded-md text-[10px] md:text-[11px] font-mono border transition-colors ${
-                      activeCite === p.cite
-                        ? "bg-amber-400/30 border-amber-300/70 text-amber-100 shadow-[0_0_14px_rgba(251,191,36,0.5)]"
-                        : "bg-sky-500/10 border-sky-400/40 text-sky-300/90 hover:bg-sky-400/25 hover:border-sky-300/70"
-                    }`
-                  : "inline-block align-super mx-0.5 px-1 py-0 rounded-md text-[10px] md:text-[11px] font-mono border border-red-400/30 text-red-300/60 cursor-not-allowed"
-              }
-              title={
-                p.cite <= maxCite
-                  ? `查看典籍命中 ${p.cite} 的原文出处`
-                  : `引文 ${p.cite} 超出命中范围（${maxCite} 条）——可能是模型幻觉`
-              }
+    <div className="flex flex-col gap-5">
+      {paragraphs.map((p, i) =>
+        p.kind === "followup" ? (
+          /* 用户追问气泡：右对齐、靛蓝描边，与占卜师正文区分 */
+          <div key={i} className="flex justify-end">
+            <div
+              className="max-w-[80%] px-4 py-2.5 rounded-2xl rounded-tr-sm bg-indigo-900/40 border border-indigo-400/30 text-indigo-100/90 text-sm md:text-base"
+              style={{ fontFamily: "'Ma Shan Zheng', serif" }}
             >
-              [{p.cite}]
-            </motion.button>
-          </Fragment>
+              <span className="text-indigo-300/60 text-xs mr-1.5">追问</span>
+              {p.question}
+            </div>
+          </div>
         ) : (
-          <Fragment key={i}>{p.text}</Fragment>
+          <BodyText
+            key={i}
+            text={p.text ?? ""}
+            maxCite={maxCite}
+            activeCite={activeCite}
+            onCite={handleCiteClick}
+          />
         )
       )}
-      {streaming && <span className="typing-cursor text-purple-300">▍</span>}
-    </pre>
+      {streaming && (
+        <span className="typing-cursor text-purple-300 self-start">▍</span>
+      )}
+    </div>
   );
 }
