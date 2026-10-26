@@ -24,16 +24,19 @@ interface CitedReadingProps {
   streaming?: boolean;
 }
 
-/** 一个段落（追问气泡 或 正文段落） */
+/** 一个段落（追问气泡 / 牌面段标 / 正文段落） */
 interface Paragraph {
-  kind: "followup" | "body";
+  kind: "followup" | "cardHeader" | "body";
   /** 气泡里的问题文本（kind=followup 时） */
   question?: string;
+  /** 牌面段标：位置 + 牌名（kind=cardHeader 时） */
+  pos?: string;
+  card?: string;
   /** 正文文本（kind=body 时） */
   text?: string;
 }
 
-/** 按空行拆段落；「【追问】」开头的行识别为用户气泡 */
+/** 按空行拆段落；「【追问】」→ 用户气泡；「【牌面·位置·牌名】」→ 翻牌段标 */
 function splitParagraphs(text: string): Paragraph[] {
   const paras: Paragraph[] = [];
   for (const block of text.split(/\n\s*\n/)) {
@@ -41,9 +44,19 @@ function splitParagraphs(text: string): Paragraph[] {
     if (!t) continue;
     if (/^【追问】/.test(t)) {
       paras.push({ kind: "followup", question: t.replace(/^【追问】/, "").trim() });
-    } else {
-      paras.push({ kind: "body", text: t });
+      continue;
     }
+    // 牌面段标：独立成行的「【牌面·过去·愚人】」或「【启示】」
+    const cardM = t.match(/^【牌面·([^·】]+)·([^】]+)】$/);
+    if (cardM) {
+      paras.push({ kind: "cardHeader", pos: cardM[1].trim(), card: cardM[2].trim() });
+      continue;
+    }
+    if (/^【启示】$/.test(t)) {
+      paras.push({ kind: "cardHeader", pos: "启示", card: "" });
+      continue;
+    }
+    paras.push({ kind: "body", text: t });
   }
   return paras;
 }
@@ -138,6 +151,24 @@ export default function CitedReading({ text, maxCite, streaming }: CitedReadingP
               {p.question}
             </div>
           </div>
+        ) : p.kind === "cardHeader" ? (
+          /* 牌面段标：翻牌仪式感——金色牌名 + 位置徽章 */
+          <motion.div
+            key={i}
+            initial={{ opacity: 0, x: -12 }}
+            animate={{ opacity: 1, x: 0 }}
+            className="flex items-center gap-3 mt-2"
+          >
+            <span className="text-lg md:text-xl text-amber-200/95" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>
+              {p.card ? p.card : ""}
+            </span>
+            {p.pos && (
+              <span className="text-[10px] md:text-xs px-2 py-0.5 rounded-full border border-amber-400/40 text-amber-300/80 tracking-wider">
+                {p.pos}
+              </span>
+            )}
+            <span className="flex-1 h-px bg-gradient-to-r from-amber-400/30 to-transparent" />
+          </motion.div>
         ) : (
           <BodyText
             key={i}

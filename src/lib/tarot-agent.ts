@@ -138,6 +138,14 @@ export interface AgentSession {
   pendingAsk?: { resolve: (answer: string) => void; question: string; options?: string[] };
   finished: boolean;
   toolSeq: number;
+  /** 已执行过的 rag_search 查询（归一化后），用于重复检索负反馈（防死循环） */
+  ragQueryHistory: string[];
+  /** 检索调用次数（预算控制：超过 RAG_BUDGET 后注入"立即收尾"提示） */
+  ragCallCount: number;
+  /** 每张牌的选牌犹豫时长 ms（offer_card_selection 采集；-1 表示随机代抽） */
+  dwellTimes: number[];
+  /** 情绪档案：从用户澄清回答中提取的情绪关键词（紧张/迷茫/期待…），供解读与追问持续引用 */
+  emotionTags: string[];
 }
 
 const sessions: Map<string, AgentSession> = (() => {
@@ -184,6 +192,7 @@ export function createSession(question: string, personaId?: string): AgentSessio
     messages: [], question, persona,
     drawnCards: [], ragHits: [], analystNotes: "",
     finished: false, toolSeq: 0,
+    ragQueryHistory: [], ragCallCount: 0, dwellTimes: [], emotionTags: [],
   };
   sessions.set(id, session);
   db.insertSession(id, question, persona.id, []);
@@ -668,7 +677,47 @@ function execDrawCards(spread: string, session: AgentSession) {
   return { summary, cards };
 }
 
+/** 检索预算：超过此次数后注入"检索已充分，立即收尾"提示（防无限检索） */
+const RAG_BUDGET = 3;
+
+/**
+ * P2.1：从用户应答中提取情绪关键词（规则式，轻量零成本）。
+ * 占卜师"记得你说过很紧张"——情绪档案贯穿解读与追问，
+ * 而不是每次回答都当陌生人重新问一遍。
+ */
+const EMOTION_LEXICON: Array<{ tag: string; words: string[] }> = [
+  { tag: "紧张不安", words: ["紧张", "焦虑", "担心", "忐忑", "害怕", "慌", "没底", "心虚", "压力"] },
+  { tag: "迷茫", words: ["迷茫", "不知道", "纠结", "犹豫", "选不", "拿不准", "看不清", "困惑"] },
+  { tag: "期待希望", words: ["期待", "希望", "想要", "盼", "希望", "憧憬", "向往"] },
+  { tag: "失落受挫", words: ["失落", "失败", "受挫", "没回音", "石沉大海", "被拒", "分手", "失恋", "难过", "崩溃"] },
+  { tag: "渴望改变", words: ["想改变", "想换", "想逃离", "受不了", "厌倦", "想重新开始"] },
+  { tag: "兴奋跃跃", words: ["兴奋", "激动", "跃跃欲试", "迫不及待", "机会来了"] },
+];
+
+function extractEmotionTags(text: string): string[] {
+  const tags: string[] = [];
+  for (const { tag, words } of EMOTION_LEXICON) {
+    if (words.some((w) => text.includes(w))) tags.push(tag);
+  }
+  return tags.slice(0, 3); // 最多 3 个，避免堆砌
+}
+
 async function execRagSearch(query: string, topK: number, session: AgentSession) {
+  // ---- 重复检索负反馈（防死循环的关键）----
+  // 归一化查询（去空格+小写）后与历史比对；重复查询直接返回"已检索过"标记，
+  // 模型收到显式负反馈就不会再撞同一面墙（实测：max_rounds 会话里同一查询重复了 5 次）
+  const normalized = query.replace(/\s+/g, " ").trim().toLowerCase();
+  if (session.ragQueryHistory.includes(normalized)) {
+    return {
+      summary: `⚠️ 该查询「${query.slice(0, 20)}」此前已检索过（内容见上文，无需重复）。信息已足够，请立即调用 write_reading 开始解读。`,
+      currentHits: [],
+      allHits: session.ragHits,
+      duplicate: true,
+    };
+  }
+  session.ragQueryHistory.push(normalized);
+  session.ragCallCount++;
+
   const k = Math.min(Math.max(topK || 5, 1), 10);
   const currentHits = await hybridSearch(query, k);
   // ⚠️ 累积而非覆盖：supervisor 一场占卜常检索多次（每张牌一次），
@@ -683,8 +732,12 @@ async function execRagSearch(query: string, topK: number, session: AgentSession)
   }
   // 上限保护：累积命中过多时保留最新的（旧牌通常已被使用）
   if (session.ragHits.length > 12) session.ragHits = session.ragHits.slice(-12);
-  const summary = `检索到 ${currentHits.length} 条：${currentHits.slice(0, 3).map((h) => `${h.cardNameZh}(${h.score},${h.channels.join("+")})`).join("、")}${currentHits.length > 3 ? "…" : ""}（累计 ${session.ragHits.length} 条）`;
-  return { summary, currentHits, allHits: session.ragHits };
+
+  const budgetNote = session.ragCallCount >= RAG_BUDGET
+    ? "（已达检索预算上限，请立即 write_reading）"
+    : "";
+  const summary = `检索到 ${currentHits.length} 条：${currentHits.slice(0, 3).map((h) => `${h.cardNameZh}(${h.score},${h.channels.join("+")})`).join("、")}${currentHits.length > 3 ? "…" : ""}（累计 ${session.ragHits.length} 条）${budgetNote}`;
+  return { summary, currentHits, allHits: session.ragHits, duplicate: false };
 }
 
 /* ------------------------------------------------------------------ */
@@ -744,10 +797,25 @@ async function* runWriter(
     ? session.ragHits.map((h, i) => `[${i + 1}] ${h.source}\n    ${h.snippet}`).join("\n")
     : "（未检索）";
 
+  // P1.3：犹豫时长入戏——真实塔罗师会说"你在那张牌前停留了很久"
+  const dwellNote = (() => {
+    if (session.dwellTimes.length !== session.drawnCards.length) return undefined;
+    if (session.dwellTimes.some((d) => d < 0)) return undefined; // 随机代抽无数据
+    const maxIdx = session.dwellTimes.indexOf(Math.max(...session.dwellTimes));
+    const card = session.drawnCards[maxIdx];
+    if (!card) return undefined;
+    return `选牌行为：用户在「${card.card.nameZh}」（${["过去", "当下", "未来"][maxIdx] ?? "核心"}）前犹豫最久（${session.dwellTimes[maxIdx]}ms）。可在解读中自然地点出这一细节（如"你在这张牌前停留了很久，说明它触动了你"），但不要报毫秒数字。`;
+  })();
+
+  // P2.1：情绪档案入 prompt——"记得你说过很紧张"
+  const emotionNote = session.emotionTags.length
+    ? `用户在对话中流露的情绪：${session.emotionTags.join("、")}。解读中要回应这份情绪（如安抚、确认、鼓励），让用户感到被听见。`
+    : undefined;
+
   const messages: SessionMessage[] = [
     {
       role: "system",
-      content: buildWriterPrompt(session.persona),
+      content: buildWriterPrompt(session.persona, [dwellNote, emotionNote].filter(Boolean).join("\n") || undefined),
     },
     {
       role: "user",
@@ -986,19 +1054,41 @@ function compressRagResult(hits: RagHit[]): string {
  * Agent 每轮都要重发完整历史 → token 随轮次平方增长。
  * 保留 assistant 的**决策轨迹**（它说了什么、调了什么），
  * 但把早期的 tool 返回值压缩（它们的信息已被后续决策吸收）。
+ *
+ * ⚠️ 豁免清单（绝不压缩——它们是全场核心事实）：
+ *   - offer_card_selection / draw_cards：抽到的牌。
+ *     实测事故：压缩后 supervisor "忘了"抽了什么牌，开始瞎猜检索
+ *     没抽到的牌（权杖十×5 次重复检索 → max_rounds 死循环）。
+ *     这些结果只有几十字，压缩收益趋零、代价是灾难性的。
  */
 function trimHistory(messages: SessionMessage[], keepFullRounds = 4): SessionMessage[] {
   if (messages.length <= keepFullRounds * 2 + 4) return messages;
 
-  // 找到最近 keepFullRounds 个 tool 消息的位置，从那里往前的 tool 消息全压缩
-  const toolIndexes: number[] = [];
-  messages.forEach((m, i) => { if (m.role === "tool") toolIndexes.push(i); });
-  if (toolIndexes.length <= keepFullRounds) return messages;
+  // tool 消息要找到它对应的工具名：从相邻 assistant 消息的 tool_calls 里反查
+  const toolNameById = new Map<string, string>();
+  for (const m of messages) {
+    if (m.role === "assistant" && m.tool_calls) {
+      for (const tc of m.tool_calls) toolNameById.set(tc.id, tc.function.name);
+    }
+  }
+  /** 抽牌类工具结果永不压缩 */
+  const NEVER_COMPRESS = new Set(["offer_card_selection", "draw_cards"]);
 
-  const cutBefore = toolIndexes[toolIndexes.length - keepFullRounds];
+  // 找到最近 keepFullRounds 个**可压缩** tool 消息的位置
+  const compressibleIndexes: number[] = [];
+  messages.forEach((m, i) => {
+    if (m.role !== "tool") return;
+    const name = m.tool_call_id ? toolNameById.get(m.tool_call_id) : undefined;
+    if (!name || !NEVER_COMPRESS.has(name)) compressibleIndexes.push(i);
+  });
+  if (compressibleIndexes.length <= keepFullRounds) return messages;
+
+  const cutBefore = compressibleIndexes[compressibleIndexes.length - keepFullRounds];
 
   return messages.map((m, i) => {
     if (m.role !== "tool" || i >= cutBefore) return m;
+    const name = m.tool_call_id ? toolNameById.get(m.tool_call_id) : undefined;
+    if (name && NEVER_COMPRESS.has(name)) return m; // 豁免：抽牌结果常驻
     // 压缩：只保留"检索/操作已完成"的标记，不带具体内容
     return {
       ...m,
@@ -1043,6 +1133,11 @@ export async function* runAgent(
     session.messages.push({
       role: "system",
       content: buildFollowupPrompt({
+        // 人格声线：追问回答与正式解读同一人格（此前是裸模型声线，割裂感明显）
+        personaStyle: session.persona.stylePrompt,
+        personaName: session.persona.name,
+        // P2.1：情绪档案——追问也记得用户的情绪
+        emotionTags: session.emotionTags,
         // 牌面知识常驻：追问时模型手里要有牌意原文，防止凭记忆编造
         cardKnowledge: buildCardKnowledge(session.drawnCards),
         // 检索摘要：压缩版（牌名+字段），不占太多 token
@@ -1076,7 +1171,20 @@ export async function* runAgent(
     let decision: CallResult;
     try {
       // 历史裁剪：压缩早期 tool 观察结果，降低每轮 prompt token
-      const trimmed = trimHistory(session.messages);
+      let trimmed = trimHistory(session.messages);
+      // ---- 临期强制收尾（防 max_rounds 死循环撞墙）----
+      // 轮次接近上限时注入"必须立即收尾"指令（只注入到本次调用，不污染会话历史）
+      const LATE_ROUND = 8; // MAX_ROUNDS=12，留 4 轮缓冲执行收尾
+      const needWrapUp = round >= LATE_ROUND || session.ragCallCount > RAG_BUDGET;
+      if (needWrapUp && session.drawnCards.length > 0) {
+        trimmed = [
+          ...trimmed,
+          {
+            role: "system" as const,
+            content: `⚠️ 流程即将到达轮次上限（当前第 ${round} 轮，检索已 ${session.ragCallCount} 次）。你手里已有 ${session.drawnCards.length} 张牌与检索结果，信息完全足够。本轮必须调用 write_reading 启动解读管线，不得再调用任何检索或提问工具。`,
+          },
+        ];
+      }
       decision = await callLLM(config, trimmed, TOOLS, session.id, "supervisor");
       roundPromptTokens = decision.usage?.prompt;
       // failover 生效时更新会话粘住的 provider（保持后续风格一致）——按名称比较，避免对象实例误判
@@ -1093,6 +1201,21 @@ export async function* runAgent(
     }
     if (decision.reasoning) yield { type: "reasoning", reasoning: decision.reasoning };
     session.messages.push(decision.message);
+
+    // ---- P1.2：决策附带文本作为对话回应流出 ----
+    // supervisor 决策时常带 content（"嗯，我听到了，你其实很在意…"），
+    // 此前被丢弃——用户答完话得到死寂。现在流出来，占卜师"每步有回应"。
+    // 注意：只在已有交互历史后流出（首轮的寒暄意义不大），且不作为解读正文入库
+    if (decision.message.content && session.messages.length > 3) {
+      const intro = decision.message.content.trim();
+      if (intro) {
+        for (const chunk of intro.match(/[\s\S]{1,6}/g) ?? []) {
+          yield { type: "delta", delta: chunk };
+        }
+        // 换行分隔，与后续解读正文区分
+        yield { type: "delta", delta: "\n\n" };
+      }
+    }
 
     const toolCalls = decision.message.tool_calls;
     if (!toolCalls || toolCalls.length === 0) {
@@ -1314,6 +1437,10 @@ export async function* runAgent(
             });
           }
           session.drawnCards = drawn;
+          // P1.3：犹豫时长结构化存入 session（供 writer prompt 引用："你在恋人牌前停留最久"）
+          session.dwellTimes = userAnswer.trim() === "random"
+            ? drawn.map(() => -1) // 随机代抽无犹豫数据
+            : dwell;
           const posNames = ["过去", "当下", "未来"];
           const cards = drawn.map((d, i) => ({
             id: d.card.id, nameZh: d.card.nameZh, image: d.card.image,
@@ -1329,6 +1456,11 @@ export async function* runAgent(
         }
 
         session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ answer: userAnswer }) });
+        // P2.1：情绪档案——从用户应答中提取情绪关键词，解读与追问持续引用
+        // （占卜师"记得你说过很紧张"，而不是每次都当陌生人）
+        for (const tag of extractEmotionTags(userAnswer)) {
+          if (!session.emotionTags.includes(tag)) session.emotionTags.push(tag);
+        }
         yield { type: "tool", tool: { name, args, resultSummary, durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, resultSummary, Date.now() - t0);
         yield { type: "phase", phase: "analyze", label: "已收到你的回应，占卜继续…" };

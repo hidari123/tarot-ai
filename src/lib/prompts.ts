@@ -68,16 +68,16 @@ export function buildAnalystPrompt(): string {
 /* Writer                                                              */
 /* ------------------------------------------------------------------ */
 
-export function buildWriterPrompt(persona: Persona): string {
+export function buildWriterPrompt(persona: Persona, extraNotes?: string): string {
   return `${persona.stylePrompt}
 
 你是占卜解读的撰写者（writer），基于分析师的结构化笔记撰写面向用户的最终解读。
 要求：
 1. 引用典籍牌意时用「典籍有云：…」标注，并标注 [n] 编号对应检索结果
-2. 逐牌解读（过去/当下/未来 或 单张核心指引），再给综合启示与可执行建议
+2. 逐牌解读：每张牌一段，段落开头用「【牌面·${"{{位置}}"}·${"{{牌名}}"}】」格式标记（如「【牌面·过去·愚人】」），之后再写综合启示与可执行建议段（用「【启示】」开头）
 3. 结合用户问题与澄清回答，针对性展开
-4. **篇幅 350~450 字**，分段清晰，直接输出正文不加任何前言
-5. 不要复述分析师笔记的格式，要写成流畅的占卜文本`;
+4. **篇幅 350~450 字**，每段 100~140 字，直接输出正文不加任何前言
+5. 不要复述分析师笔记的格式，要写成流畅的占卜文本${extraNotes ? `\n6. ${extraNotes}` : ""}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -103,23 +103,32 @@ pass 的判定：grounding>=7 且 empathy>=6 且 tone>=6`;
 /* ------------------------------------------------------------------ */
 
 /**
- * 追问 prompt：附牌面知识 + 检索摘要（防瞎编）。
+ * 追问 prompt：人格声线 + 牌面知识 + 检索摘要（防瞎编）。
  *
- * 为什么：历史裁剪会把早期 tool 结果压成"（早期结果已压缩）"，
- * 追问"权杖六是什么意思"时模型手里只剩牌名、没有牌意原文——
- * 这是幻觉高发场景。牌面知识是本场占卜的核心事实，必须常驻。
+ * 两个此前的缺陷：
+ *   1. 不含 persona —— 追问回答是"裸模型"声线，与正文人格割裂（对话不连贯感的直接来源）
+ *   2. 不含牌面知识 —— 历史裁剪把早期 tool 结果压成"（已压缩）"，
+ *      追问"权杖六是什么意思"时模型只剩牌名，只能凭记忆编（幻觉高发）
  */
 export function buildFollowupPrompt(args: {
+  personaStyle: string;
+  personaName: string;
+  emotionTags: string[];
   cardKnowledge: string;
   ragDigest: string;
 }): string {
-  return `用户在追问。请基于已有牌面与上下文直接回答（可以正常说话，不必调用工具），300 字以内。若确需补充检索可调一次 rag_search。
+  const emotionNote = args.emotionTags.length
+    ? `\n\n【用户情绪档案】（对话中流露，回应时记得）：${args.emotionTags.join("、")}`
+    : "";
+  return `${args.personaStyle}
+
+你是占卜师「${args.personaName}」，正在回应求卜者的追问。保持你的占卜师人格与声线（与正式解读一致），语气自然口语化，像面对面聊天，120~250 字。基于已有牌面与上下文直接回答（不必调用工具）。若确需补充检索可调一次 rag_search。
 
 【本场占卜的牌面知识】（回答牌意问题必须以此为准，不得凭记忆编造）
 ${args.cardKnowledge}
 
 【本场已检索到的典籍要点】
-${args.ragDigest}`;
+${args.ragDigest}${emotionNote}`;
 }
 
 /* ------------------------------------------------------------------ */
