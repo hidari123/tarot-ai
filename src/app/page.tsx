@@ -211,6 +211,23 @@ function AgentStatusBar({ phase }: { phase: Phase | null }) {
 }
 
 /**
+ * 方向①：稳定用户标识（跨会话画像锚点）。
+ * localStorage UUID：同一浏览器视为同一访客；隐私模式/无 localStorage 返回空（匿名）。
+ */
+function getUserKey(): string {
+  try {
+    let k = localStorage.getItem("tarot:userKey");
+    if (!k) {
+      k = `u_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+      localStorage.setItem("tarot:userKey", k);
+    }
+    return k;
+  } catch {
+    return "";
+  }
+}
+
+/**
  * 提取分享卡摘要：优先取"收束段"（最后一段，通常是占卜师的综合结论，
  * 分享价值最高），没有明确分段时取末尾 240 字。
  * 段标【牌面·…】与【启示】保留（它们在卡面上有视觉意义），【追问】/【补充】段剔除。
@@ -751,7 +768,7 @@ export default function TarotApp() {
       const res = await fetch("/api/interpret", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q, persona: persona?.id }),
+        body: JSON.stringify({ question: q, persona: persona?.id, userKey: getUserKey() }),
       });
       await consumeStream(res);
     } catch (e) {

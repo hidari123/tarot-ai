@@ -68,6 +68,17 @@ CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_created ON tool_calls(created_at);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage(created_at);
+
+-- 方向①：用户画像（跨会话记忆）
+CREATE TABLE IF NOT EXISTS user_profiles (
+  user_key TEXT PRIMARY KEY,
+  topics_json TEXT NOT NULL DEFAULT '[]',      -- 历史问题主题 [{topic,count,lastAt}]
+  emotions_json TEXT NOT NULL DEFAULT '[]',    -- 情绪轨迹 [{tag,count,lastAt}]
+  session_count INTEGER NOT NULL DEFAULT 0,
+  last_question TEXT NOT NULL DEFAULT '',
+  last_active INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
 `);
 
 // ---- 数据保留：90 天 TTL（观测数据无限膨胀会让面板全表聚合线性变慢） ----
@@ -313,4 +324,88 @@ export function getSessionReading(id: string): { reading: string; question: stri
     { reading: string; question: string; cards_json: string } | undefined;
   if (!row) return null;
   return { reading: row.reading, question: row.question, cards: JSON.parse(row.cards_json) };
+}
+
+/* ---------------- 用户画像（方向①：跨会话记忆） ---------------- */
+
+export interface ProfileTopic { topic: string; count: number; lastAt: number }
+export interface ProfileEmotion { tag: string; count: number; lastAt: number }
+export interface UserProfile {
+  userKey: string;
+  topics: ProfileTopic[];
+  emotions: ProfileEmotion[];
+  sessionCount: number;
+  lastQuestion: string;
+  lastActive: number;
+}
+
+const stmtGetProfile = db.prepare(`SELECT * FROM user_profiles WHERE user_key = ?`);
+const stmtUpsertProfile = db.prepare(`
+  INSERT INTO user_profiles (user_key, topics_json, emotions_json, session_count, last_question, last_active, updated_at)
+  VALUES (@userKey, @topicsJson, @emotionsJson, @sessionCount, @lastQuestion, @lastActive, @updatedAt)
+  ON CONFLICT(user_key) DO UPDATE SET
+    topics_json = @topicsJson, emotions_json = @emotionsJson, session_count = @sessionCount,
+    last_question = @lastQuestion, last_active = @lastActive, updated_at = @updatedAt
+`);
+
+/** 读取用户画像（无记录返回空白画像） */
+export function getUserProfile(userKey: string): UserProfile {
+  const row = stmtGetProfile.get(userKey) as {
+    user_key: string; topics_json: string; emotions_json: string;
+    session_count: number; last_question: string; last_active: number;
+  } | undefined;
+  if (!row) {
+    return { userKey, topics: [], emotions: [], sessionCount: 0, lastQuestion: "", lastActive: 0 };
+  }
+  return {
+    userKey,
+    topics: JSON.parse(row.topics_json),
+    emotions: JSON.parse(row.emotions_json),
+    sessionCount: row.session_count,
+    lastQuestion: row.last_question,
+    lastActive: row.last_active,
+  };
+}
+
+/** 会话结束时增量更新画像（主题分类 + 情绪轨迹 + 计数） */
+export function updateUserProfile(
+  userKey: string,
+  question: string,
+  topic: string,
+  emotionTags: string[]
+): void {
+  if (!userKey) return;
+  const p = getUserProfile(userKey);
+  const now = Date.now();
+
+  // 主题累计（同主题 count+1）
+  const t = p.topics.find((x) => x.topic === topic);
+  if (t) { t.count++; t.lastAt = now; } else {
+    p.topics.push({ topic, count: 1, lastAt: now });
+  }
+  // 情绪累计
+  for (const tag of emotionTags) {
+    const e = p.emotions.find((x) => x.tag === tag);
+    if (e) { e.count++; e.lastAt = now; } else {
+      p.emotions.push({ tag, count: 1, lastAt: now });
+    }
+  }
+  p.sessionCount++;
+  p.lastQuestion = question.slice(0, 100);
+  p.lastActive = now;
+
+  // 90 天衰减：超期主题/情绪直接剔除（画像过期误导比缺失更糟）
+  const FADE_MS = 90 * 24 * 60 * 60 * 1000;
+  p.topics = p.topics.filter((x) => now - x.lastAt < FADE_MS);
+  p.emotions = p.emotions.filter((x) => now - x.lastAt < FADE_MS);
+
+  stmtUpsertProfile.run({
+    userKey,
+    topicsJson: JSON.stringify(p.topics.slice(0, 10)),
+    emotionsJson: JSON.stringify(p.emotions.slice(0, 12)),
+    sessionCount: p.sessionCount,
+    lastQuestion: p.lastQuestion,
+    lastActive: p.lastActive,
+    updatedAt: now,
+  });
 }

@@ -34,6 +34,8 @@ import {
   buildFollowupPrompt, PROMPT_VERSION,
 } from "./prompts";
 import * as db from "./db";
+import { buildMemoryContext, persistMemory } from "./memory";
+import { rewriteQueryLocal } from "./query-rewrite";
 
 /* ------------------------------------------------------------------ */
 /* 类型                                                                 */
@@ -230,6 +232,8 @@ export interface AgentSession {
   busy?: boolean;
   /** 客户端断开信号（interpret 路由注入；HITL 等待期间可取消挂起的 Promise） */
   abortSignal?: AbortSignal;
+  /** 方向①：跨会话记忆的用户标识（localStorage UUID，由前端携带） */
+  userKey?: string;
 }
 
 const sessions: Map<string, AgentSession> = (() => {
@@ -284,7 +288,7 @@ if (!g.__tarotCleanTimer__) {
   g.__tarotCleanTimer__.unref?.(); // 不阻塞进程退出
 }
 
-export function createSession(question: string, personaId?: string): AgentSession {
+export function createSession(question: string, personaId?: string, userKey?: string): AgentSession {
   cleanExpired();
   const id = `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   const persona = PERSONAS.find((p) => p.id === personaId) ?? PERSONAS[0];
@@ -295,6 +299,7 @@ export function createSession(question: string, personaId?: string): AgentSessio
     finished: false, toolSeq: 0,
     ragQueryHistory: [], ragCallCount: 0, dwellTimes: [], emotionTags: [],
     cardReadings: [], interjections: [], pendingInterjections: [],
+    userKey,
   };
   sessions.set(id, session);
   db.insertSession(id, question, persona.id, []);
@@ -1550,7 +1555,9 @@ function trimHistory(messages: SessionMessage[], keepFullRounds = 4): SessionMes
 /* ------------------------------------------------------------------ */
 
 function buildSystemPrompt(session: AgentSession): string {
-  return buildSupervisorPrompt(session.persona);
+  // 方向①：跨会话画像注入（占卜师"认识你"——承约阶段自然关联上次困惑）
+  const memory = session.userKey ? buildMemoryContext(session.userKey) : "";
+  return buildSupervisorPrompt(session.persona) + (memory ? `\n\n${memory}` : "");
 }
 
 export async function* runAgent(
@@ -2592,7 +2599,11 @@ export async function* runAgent(
       } else if (name === "rag_search") {
         const q = String(args.query || "");
         const topK = Number(args.top_k) || 5;
-        const { summary, currentHits, allHits } = await execRagSearch(q, topK, session);
+        // 方向②：查询改写——口语化查询（"复合 前任"）不含牌名，
+        // BM25 字面匹配近零召回（golden set 实测 Recall@5 仅 44.6%）。
+        // 主题词典补牌名候选（本地零延迟；已含牌名不改写）
+        const rewritten = rewriteQueryLocal(q, TAROT_CARDS.map((c) => c.nameZh));
+        const { summary, currentHits, allHits } = await execRagSearch(rewritten, topK, session);
         resultSummary = summary;
         // 前端知识面板拿到**累计命中**（与解读 [n] 编号一致）
         // ⚠️ 只发前 12 条（编号稳定不前移；内存 session.ragHits 保留全部）
@@ -2640,6 +2651,10 @@ export async function* runAgent(
   } finally {
     // runAgent 外层：无论从哪条路径退出（含 localFallback）都释放锁
     session.busy = false;
+    // 方向①：会话收尾落画像（主题 + 情绪轨迹，90 天衰减在 db 层处理）
+    if (session.userKey) {
+      persistMemory(session.userKey, session.question, session.emotionTags);
+    }
   }
 }
 

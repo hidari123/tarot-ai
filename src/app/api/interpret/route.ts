@@ -17,7 +17,7 @@ import { failSession } from "@/lib/db";
  *                    ask_user / subagent / review / delta / done / error
  */
 export async function POST(req: Request) {
-  let body: { question?: string; followup?: string; sessionId?: string; persona?: string };
+  let body: { question?: string; followup?: string; sessionId?: string; persona?: string; userKey?: string };
   try {
     body = await req.json();
   } catch {
@@ -48,7 +48,8 @@ export async function POST(req: Request) {
     if (!question) {
       return Response.json({ error: "请先写下你的问题" }, { status: 400 });
     }
-    session = createSession(question, body.persona);
+    // 方向①：userKey 用于跨会话画像（无则不留痕——匿名访客）
+    session = createSession(question, body.persona, body.userKey?.trim() || undefined);
   }
 
   // 把客户端断开信号注入会话：HITL 等待中的 Promise 可被取消（防生成器/内存泄漏）
