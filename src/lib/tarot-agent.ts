@@ -1054,6 +1054,17 @@ async function execRagSearch(query: string, topK: number, session: AgentSession)
       duplicate: true,
     };
   }
+  // ---- 预算硬拦截（超预算后不再放行新查询，防"换词重试"绕过查重）----
+  // 实测：money 用例连续 12 轮 rag_search，每次换个查询词，查重拦不住。
+  // 超预算后一律返回负反馈（不管牌是否讲完——检索预算与翻牌进度无关）。
+  if (session.ragCallCount >= RAG_BUDGET) {
+    return {
+      summary: `⚠️ 检索预算已用尽（${session.ragCallCount}/${RAG_BUDGET} 次）。累计 ${session.ragHits.length} 条资料足够支撑解读：继续 reveal_card/interpret_card 讲牌，全部讲完后调用 write_reading。不要再检索。`,
+      currentHits: [],
+      allHits: session.ragHits,
+      duplicate: true,
+    };
+  }
   session.ragQueryHistory.push(normalized);
   session.ragCallCount++;
 
@@ -1559,6 +1570,14 @@ export async function* runAgent(
       const LATE_ROUND = Math.max(10, MAX_ROUNDS - 6); // 留 6 轮缓冲
       const perCardPending = session.cardReadings.filter((r) => r.reading).length < session.drawnCards.length;
       const needWrapUp = (round >= LATE_ROUND || session.ragCallCount > RAG_BUDGET) && !perCardPending;
+      // ---- 检索工具动态下架（防"预算拒绝后无限重试"死循环）----
+      // 实测：预算耗尽后模型仍连撞 16 次 rag_search 直到 deadline。
+      // 工具响应里的"不要再检索"劝不住它——必须在下一轮直接不给这个工具。
+      // ⚠️ 与 execRagSearch 的拦截条件保持一致（>= 而非 >）：
+      //    第 3 次检索成功后 ragCallCount=3，第 4 次起被拦截（count 不再增长），
+      //    所以下架判定必须用 >=，否则永远差一次不触发。
+      const ragBanned = session.ragCallCount >= RAG_BUDGET;
+      const availableTools = ragBanned ? TOOLS.filter((t) => t.function.name !== "rag_search") : TOOLS;
       if (needWrapUp && session.drawnCards.length > 0) {
         trimmed = [
           ...trimmed,
@@ -1567,8 +1586,20 @@ export async function* runAgent(
             content: `⚠️ 流程即将到达轮次上限（当前第 ${round} 轮，检索已 ${session.ragCallCount} 次）。你手里已有 ${session.drawnCards.length} 张牌与检索结果，信息完全足够。本轮必须调用 write_reading 启动解读管线，不得再调用任何检索或提问工具。`,
           },
         ];
+      } else if (ragBanned) {
+        // 检索超预算：不管牌是否讲完，禁检索（讲完的催收尾，没讲完的继续讲牌）
+        const nextStep = perCardPending
+          ? "继续按节奏 reveal_card/interpret_card 逐张讲牌，全部讲完后调用 write_reading"
+          : "立即调用 write_reading 启动解读管线";
+        trimmed = [
+          ...trimmed,
+          {
+            role: "system" as const,
+            content: `⚠️ 检索预算已用尽（${session.ragCallCount} 次），rag_search 已下架。累计 ${session.ragHits.length} 条资料完全足够。${nextStep}。`,
+          },
+        ];
       }
-      decision = await callLLM(config, trimmed, TOOLS, session.id, "supervisor");
+      decision = await callLLM(config, trimmed, availableTools, session.id, "supervisor");
       roundPromptTokens = decision.usage?.prompt;
       // failover 生效时更新会话粘住的 provider（保持后续风格一致）——按名称比较，避免对象实例误判
       const used = buildProviders().find((p) => p.name === decision.provider);
