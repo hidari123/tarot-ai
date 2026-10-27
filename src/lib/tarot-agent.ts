@@ -158,7 +158,7 @@ export interface AgentEvent {
  * - closing      D 收束追问
  * - crossroads   命运岔路
  */
-export type AskKind = "clarify" | "contract" | "invocation" | "card_confirm" | "closing" | "crossroads";
+export type AskKind = "clarify" | "contract" | "invocation" | "card_confirm" | "closing" | "crossroads" | "continue";
 
 /* ------------------------------------------------------------------ */
 /* 会话存储（globalThis 单例 + SQLite 持久化）                          */
@@ -1688,14 +1688,15 @@ export async function* runAgent(
             return `${pos}那段`;
           });
         }
-        // 收束语作为正文流出
+        // 收束语作为正文流出（先建目标条目再流 delta，前端按"收束"标签建命运之卷）
+        yield { type: "phase", phase: "interpret", label: "占卜师收束这场占卜…" };
         if (closing) {
           for (const chunk of closing.match(/[\s\S]{1,6}/g) ?? []) {
             yield { type: "delta", delta: chunk };
           }
           yield { type: "delta", delta: "\n\n" };
         }
-        yield { type: "phase", phase: "wait_user", label: "占卜师收束这场占卜…" };
+        yield { type: "phase", phase: "wait_user", label: "收束——听听你的回响…" };
         yield {
           type: "ask_user",
           ask: { question, options: cOptions, allowFree: true, prompt: question, kind: "closing" },
@@ -1824,6 +1825,35 @@ export async function* runAgent(
         yield { type: "tool", tool: { name, args, resultSummary: `解读 ${slot.nameZh}：${text.slice(0, 50)}`, durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, `解读 ${slot.nameZh}`, Date.now() - t0);
         roundToolNames.push(name);
+
+        // ---- 节奏交给用户（真实塔罗师讲完一张会停顿等你消化）----
+        // 非最后一张牌：发"继续"型 HITL，前端渲染"翻下一张"按钮。
+        // 用户点击（或插话）才 resume——占卜师不会自动连播。
+        const isLast = idx >= session.drawnCards.length - 1;
+        if (!isLast) {
+          const nextPos = ["过去", "当下", "未来"][idx + 1] ?? `第${idx + 2}张`;
+          yield { type: "phase", phase: "wait_user", label: `这张牌讲完了，等你准备好再翻下一张…` };
+          yield {
+            type: "ask_user",
+            ask: {
+              question: `「${slot.nameZh}」讲完了。准备好了就翻下一张（${nextPos}），或者先说点什么。`,
+              options: ["翻下一张 →", "我有点想法…"],
+              allowFree: true,
+              prompt: "翻下一张",
+              kind: "continue",
+            },
+          };
+          const cont = await new Promise<string>((resolve) => {
+            session.pendingAsk = { resolve, question: "继续", options: ["翻下一张 →"], kind: "continue" };
+          });
+          // 用户在停顿处插话（自由输入）→ 记录为插话，供下一张牌引用
+          if (!/^(翻下一张|继续|好的?|嗯)/.test(cont.trim())) {
+            session.interjections.push(cont.trim());
+            session.messages.push({ role: "user", content: `（翻牌间隙补充：${cont.trim()}）` });
+          } else {
+            session.messages.push({ role: "user", content: "（继续翻下一张）" });
+          }
+        }
         continue;
       }
 

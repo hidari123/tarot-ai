@@ -7,11 +7,8 @@ import AgentTrace, { type ToolCall, type RoundInfo } from "@/components/AgentTra
 import KnowledgePanel, { type RagHitView } from "@/components/KnowledgePanel";
 import CitedReading from "@/components/CitedReading";
 import ShareCardButton from "@/components/ShareCard";
-import ContractPanel from "@/components/ContractPanel";
-import InvocationPanel from "@/components/InvocationPanel";
-import CardConfirmPanel from "@/components/CardConfirmPanel";
-import ClosingPanel from "@/components/ClosingPanel";
 import CardSpread, { type SpreadCard } from "@/components/CardSpread";
+import DialogueFlow, { type FlowEntry } from "@/components/DialogueFlow";
 import CardFan, { type FanCard } from "@/components/CardFan";
 import ReviewCard, { type ReviewData } from "@/components/ReviewCard";
 import SubAgentPipeline, { type SubAgentEvent } from "@/components/SubAgentPipeline";
@@ -265,7 +262,6 @@ export default function TarotApp() {
   } | null>(null);
   const [fanCards, setFanCards] = useState<FanCard[]>([]);
   const [fanCount, setFanCount] = useState(3);
-  const [answerInput, setAnswerInput] = useState("");
   const [followup, setFollowup] = useState("");
   const [subagentEvents, setSubagentEvents] = useState<SubAgentEvent[]>([]);
   const [review, setReview] = useState<ReviewData | null>(null);
@@ -273,17 +269,100 @@ export default function TarotApp() {
   const [error, setError] = useState("");
   const [listening, setListening] = useState(false);
   const [streamStart, setStreamStart] = useState(0);
-  /* ---- 真实塔罗仪式流程状态 ---- */
-  const [contract, setContract] = useState<{ question: string; scope?: string } | null>(null);
-  const [invocation, setInvocation] = useState<{ questions: string[] } | null>(null);
+  /* ---- 真实塔罗仪式流程状态（仅保留仍在使用的部分；仪式对话已并入对话流）---- */
   /** 逐张解读的牌阵状态 */
   const [spread, setSpread] = useState<SpreadCard[]>([]);
-  /** 当前正在确认的牌 */
-  const [confirmCard, setConfirmCard] = useState<{ index: number; label: string } | null>(null);
   /** 用户插话（方案 C） */
   const [interject, setInterject] = useState("");
-  const readingBoxRef = useRef<HTMLDivElement>(null);
-  const askInputRef = useRef<HTMLInputElement>(null);
+  /* ---- 对话流（统一视图）---- */
+  const [entries, setEntries] = useState<FlowEntry[]>([]);
+  /** delta 分流目标：当前 card 条目 id（念牌/解读 delta 流向这里） */
+  const deltaTargetRef = useRef<{ type: "card" | "scroll" | "teller"; entryId?: string } | null>(null);
+  /** 条目 id 计数器 */
+  const entryIdRef = useRef(0);
+  const nextEntryId = () => `e${++entryIdRef.current}`;
+
+  /** 追加一条对话流条目 */
+  const pushEntry = useCallback((e: Omit<FlowEntry, "id"> & { id?: string }) => {
+    const id = e.id ?? nextEntryId();
+    setEntries((prev) => [...prev, { ...e, id } as FlowEntry]);
+    return id;
+  }, []);
+
+  /** 更新指定条目 */
+  const updateEntry = useCallback((id: string, patch: Partial<FlowEntry> | ((e: FlowEntry) => Partial<FlowEntry>)) => {
+    setEntries((prev) =>
+      prev.map((e) => (e.id === id ? { ...e, ...(typeof patch === "function" ? patch(e) : patch) } : e))
+    );
+  }, []);
+
+  /**
+   * 回答对话流中的 ask 条目：条目转 settled（用户气泡），并发送 API。
+   * card 条目的确认问题走 answerCardConfirm（挂在 card 上）。
+   * continue 型（翻下一张）走 answerNextCard。
+   */
+  const answerFlowAsk = useCallback(async (entryId: string, answer: string) => {
+    // 条目固定为用户气泡
+    updateEntry(entryId, { settled: true, kind: "user", text: answer, ask: undefined });
+    setAsk(null);
+    if (!sessionId) return;
+    // 呼召走多答案接口
+    const isInvocation = answer.includes("\n");
+    try {
+      await fetch("/api/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(isInvocation ? { sessionId, answers: answer.split("\n") } : { sessionId, answer }),
+      });
+    } catch {
+      setError("回应发送失败，请重试");
+    }
+  }, [sessionId, updateEntry]);
+
+  /** 回答 card 条目上的确认问题 */
+  const answerCardConfirm = useCallback(async (entryId: string, answer: string) => {
+    // 答案挂到牌上（流内显示为该牌的用户气泡），占卜师随后开始讲透这张牌
+    updateEntry(entryId, (e) => (e.card ? { card: { ...e.card, answer } } : {}));
+    setAsk(null);
+    if (!sessionId) return;
+    try {
+      await fetch("/api/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, answer }),
+      });
+    } catch {
+      setError("回应发送失败，请重试");
+    }
+  }, [sessionId, updateEntry]);
+
+  /**
+   * "翻下一张"：应答后端的 continue 型 HITL。
+   * answerFlowAsk 已把 ask 条目固定为用户气泡，这里只需补发 API（条目已处理）。
+   * 找到最近的 kind=continue 且未 settled 的 ask 条目，把它转成气泡再提交。
+   */
+  const answerNextCard = useCallback(async () => {
+    const target = [...entries].reverse().find((e) => e.kind === "ask" && !e.settled && e.ask?.kind === "continue");
+    if (target) {
+      updateEntry(target.id, { settled: true, kind: "user", text: "翻下一张 →", ask: undefined });
+    }
+    setAsk(null);
+    if (!sessionId) return;
+    try {
+      await fetch("/api/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, answer: "翻下一张 →" }),
+      });
+    } catch {
+      setError("回应发送失败，请重试");
+    }
+  }, [entries, sessionId, updateEntry]);
+
+  /** 展开/收起条目 */
+  const toggleEntry = useCallback((entryId: string) => {
+    setEntries((prev) => prev.map((e) => (e.id === entryId ? { ...e, collapsed: !e.collapsed } : e)));
+  }, []);
 
   /* 拉取人格列表 */
   useEffect(() => {
@@ -292,15 +371,6 @@ export default function TarotApp() {
       .then((d) => setPersonas(d.personas ?? []))
       .catch(() => {});
   }, []);
-
-  useEffect(() => {
-    const el = readingBoxRef.current;
-    if (el && streaming) el.scrollTop = el.scrollHeight;
-  }, [reading, streaming]);
-
-  useEffect(() => {
-    if (ask && !ask.cardSelection) askInputRef.current?.focus();
-  }, [ask]);
 
   /* SSE 消费 */
   const consumeStream = useCallback(async (res: Response) => {
@@ -329,6 +399,21 @@ export default function TarotApp() {
             case "phase":
               setPhase(p.phase);
               if (p.label) setPhaseLabel(p.label);
+              // 收束阶段：建"命运之卷"条目，后续收束 delta 流向它
+              // （含 write_reading 综合正文与 close_reading 收束语）
+              if (p.label && (p.label.includes("收束") || p.label.includes("子 Agent 管线启动"))) {
+                // 已有 scroll 条目则复用（收束语接在综合正文后）
+                setEntries((prev) => {
+                  const lastScroll = [...prev].reverse().find((e) => e.kind === "scroll");
+                  if (lastScroll) {
+                    deltaTargetRef.current = { type: "scroll", entryId: lastScroll.id };
+                    return prev;
+                  }
+                  const sid = nextEntryId();
+                  deltaTargetRef.current = { type: "scroll", entryId: sid };
+                  return [...prev, { id: sid, kind: "scroll", title: "命运之卷 · 综合与收束", text: "", collapsed: false } as FlowEntry];
+                });
+              }
               break;
             case "reasoning":
               setReasoning((prev) => (prev + p.reasoning).slice(-4000));
@@ -377,13 +462,44 @@ export default function TarotApp() {
                 setFanCount(p.fanCount ?? 3);
               }
               setPhase("wait_user");
+              // ---- 对话流映射 ----
+              if (p.ask?.kind === "card_confirm") {
+                // 牌面确认：挂到当前激活的 card 条目上
+                setEntries((prev) => {
+                  const lastCard = [...prev].reverse().find((e) => e.kind === "card");
+                  if (!lastCard?.card) return prev;
+                  return prev.map((e) =>
+                    e.id === lastCard.id
+                      ? { ...e, card: { ...e.card!, question: p.ask.question, options: p.ask.options } }
+                      : e
+                  );
+                });
+              } else {
+                // 其余（承约/呼召/澄清/岔路/收束/继续）：插入待回答条目
+                pushEntry({
+                  kind: "ask",
+                  ask: {
+                    question: p.ask.question,
+                    options: p.ask.options,
+                    kind: p.ask.kind,
+                    cardSelection: p.cardSelection,
+                    crossroads: p.crossroads,
+                  },
+                });
+              }
               break;
-            /* ---- 真实塔罗仪式流程事件 ---- */
+            /* ---- 真实塔罗仪式流程事件（同时映射进对话流） ---- */
             case "contract":
-              setContract(p.contract ?? null);
+              // 对话流：占卜师说承约语（问题本身由随后的 ask_user 事件建面板）
+              if (p.contract) {
+                pushEntry({
+                  kind: "teller",
+                  text: `我听到的是——${p.contract.question}${p.contract.scope ? `\n（本次牌阵：${p.contract.scope}）` : ""}`,
+                });
+              }
               break;
             case "invocation":
-              setInvocation(p.invocation ?? null);
+              // 对话流：呼召由随后的 ask_user（kind=invocation）建三问面板
               break;
             case "card_reveal": {
               const r = p.cardReveal;
@@ -396,11 +512,37 @@ export default function TarotApp() {
                   );
                   if (next.length === 0) {
                     // 首次收到：构造完整牌阵（当前牌 + 后续待翻）
-                    return [{ ...r, done: false, active: true }];
+                    return [{ ...r, index: r.cardIndex, done: false, active: true } as SpreadCard];
                   }
                   return next;
                 });
-                setConfirmCard({ index: r.cardIndex, label: `${r.pos}·${r.nameZh}` });
+                // ---- 对话流：新建 card 条目（念牌内容直接带上）----
+                const entryId = nextEntryId();
+                pushEntry({
+                  id: entryId,
+                  kind: "card",
+                  card: {
+                    cardIndex: r.cardIndex,
+                    nameZh: r.nameZh,
+                    image: r.image,
+                    reversed: r.reversed,
+                    pos: r.pos,
+                    narrative: r.narrative,
+                    meaning: r.meaning,
+                    revealed: true,
+                    readingDone: false,
+                  },
+                });
+                // 后续该牌的解读 delta 流向这个条目
+                deltaTargetRef.current = { type: "card", entryId };
+                // 翻新牌时：把之前的牌折叠为摘要行（保持时间线整洁）
+                setEntries((prev) =>
+                  prev.map((e) =>
+                    e.kind === "card" && e.card && e.card.cardIndex !== r.cardIndex && e.card.readingDone && !e.collapsed
+                      ? { ...e, collapsed: true }
+                      : e
+                  )
+                );
               }
               break;
             }
@@ -408,7 +550,15 @@ export default function TarotApp() {
               const cr = p.cardReading;
               if (cr) {
                 setSpread((prev) => prev.map((c, i) => (i === cr.cardIndex ? { ...c, done: true, active: false } : c)));
-                setConfirmCard(null);
+                // ---- 对话流：标记该牌解读完成（保持展开，让用户读完全文；
+                //      折叠为摘要在下一张翻牌时自动执行 / 或用户手动收起）----
+                setEntries((prev) =>
+                  prev.map((e): FlowEntry => {
+                    if (e.kind !== "card" || e.card?.cardIndex !== cr.cardIndex) return e;
+                    return { ...e, card: { ...e.card!, reading: cr.text, readingDone: true }, collapsed: false };
+                  })
+                );
+                deltaTargetRef.current = null;
               }
               break;
             }
@@ -421,9 +571,39 @@ export default function TarotApp() {
             case "review":
               setReview(p.review);
               break;
-            case "delta":
-              setReading((prev) => prev + p.delta);
+            case "delta": {
+              const d = p.delta ?? "";
+              if (!d) break;
+              setReading((prev) => prev + d); // 完整正文仍累积（分享卡/落库用）
+              // ---- 对话流分流 ----
+              const target = deltaTargetRef.current;
+              if (target?.type === "card" && target.entryId) {
+                // 流进当前牌条目的解读区
+                setEntries((prev) =>
+                  prev.map((e) =>
+                    e.id === target.entryId && e.card
+                      ? { ...e, card: { ...e.card, reading: (e.card.reading ?? "") + d } }
+                      : e
+                  )
+                );
+              } else if (target?.type === "scroll" && target.entryId) {
+                // 流进命运之卷条目
+                setEntries((prev) =>
+                  prev.map((e) => (e.id === target.entryId ? { ...e, text: (e.text ?? "") + d } : e))
+                );
+              } else {
+                // 无目标：占卜师的开场白/过渡语 → teller 气泡
+                setEntries((prev) => {
+                  // 复用最后一个 teller 气泡（连续 delta 拼接）
+                  const last = prev[prev.length - 1];
+                  if (last?.kind === "teller" && !last.settled) {
+                    return [...prev.slice(0, -1), { ...last, text: (last.text ?? "") + d }];
+                  }
+                  return [...prev, { id: nextEntryId(), kind: "teller", text: d }];
+                });
+              }
               break;
+            }
             case "done":
               setPhase("done");
               break;
@@ -434,7 +614,7 @@ export default function TarotApp() {
         } catch { /* 忽略 */ }
       }
     }
-  }, []);
+  }, [pushEntry]);
 
   /* 开始占卜 */
   const startDivination = useCallback(async () => {
@@ -458,11 +638,11 @@ export default function TarotApp() {
     setPhase(null);
     setPhaseLabel("");
     /* 仪式流程状态重置 */
-    setContract(null);
-    setInvocation(null);
     setSpread([]);
-    setConfirmCard(null);
     setInterject("");
+    /* 对话流重置：用户的问题作为第一条气泡 */
+    setEntries([{ id: nextEntryId(), kind: "user", text: q } as FlowEntry]);
+    deltaTargetRef.current = null;
     setStage("drawing");
     setStreaming(true);
     setStreamStart(Date.now());
@@ -481,11 +661,10 @@ export default function TarotApp() {
     }
   }, [question, persona, consumeStream]);
 
-  /* HITL 应答 */
+  /* HITL 应答（选牌扇面 / 随机代抽等仍在流外的交互） */
   const answerAsk = useCallback(async (answer: string) => {
     if (!answer.trim() || !sessionId) return;
     setAsk(null);
-    setAnswerInput("");
     try {
       await fetch("/api/answer", {
         method: "POST",
@@ -502,32 +681,13 @@ export default function TarotApp() {
     answerAsk(payload);
   }, [answerAsk]);
 
-  /* 承约确认（A1） */
-  const answerContract = useCallback(async (answer: string) => {
-    setContract(null);
-    await answerAsk(answer);
-  }, [answerAsk]);
-
-  /* 三问呼召回答（A3）：多答案提交 */
-  const answerInvocation = useCallback(async (answers: string[]) => {
-    setInvocation(null);
-    if (!sessionId) return;
-    try {
-      await fetch("/api/answer", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, answers }),
-      });
-    } catch {
-      setError("呼召提交失败，请重试");
-    }
-  }, [sessionId]);
-
   /* 方案 C：用户插话（补充/修正信息） */
   const sendInterjection = useCallback(async () => {
     const text = interject.trim();
     if (!text || !sessionId) return;
     setInterject("");
+    // 插话立刻显示在对话流里（用户气泡）
+    pushEntry({ kind: "user", text });
     // 插话作为独立通道：追加进会话历史，不唤醒当前等待
     setReading((prev) => prev + `\n\n【补充】${text}\n`);
     try {
@@ -539,13 +699,16 @@ export default function TarotApp() {
     } catch {
       setError("插话发送失败");
     }
-  }, [interject, sessionId]);
+  }, [interject, sessionId, pushEntry]);
 
   /* 追问 */
   const sendFollowup = useCallback(async () => {
     const f = followup.trim();
     if (!f || !sessionId) return;
     setFollowup("");
+    // 追问显示为用户气泡；正文以新气泡流式呈现（清掉旧的 delta 目标）
+    pushEntry({ kind: "user", text: `【追问】${f}` });
+    deltaTargetRef.current = null;
     setReading((prev) => prev + `\n\n【追问】${f}\n`);
     setStreaming(true);
     setStreamStart(Date.now());
@@ -562,7 +725,7 @@ export default function TarotApp() {
     } finally {
       setStreaming(false);
     }
-  }, [followup, sessionId, consumeStream]);
+  }, [followup, sessionId, consumeStream, pushEntry]);
 
   /* 语音输入 */
   const startVoice = useCallback(() => {
@@ -621,11 +784,12 @@ export default function TarotApp() {
     setPhase(null);
     setPhaseLabel("");
     /* 仪式流程状态重置 */
-    setContract(null);
-    setInvocation(null);
     setSpread([]);
-    setConfirmCard(null);
     setInterject("");
+    /* 对话流重置 */
+    setEntries([]);
+    deltaTargetRef.current = null;
+    entryIdRef.current = 0;
     setError("");
     setStreaming(false);
   }, []);
@@ -738,55 +902,34 @@ export default function TarotApp() {
           transition={{ duration: 0.6 }}
           className="w-full max-w-4xl z-10 flex flex-col items-center"
         >
-          {/* ---------- 真实塔罗仪式：承约（A1）---------- */}
-          {contract && (
-            <ContractPanel contract={contract} onAnswer={answerContract} />
-          )}
+          {/* ---------- 牌阵横条（固定顶部，进度可见）---------- */}
+          {spread.length > 0 && <CardSpread cards={spread} />}
 
-          {/* ---------- 真实塔罗仪式：三问呼召（A3）---------- */}
-          {invocation && (
-            <InvocationPanel questions={invocation.questions} onAnswer={answerInvocation} />
-          )}
-
-          {/* ---------- 真实塔罗仪式：牌阵（逐张翻牌）---------- */}
-          {spread.length > 0 && (
-            <CardSpread cards={spread} />
-          )}
-
-          {/* ---------- 真实塔罗仪式：牌面确认（B）---------- */}
-          {ask?.kind === "card_confirm" && (
-            <CardConfirmPanel
-              question={ask.question}
-              options={ask.options}
-              cardLabel={confirmCard?.label}
-              onAnswer={answerAsk}
-            />
-          )}
-
-          {/* 等待提示 */}
-          {cards.length === 0 && !ask && fanCards.length === 0 && !contract && !invocation && (
-            <div className="flex flex-col items-center gap-5 py-10">
-              <motion.div
-                animate={{ rotate: [0, -8, 8, -6, 6, 0], scale: [1, 1.05, 1, 1.08, 1, 1] }}
-                transition={{ duration: 1.4, repeat: 2 }}
-                className="text-7xl"
-              >
-                🔮
-              </motion.div>
-              <p className="text-purple-300/80 text-lg animate-pulse tracking-[0.3em]" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>
-                {streaming ? "星辰流转 · 占卜师工作中" : "等待中"}
-              </p>
-            </div>
-          )}
-
-          {/* 选牌扇面（正常路径：事件携带候选牌） */}
-          {ask?.cardSelection && fanCards.length > 0 && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="w-full">
-              <CardFan cards={fanCards} count={fanCount} onConfirm={confirmFanSelection} />
+          {/* ---------- Agent 状态条 ---------- */}
+          {(phase || streaming) && (
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mt-4">
+              <AgentStatusBar phase={phase} />
+              {phaseLabel && <p className="mt-2 text-center text-xs text-purple-400/60 tracking-wide">{phaseLabel}</p>}
+              {streaming && !ask && <WaitingHint since={streamStart} />}
             </motion.div>
           )}
 
-          {/* 选牌兜底：事件未携带候选牌时，从前端牌库随机出 7 张（防止白屏死等） */}
+          {/* ---------- 对话流主体（问题与回答同区，逐张解读可折叠）---------- */}
+          <DialogueFlow
+            entries={entries}
+            onAskAnswer={answerFlowAsk}
+            onCardAnswer={answerCardConfirm}
+            onNextCard={() => answerNextCard()}
+            onToggleEntry={toggleEntry}
+            streaming={streaming}
+          />
+
+          {/* 选牌扇面（cardSelection 是特殊交互，保留在流外） */}
+          {ask?.cardSelection && fanCards.length > 0 && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="w-full max-w-2xl mt-4">
+              <CardFan cards={fanCards} count={fanCount} onConfirm={confirmFanSelection} />
+            </motion.div>
+          )}
           {ask?.cardSelection && fanCards.length === 0 && (
             <motion.div
               initial={{ opacity: 0, y: 16 }}
@@ -806,134 +949,15 @@ export default function TarotApp() {
             </motion.div>
           )}
 
-          {/* ---------- 真实塔罗仪式：收束追问（D）---------- */}
-          {ask?.kind === "closing" && (
-            <ClosingPanel question={ask.question} options={ask.options} onAnswer={answerAsk} />
-          )}
-
-          {/* 普通问答 / 岔路（承约、呼召、牌面确认、收束各有专用面板，此处不重复渲染） */}
-          {ask && !ask.cardSelection && ask.kind !== "card_confirm" && ask.kind !== "closing" && (
-            <motion.div
-              initial={{ opacity: 0, y: 20, scale: 0.96 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -10 }}
-              className={`w-full max-w-xl mt-6 rounded-3xl backdrop-blur-md p-6 md:p-7 ${
-                ask.crossroads
-                  ? "border border-amber-500/30 bg-amber-950/10 shadow-[0_0_40px_rgba(245,158,11,0.12)]"
-                  : "border border-emerald-500/30 bg-emerald-950/15 shadow-[0_0_40px_rgba(16,185,129,0.12)]"
-              }`}
-            >
-              <div className="flex items-center gap-2 mb-3">
-                <span className="text-xl">{ask.crossroads ? "🔮" : "💭"}</span>
-                <span className={`text-sm tracking-wider ${ask.crossroads ? "text-amber-200/90" : "text-emerald-200/90"}`}>
-                  {ask.crossroads ? "命运走到了岔路口" : "占卜师想要了解你"}
-                </span>
-              </div>
-              <p className="text-lg md:text-xl text-purple-50/95 leading-relaxed mb-4" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>
-                {ask.question}
-              </p>
-              {/* 选项区：无选项时给出明确提示（不能留空白死锁） */}
-              {ask.options && ask.options.length > 0 ? (
-                <div className="flex flex-col gap-2 mb-3">
-                  {ask.options.map((opt) => (
-                    <motion.button
-                      key={opt}
-                      whileHover={{ scale: 1.02, x: 4 }}
-                      whileTap={{ scale: 0.98 }}
-                      onClick={() => answerAsk(opt)}
-                      className={`text-left px-5 py-3 rounded-xl border transition-all ${
-                        ask.crossroads
-                          ? "border-amber-500/30 bg-amber-900/20 text-amber-100/90 hover:bg-amber-800/30 hover:border-amber-400/50"
-                          : "border-emerald-500/30 bg-emerald-900/20 text-emerald-100/90 hover:bg-emerald-800/30 hover:border-emerald-400/50"
-                      }`}
-                    >
-                      {opt}
-                    </motion.button>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-xs text-amber-200/60 mb-3">
-                  ⏳ 占卜师正在铺开选项，请稍候…（也可以直接输入你的想法）
-                </p>
-              )}
-              {/* 自由输入：普通问答恒显示；岔路场景在"有选项"或"选项异常"时可输入
-                  （此前 crossroads 时完全隐藏输入框 → options 为空时彻底死锁） */}
-              {(!ask.crossroads || !ask.options || ask.options.length === 0) && (
-                <div className="flex gap-2">
-                  <input
-                    ref={askInputRef}
-                    className="flex-1 px-4 py-3 rounded-xl bg-purple-950/30 border border-purple-500/30 text-purple-50 placeholder-purple-300/40 focus:outline-none focus:border-emerald-400/60 transition-all"
-                    placeholder="或自由输入你的回答…"
-                    value={answerInput}
-                    onChange={(e) => setAnswerInput(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && answerAsk(answerInput)}
-                    maxLength={200}
-                  />
-                  <button
-                    onClick={() => answerAsk(answerInput)}
-                    className="px-5 py-3 rounded-xl bg-gradient-to-r from-emerald-700 to-teal-700 text-white font-medium hover:shadow-[0_0_24px_rgba(16,185,129,0.4)] transition-shadow"
-                  >
-                    回应
-                  </button>
-                </div>
-              )}
-            </motion.div>
-          )}
-
-          {/* 卡牌区 */}
-          {cards.length > 0 && (
-            <div className="flex gap-3 md:gap-8 justify-center flex-wrap mt-4">
-              {cards.map((card, i) => (
-                <TarotCardView key={`${card.id}-${i}`} card={card} index={i} flipped={flipped[i]} onFlip={handleFlip} />
-              ))}
-            </div>
-          )}
-
-          {/* Agent 状态条 */}
-          {(phase || streaming) && (cards.length > 0 || !ask) && (
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mt-8">
-              <AgentStatusBar phase={phase} />
-              {phaseLabel && <p className="mt-2 text-center text-xs text-purple-400/60 tracking-wide">{phaseLabel}</p>}
-              {/* 等待反馈：当前步骤已耗时，超过 10 秒提示模型较慢 */}
-              {streaming && !ask && <WaitingHint since={streamStart} />}
-            </motion.div>
-          )}
-
-          {/* 子 Agent 流水线 */}
-          <SubAgentPipeline events={subagentEvents} />
-
-          {/* Agent Trace 面板（等待用户输入时明确显示"等待回应"而非误导性的运行中） */}
-          <AgentTrace tools={tools} reasoning={reasoning} streaming={streaming && !ask} rounds={rounds} />
-
-          {/* RAG 知识面板 */}
-          <KnowledgePanel hits={ragHits} />
-
-          {/* 审校报告 */}
-          {review && <ReviewCard review={review} />}
-
-          {/* 解读文本区 */}
-          {(reading || error) && (
-            <div
-              ref={readingBoxRef}
-              className="mt-6 w-full max-w-2xl rounded-3xl bg-gradient-to-b from-[#170d24]/85 to-[#0b0514]/85 backdrop-blur-md border border-purple-500/20 p-6 md:p-9 shadow-2xl max-h-[50vh] overflow-y-auto"
-            >
-              {error ? (
-                <p className="text-purple-300/90 text-center py-6">{error}</p>
-              ) : (
-                <CitedReading text={reading} maxCite={ragHits.length} streaming={streaming} />
-              )}
-            </div>
-          )}
-
-          {/* 方案 C：随时插话（牌与牌之间补充/修正信息） */}
-          {(spread.length > 0 || streaming) && (
+          {/* ---------- 插话输入（对话流下方，随时可补充）---------- */}
+          {(spread.length > 0 || streaming) && !ask && (
             <div className="mt-3 w-full max-w-2xl flex gap-2">
               <input
                 value={interject}
                 onChange={(e) => setInterject(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && sendInterjection()}
                 maxLength={120}
-                placeholder="想补充点什么？占卜师会听到…（如：其实我不是不甘心，是怕又白投）"
+                placeholder="想补充点什么？占卜师会听到…"
                 className="flex-1 px-4 py-2.5 rounded-xl bg-purple-950/25 border border-purple-500/20 text-purple-50 placeholder-purple-300/30 focus:outline-none focus:border-purple-400/50 transition-all text-sm"
               />
               <button
@@ -946,7 +970,7 @@ export default function TarotApp() {
             </div>
           )}
 
-          {/* 追问 */}
+          {/* ---------- 追问 / 分享（完成态）---------- */}
           {done && sessionId && (
             <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-2xl mt-5">
               <div className="flex gap-2">
@@ -983,9 +1007,7 @@ export default function TarotApp() {
                     data={{
                       question,
                       cards: cards.map((c) => ({ nameZh: c.nameZh, image: c.image, reversed: c.reversed, pos: c.pos })),
-                      // 兜底摘要（LLM 总结失败时用）：收束段
                       summary: extractShareSummary(reading),
-                      // 完整解读全文：交给 LLM 提炼成 80~150 字分享文案
                       fullReading: reading,
                       personaName: persona?.name,
                       sessionId,
@@ -1002,6 +1024,37 @@ export default function TarotApp() {
               </div>
             </motion.div>
           )}
+
+          {/* ---------- 过程细节（可折叠：面试演示时展开）---------- */}
+          <details className="w-full max-w-2xl mt-6 group">
+            <summary className="text-xs text-purple-400/50 tracking-wider cursor-pointer select-none hover:text-purple-300/80 transition-colors text-center">
+              ▸ 过程细节（子 Agent 流水线 · Trace · RAG 检索 · 审校报告 · 旧版卡牌）
+            </summary>
+            <div className="mt-4 flex flex-col items-center gap-4">
+              {/* 卡牌区（3D 翻牌，旧交互保留） */}
+              {cards.length > 0 && (
+                <div className="flex gap-3 md:gap-8 justify-center flex-wrap">
+                  {cards.map((card, i) => (
+                    <TarotCardView key={`${card.id}-${i}`} card={card} index={i} flipped={flipped[i]} onFlip={handleFlip} />
+                  ))}
+                </div>
+              )}
+              <SubAgentPipeline events={subagentEvents} />
+              <AgentTrace tools={tools} reasoning={reasoning} streaming={streaming && !ask} rounds={rounds} />
+              <KnowledgePanel hits={ragHits} />
+              {review && <ReviewCard review={review} />}
+              {/* 完整正文（旧版卷轴，含可点击引文） */}
+              {(reading || error) && (
+                <div className="w-full rounded-3xl bg-gradient-to-b from-[#170d24]/85 to-[#0b0514]/85 backdrop-blur-md border border-purple-500/20 p-6 md:p-9 shadow-2xl max-h-[50vh] overflow-y-auto">
+                  {error ? (
+                    <p className="text-purple-300/90 text-center py-6">{error}</p>
+                  ) : (
+                    <CitedReading text={reading} maxCite={ragHits.length} streaming={streaming} />
+                  )}
+                </div>
+              )}
+            </div>
+          </details>
         </motion.div>
       )}
 
