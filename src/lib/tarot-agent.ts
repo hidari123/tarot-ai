@@ -1633,6 +1633,25 @@ export async function* runAgent(
     pendingToolResponses = [];
   };
 
+  /**
+   * 待插入的 user 备注（continue/节奏控制等）。
+   *
+   * ⚠️ 为什么不能在工具循环尾部直接 push user：
+   * 单工具/轮守卫下，模型并行发的 extra tool_calls 会 deferred 到下一轮开头
+   * flush。若 continue 的 user 先 push，序列变成
+   *   assistant(tool_calls=[interpret,reveal]) → tool(interpret) → user(继续) → tool(deferred reveal)
+   * ——tool 响应被 user 隔断，MiniMax 严格协议直接 400
+   * "tool call result does not follow tool call"（实测 15:29 复现场）。
+   * 暂存到轮首、在 flushPendingToolResponses 之后插入，位置天然安全。
+   */
+  const pendingUserNotes: string[] = [];
+  const flushPendingUserNotes = () => {
+    for (const note of pendingUserNotes) {
+      session.messages.push({ role: "user", content: note });
+    }
+    pendingUserNotes.length = 0;
+  };
+
   // 看门狗：**活跃处理时间**上限（默认 8 分钟）。
   // ⚠️ 只累计 Agent 实际工作的时间（LLM 调用 + 工具执行），
   // HITL 等用户思考的时间不计——9 次交互每次 1 分钟就超的旧逻辑
@@ -1652,8 +1671,10 @@ export async function* runAgent(
   // 下一次追问时 MiniMax 会直接返回 400 "tool call result does not follow tool call"。
   try {
   while (round < MAX_ROUNDS) {
-    // 补齐上一轮被跳过的 tool_call 响应
+    // 补齐上一轮被跳过的 tool_call 响应（必须最先——assistant→tool 配对优先）
     flushPendingToolResponses();
+    // 插入节奏控制备注（continue 等）——在 deferred tool 响应之后，位置安全
+    flushPendingUserNotes();
 
     // ---- 插入暂存的插话（方案 C）----
     // 位置已安全（上一轮 assistant→tool 已配对完成）
@@ -2068,15 +2089,17 @@ export async function* runAgent(
             },
           };
           const cont = await waitUserAnswer(session, "继续", ["翻下一张 →"], "continue", hitlClock);
-          // 超时/断开：视同"翻下一张"继续流程（不让整场占卜挂死）
+          // 超时/断开：视同"翻下一张"继续流程（不让整场占卜挂死）。
+          // ⚠️ 一律走 pendingUserNotes（轮首 flush）：直接 push user 会把
+          // deferred tool 响应与 tool_calls 隔断 → MiniMax 400 协议错位。
           if (isHitlGone(cont)) {
-            session.messages.push({ role: "user", content: "（继续翻下一张）" });
+            pendingUserNotes.push("（继续翻下一张）");
           } else if (!/^(翻下一张|继续|好的?|嗯)/.test(cont.trim())) {
             // 用户在停顿处插话（自由输入）→ 记录为插话，供下一张牌引用
             session.interjections.push(cont.trim());
-            session.messages.push({ role: "user", content: `（翻牌间隙补充：${cont.trim()}）` });
+            pendingUserNotes.push(`（翻牌间隙补充：${cont.trim()}）`);
           } else {
-            session.messages.push({ role: "user", content: "（继续翻下一张）" });
+            pendingUserNotes.push("（继续翻下一张）");
           }
         }
         continue;

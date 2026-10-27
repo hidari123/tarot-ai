@@ -75,7 +75,8 @@ export default function CardSpread({ cards, onFlip }: {
               {c.pos}
             </span>
 
-            {/* 牌面 */}
+            {/* 牌面：未揭示 = 纯牌背（剧透防护——选完牌不该一眼看到三张是什么）；
+                active（正在翻）或 done（已解读）才显示牌面 */}
             <motion.button
               type="button"
               onClick={() => c.done && onFlip?.(c.index)}
@@ -91,38 +92,54 @@ export default function CardSpread({ cards, onFlip }: {
                   ? "border-purple-400/70 shadow-[0_0_30px_rgba(168,85,247,0.35)]"
                   : c.done
                     ? "border-amber-400/45 cursor-pointer hover:border-amber-300/70"
-                    : "border-purple-800/40 opacity-60"
+                    : "border-purple-800/40"
               }`}
             >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={c.image}
-                alt={c.nameZh}
-                className={`w-full h-full object-cover transition-transform ${c.reversed ? "rotate-180" : ""}`}
-              />
-              {/* 未解读的遮罩 */}
-              {!c.done && (
-                <div className="absolute inset-0 bg-gradient-to-br from-purple-950/85 via-purple-900/70 to-[#12081f]/90 flex items-center justify-center">
-                  <span className="text-2xl text-purple-300/40">✦</span>
+              {c.active || c.done ? (
+                <motion.div
+                  initial={{ rotateY: 180, opacity: 0.6 }}
+                  animate={{ rotateY: 0, opacity: 1 }}
+                  transition={{ duration: 0.9, ease: [0.4, 0.1, 0.2, 1] }}
+                  className="absolute inset-0 [perspective:600px]"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={c.image}
+                    alt={c.nameZh}
+                    className={`w-full h-full object-cover ${c.reversed ? "rotate-180" : ""}`}
+                  />
+                </motion.div>
+              ) : (
+                /* 牌背：与旧版 TarotCardView 一致的星空牌背（看不到任何牌面信息） */
+                <div className="absolute inset-0 bg-[#160b26] flex items-center justify-center">
+                  <div className="w-10 h-10 rounded-full border-2 border-purple-400/50 flex items-center justify-center rune-breathe">
+                    <span className="text-xl text-purple-300/70">✦</span>
+                  </div>
+                  <div className="absolute inset-1.5 rounded-lg border border-purple-500/25" />
                 </div>
               )}
-              {/* 已解读的勾 */}
               {c.done && (
-                <div className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-amber-400/90 flex items-center justify-center">
+                <div className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-amber-400/90 flex items-center justify-center z-10">
                   <span className="text-[10px] text-purple-950 font-bold">✓</span>
                 </div>
               )}
             </motion.button>
 
-            {/* 牌名 */}
+            {/* 牌名：同样只在揭示后显示（未揭示显示 ?） */}
             <span
               className={`mt-2 text-xs md:text-sm text-center leading-tight ${
                 c.done ? "text-amber-200/90" : c.active ? "text-purple-100/80" : "text-purple-400/35"
               }`}
               style={{ fontFamily: "'Ma Shan Zheng', serif" }}
             >
-              {c.nameZh}
-              {c.reversed && <span className="text-[9px] block text-purple-300/50">逆位</span>}
+              {c.active || c.done ? (
+                <>
+                  {c.nameZh}
+                  {c.reversed && <span className="text-[9px] block text-purple-300/50">逆位</span>}
+                </>
+              ) : (
+                <span className="text-purple-400/30">？</span>
+              )}
             </span>
           </motion.div>
         ))}

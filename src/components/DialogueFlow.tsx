@@ -144,12 +144,24 @@ const CardBlock = memo(function CardBlock({
   /* ---- 展开态：完整的牌段落 ---- */
   return (
     <div className="w-full rounded-2xl border border-purple-500/25 bg-[#0d0819]/70 backdrop-blur-sm overflow-hidden">
-      {/* 牌头：图 + 名 + 位置 */}
+      {/* 牌头：翻牌动画（牌背 → 翻转 → 牌面，保留"亲手翻开"的仪式感）+ 名 + 位置 */}
       <div className="flex items-center gap-3 px-4 py-3 border-b border-purple-500/15">
-        <div className="relative w-12 h-[72px] rounded-lg overflow-hidden border border-purple-400/40 shrink-0">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={c.image} alt={c.nameZh} className={`w-full h-full object-cover ${c.reversed ? "rotate-180" : ""}`} />
-        </div>
+        <motion.div
+          initial={{ rotateY: 180 }}
+          animate={{ rotateY: 0 }}
+          transition={{ duration: 0.9, ease: [0.4, 0.1, 0.2, 1] }}
+          className="relative w-12 h-[72px] shrink-0 [perspective:300px]"
+        >
+          {/* 牌面（翻到正面后显示） */}
+          <div className="absolute inset-0 rounded-lg overflow-hidden border border-purple-400/40 [backface-visibility:hidden]">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={c.image} alt={c.nameZh} className={`w-full h-full object-cover ${c.reversed ? "rotate-180" : ""}`} />
+          </div>
+          {/* 牌背（初始可见，随翻转消失） */}
+          <div className="absolute inset-0 rounded-lg bg-[#160b26] border border-purple-500/30 flex items-center justify-center [backface-visibility:hidden] [transform:rotateY(180deg)]">
+            <span className="text-purple-300/60 text-sm">✦</span>
+          </div>
+        </motion.div>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-amber-200/95 text-base" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>
