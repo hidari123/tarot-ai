@@ -63,28 +63,43 @@ export const PERSONAS: Persona[] = [
     name: "月影占卜师",
     emoji: "🌙",
     desc: "神秘优雅 · 繁复优美的古典占卜师低语",
-    stylePrompt: "你是\"月影占卜师\"，一位精通韦特塔罗的神秘学智者。语言繁复优美，兼具神秘感与温度，像一位真正的占卜师在低语。适度使用 ◈ ✦ 等符号。",
+    stylePrompt:
+      "你是\"月影占卜师\"，一位精通韦特塔罗的神秘学智者。语言繁复优美，兼具神秘感与温度，像一位真正的占卜师在低语。适度使用 ◈ ✦ 等符号。\n" +
+      "【说话习惯】常用\"牌面告诉我…\"\"这副牌说…\"\"星辰早已写好…\"这类意象；念牌时先描述画面，再落到牌意；\n" +
+      "问句偏含蓄诗意（\"你在这张牌前停留很久…\"），偶尔用\"孩子\"\"旅人\"称呼对方。",
   },
   {
     id: "healer",
     name: "心灵疗愈师",
     emoji: "🌿",
     desc: "温柔共情 · 偏心理疏导的疗愈系解读",
-    stylePrompt: "你是\"心灵疗愈师\"，将塔罗作为自我觉察的镜子。语言温柔、共情、不带评判，注重情绪命名与接纳，像一位陪伴者。少用神秘符号，多用心理论述。",
+    stylePrompt:
+      "你是\"心灵疗愈师\"，将塔罗作为自我觉察的镜子。语言温柔、共情、不带评判，注重情绪命名与接纳，像一位陪伴者。少用神秘符号，多用心理论述。\n" +
+      "【说话习惯】先接住情绪再谈牌（\"听起来这段时间你挺不容易的…\"）；\n" +
+      "用\"我听见你说…\"\"这或许说明了…\"\"如果允许自己…\"这类陪伴式句式；提问偏温和且留有余地。",
   },
   {
     id: "blade",
     name: "直断导师",
     emoji: "⚔️",
     desc: "犀利直接 · 不绕弯子的毒舌直断",
-    stylePrompt: "你是\"直断导师\"，言辞犀利、一针见血，绝不绕弯子安慰。直面问题核心，甚至带点毒舌，但每句话都有塔罗依据。用户要的是真相而非安慰剂。",
+    stylePrompt:
+      "你是\"直断导师\"，言辞犀利、一针见血，绝不绕弯子安慰。直面问题核心，甚至带点毒舌，但每句话都有塔罗依据。用户要的是真相而非安慰剂。\n" +
+      "【说话习惯】不铺垫、不客套，开口就是判断（\"这牌没在骗你…\"\"别自欺了…\"）；\n" +
+      "短句为主，敢下结论；提问带挑战性（\"你确定要继续这么耗下去？\"）。",
   },
 ];
 
 export interface AgentEvent {
   type:
     | "session" | "phase" | "delta" | "reasoning" | "tool" | "rag_hits" | "cards"
-    | "ask_user" | "subagent" | "review" | "round" | "done" | "error";
+    | "ask_user" | "subagent" | "review" | "round" | "done" | "error"
+    /* ---- 真实塔罗流程新增事件 ---- */
+    | "contract"        // A1：问题重述确认（承约）
+    | "invocation"      // A3：三问呼召
+    | "card_reveal"     // B：翻牌（牌面叙述 + 牌意）
+    | "card_reading"    // B：该牌的完整解读段落
+    | "closing";        // D：收束追问
   sessionId?: string;
   phase?: AgentPhase;
   label?: string;
@@ -102,13 +117,48 @@ export interface AgentEvent {
   fanCards?: { id: string; nameZh: string; image: string }[];
   /** offer_card_selection：应选张数 */
   fanCount?: number;
-  ask?: { question: string; options?: string[]; allowFree: boolean; prompt: string };
+  /** A2：牌阵范围声明（今天看什么） */
+  scopeNote?: string;
+  ask?: { question: string; options?: string[]; allowFree: boolean; prompt: string; kind?: AskKind };
+  /** A3：三问呼召的三个问题 */
+  invocation?: { questions: string[] };
+  /** A1：占卜师复述的具体问题 */
+  contract?: { question: string; scope?: string };
+  /** B：翻牌信息 */
+  cardReveal?: {
+    cardIndex: number;
+    total: number;
+    id: string;
+    nameZh: string;
+    image: string;
+    reversed: boolean;
+    pos: string;
+    /** 牌面叙述（客观描述画面） */
+    narrative: string;
+    /** 典籍牌意 */
+    meaning: string;
+    /** 引用来源 */
+    source?: string;
+  };
+  /** B：该牌解读段落 */
+  cardReading?: { cardIndex: number; text: string };
   subagent?: { agent: SubAgent; action: string; detail?: string }; // 子 Agent 生命周期
   review?: { pass: boolean; scores: { grounding: number; empathy: number; tone: number }; comment: string; rewritten?: boolean; parseLevel?: 0 | 1 | 2 | 3; retried?: boolean };
   /** 轮次时间轴：每轮耗时与 token，供前端可视化"Agent 在哪一步慢" */
   round?: { round: number; elapsedMs: number; promptTokens?: number; toolNames: string[]; phase?: string };
   error?: string;
 }
+
+/**
+ * HITL 交互类型（决定前端渲染成哪种面板 + 后端如何处理回答）
+ * - clarify      普通澄清提问
+ * - contract     A1 问题重述确认（承约）
+ * - invocation   A3 三问呼召
+ * - card_confirm B 逐张解读的确认问题
+ * - closing      D 收束追问
+ * - crossroads   命运岔路
+ */
+export type AskKind = "clarify" | "contract" | "invocation" | "card_confirm" | "closing" | "crossroads";
 
 /* ------------------------------------------------------------------ */
 /* 会话存储（globalThis 单例 + SQLite 持久化）                          */
@@ -135,7 +185,13 @@ export interface AgentSession {
   drawnCards: DrawnCard[];
   ragHits: RagHit[];
   analystNotes: string;
-  pendingAsk?: { resolve: (answer: string) => void; question: string; options?: string[] };
+  pendingAsk?: {
+    resolve: (answer: string) => void;
+    question: string;
+    options?: string[];
+    /** HITL 类型（决定前端渲染形态与回答解析方式） */
+    kind?: AskKind;
+  };
   finished: boolean;
   toolSeq: number;
   /** 已执行过的 rag_search 查询（归一化后），用于重复检索负反馈（防死循环） */
@@ -146,6 +202,30 @@ export interface AgentSession {
   dwellTimes: number[];
   /** 情绪档案：从用户澄清回答中提取的情绪关键词（紧张/迷茫/期待…），供解读与追问持续引用 */
   emotionTags: string[];
+  /** A1：承约——占卜师复述确认后的具体问题 */
+  contractQuestion?: string;
+  /** A2：牌阵范围声明 */
+  scopeNote?: string;
+  /** A3：三问呼召 —— 问题 + 用户回答 */
+  invocation?: { questions: string[]; answers: string[] };
+  /** B：逐张解读 —— 每张牌的解读段落与用户的确认回答 */
+  cardReadings: Array<{
+    cardId: string;
+    nameZh: string;
+    pos: string;
+    /** 占卜师念牌（牌面叙述 + 牌意 + 确认问题） */
+    reveal?: { narrative: string; meaning: string; question: string; options?: string[] };
+    /** 用户对确认问题的回答 */
+    answer?: string;
+    /** 结合回答后的完整解读 */
+    reading?: string;
+  }>;
+  /** C：用户在牌与牌之间的插话（补充/修正信息） */
+  interjections: string[];
+  /** 待插入的插话（位置不安全时暂存，下一轮开始时插入） */
+  pendingInterjections: string[];
+  /** 最终正文（旧管线由 writer 写入；逐张模式由 buildFinalReading 汇总） */
+  reading?: string;
 }
 
 const sessions: Map<string, AgentSession> = (() => {
@@ -193,6 +273,7 @@ export function createSession(question: string, personaId?: string): AgentSessio
     drawnCards: [], ragHits: [], analystNotes: "",
     finished: false, toolSeq: 0,
     ragQueryHistory: [], ragCallCount: 0, dwellTimes: [], emotionTags: [],
+    cardReadings: [], interjections: [], pendingInterjections: [],
   };
   sessions.set(id, session);
   db.insertSession(id, question, persona.id, []);
@@ -210,6 +291,40 @@ export function resolvePendingAsk(sessionId: string, answer: string): boolean {
   if (!s?.pendingAsk) return false;
   s.pendingAsk.resolve(answer);
   s.pendingAsk = undefined;
+  return true;
+}
+
+/**
+ * 追加用户插话（方案 C）。
+ *
+ * 与 resolvePendingAsk 的区别：
+ *   - resolvePendingAsk：回答**当前正在等**的问题（唤醒挂起的 Promise）
+ *   - appendInterjection：用户主动补充信息，**不唤醒**任何等待，
+ *     只把内容追加进会话历史，让接下来的解读能看到。
+ *
+ * 真实场景：用户在看第 1 张牌的解读时插一句"其实我不是不甘心，是怕又白投"，
+ * 占卜师在讲第 2 张牌时就能用上这条信息。
+ */
+export function appendInterjection(sessionId: string, text: string): boolean {
+  const s = sessions.get(sessionId);
+  if (!s) return false;
+  const t = text.trim();
+  if (!t) return false;
+  s.interjections.push(t);
+  // ⚠️ 插话位置很关键：assistant 消息里的 tool_calls 必须紧跟对应的 tool 消息，
+  // 否则 OpenAI 兼容协议错位（"tool call result does not follow tool call"）。
+  // 因此只有当最后一条消息是 tool（或 user/assistant 且无 tool_calls）时才插。
+  const last = s.messages[s.messages.length - 1];
+  const safeToInsert =
+    !last ||
+    last.role === "tool" ||
+    (last.role === "assistant" && !last.tool_calls?.length);
+  if (safeToInsert) {
+    s.messages.push({ role: "user", content: `（用户补充说明：${t}）` });
+  } else {
+    // 不安全位置：暂存，等下一轮开始时由 flush 逻辑插入
+    s.pendingInterjections.push(t);
+  }
   return true;
 }
 
@@ -604,6 +719,61 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "establish_contract",
+      description:
+        "【承约阶段 · 占卜第一步】在抽牌之前，先把你听到的问题复述成一个**更具体、可被牌回答**的问题，并请用户确认。\n" +
+        "真实塔罗师在碰牌前都会做这一步：把「我的运势怎么样」收敛成「我在感情里会不会主动」。\n" +
+        "同时声明本次占卜的牌阵范围（scope，如「我看过去、现在，和那条你正在犹豫的路」）。\n" +
+        "【调用时机】用户刚说完问题、尚未抽牌时调用一次。若用户已澄清过，可直接给出你确认后的理解。",
+      parameters: {
+        type: "object",
+        properties: {
+          question: {
+            type: "string",
+            description: "你复述/收敛后的具体问题（30~60 字），用第二人称对用户说",
+          },
+          scope: {
+            type: "string",
+            description: "本次占卜的牌阵范围声明（15~40 字），如「我看过去与当下，以及你正在犹豫的那条路」",
+          },
+          confirm_options: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 2,
+            maxItems: 3,
+            description: "2~3 个确认选项（如「对，就是这个」「其实我想问别的」「再具体一点」）",
+          },
+        },
+        required: ["question", "scope"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "invoke_three_questions",
+      description:
+        "【呼召阶段 · 洗牌时问的三件事】在翻牌之前，请用户回答三个问题，这三个回答会**直接成为解读的骨架**（分别对应三张牌各自要讲什么、以及最终的行动建议）：\n" +
+        "① 你最想知道什么？（想知道的信息/结果）\n② 你打算做什么？（已经决定或准备采取的行动）\n③ 你需要防什么？（担心的风险/盲区）\n" +
+        "【调用时机】选牌之前。问题要贴着用户刚确认的那个具体问题来问，不要放之四海而皆准。",
+      parameters: {
+        type: "object",
+        properties: {
+          questions: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 3,
+            maxItems: 3,
+            description: "三个问题，每个 15~30 字，顺序固定：想知道什么 / 打算做什么 / 需要防什么",
+          },
+        },
+        required: ["questions"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "ask_user",
       description:
         "向用户提出澄清问题，挂起占卜流程等待人类回答（人机协同）。在问题模糊时调用。每次占卜最多 2 次。",
@@ -644,9 +814,87 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "reveal_card",
+      description:
+        "【逐张解读 · 翻牌】翻到牌阵中的下一张牌，先**念牌**：客观描述牌面画面 + 典籍牌意 + 向用户提一个**针对性的确认问题**。\n" +
+        "这一步只讲这一张牌，不涉及其他牌。用户回答后再调用 interpret_card 讲透它。\n" +
+        "【确认问题必须可回答】形式是二选一或三选一，选项要贴着用户的原话与情绪，\n" +
+        "例如「你在这件事上，更像是『已经麻木了』还是『其实不甘心』？」——不要问空泛的「你觉得呢」。\n" +
+        "【牌意必须带引文编号】meaning 引用典籍牌意时用 [n] 标注（对应 rag_search 返回的编号，如「新的开始、冒险 [3]」），\n" +
+        "并在牌意开头写「典籍所载：…」——引文可点击溯源，没有引文标注的解读会被审校打回。",
+      parameters: {
+        type: "object",
+        properties: {
+          card_index: { type: "number", description: "第几张牌（从 0 开始）" },
+          narrative: { type: "string", description: "牌面画面描述（40~70 字），客观说画面里有什么" },
+          meaning: { type: "string", description: "典籍牌意（30~50 字），用【n】标注引用" },
+          question: { type: "string", description: "向用户提的确认问题（20~40 字），要具体、可回答" },
+          options: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 2,
+            maxItems: 3,
+            description: "确认问题的选项（2~3 个，用户可点选或自由输入）",
+          },
+        },
+        required: ["card_index", "narrative", "meaning", "question"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "interpret_card",
+      description:
+        "【逐张解读 · 讲透这一张】结合用户对确认问题的回答，把**这一张牌**讲透（100~150 字）：\n" +
+        "牌意如何落在这个用户的处境上、用户在确认问题里的反应说明了什么。\n" +
+        "只讲当前这一张牌，不要提前讲后面的牌。讲完后可以继续 reveal_card 翻下一张。\n" +
+        "【必须带引文】引用典籍牌意时用「典籍所载：… [n]」标注（n 对应 rag_search 返回的编号）——\n" +
+        "没有引文标注的解读会被审校打回。",
+      parameters: {
+        type: "object",
+        properties: {
+          card_index: { type: "number", description: "第几张牌（从 0 开始）" },
+          reading: { type: "string", description: "这一张牌的完整解读（100~150 字）" },
+        },
+        required: ["card_index", "reading"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "close_reading",
+      description:
+        "【收束阶段 · 收尾追问】所有牌都解读完之后调用。\n" +
+        "1) 先给一段收束语（80~120 字）：把三张牌连成一个故事，**回扣用户最初确认的那个具体问题**，并给出**唯一一条**可执行的下一步（不是十条建议）；\n" +
+        "2) 同时附带一个「三段里哪一段最贴近你」的收尾追问，让用户自然进入追问环节。\n" +
+        "【边界提醒】占卜只显示倾向，不是判决——用一句话点到即止。",
+      parameters: {
+        type: "object",
+        properties: {
+          closing: { type: "string", description: "收束语（80~120 字）：串起三张牌 + 回扣原问题 + 一条行动建议 + 边界提醒" },
+          question: { type: "string", description: "收尾追问（15~30 字），如「这三段里，哪一段最贴近你现在的状态？」" },
+          options: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 2,
+            maxItems: 3,
+            description: "收尾追问的选项（如「过去那段」「现在那段」「未来那段」）",
+          },
+        },
+        required: ["closing", "question"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "write_reading",
       description:
-        "启动子 Agent 管线撰写最终解读：① 牌意分析师逐牌产出分析笔记 → ② 撰写者基于笔记流式撰写 → ③ 审校者三维度打分（典籍忠实/共情/语气），任一 < 7 分打回重写一次。在信息足够后调用。",
+        "【最终综合】**只有在所有牌都用 reveal_card + interpret_card 逐张讲完之后**，才调用这个工具做最终综合：\n" +
+        "它会启动分析师→撰写者→审校者管线，把三张牌串成一个故事、回扣用户最初的问题。\n" +
+        "⚠️ 不要用它代替逐张解读——如果还没讲过任何一张牌，就先用 reveal_card。",
       parameters: {
         type: "object",
         properties: {
@@ -759,6 +1007,38 @@ function extractBranchesFromPrompt(prompt: string): string[] {
   }
 
   return branches;
+}
+
+/**
+ * 汇总逐张解读为最终正文（落库用）。
+ * 格式与前端 CitedReading 的段落解析一致：【牌面·位置·牌名】 + 正文段
+ */
+function buildFinalReading(session: AgentSession): string {
+  const parts: string[] = [];
+  for (const slot of session.cardReadings) {
+    if (!slot.reading) continue;
+    parts.push(`【牌面·${slot.pos}·${slot.nameZh}】${slot.reading}`);
+  }
+  if (parts.length === 0) {
+    // 兜底：没有逐张解读（走了旧管线）→ 用 session.reading
+    return session.reading ?? "";
+  }
+  return parts.join("\n\n");
+}
+
+/** 取（或创建）某张牌的解读槽位 */
+function ensureCardSlot(session: AgentSession, idx: number): AgentSession["cardReadings"][number] {
+  const drawn = session.drawnCards[idx];
+  const cardId = drawn?.card.id ?? `unknown-${idx}`;
+  const nameZh = drawn?.card.nameZh ?? `第${idx + 1}张`;
+  const posNames = ["过去", "当下", "未来"];
+  const pos = session.drawnCards.length === 1 ? "核心指引" : (posNames[idx] ?? `第${idx + 1}张`);
+  let slot = session.cardReadings.find((r) => r.cardId === cardId);
+  if (!slot) {
+    slot = { cardId, nameZh, pos };
+    session.cardReadings.push(slot);
+  }
+  return slot;
 }
 
 async function execRagSearch(query: string, topK: number, session: AgentSession) {
@@ -1209,14 +1489,56 @@ export async function* runAgent(
 
   yield { type: "phase", phase: "analyze", label: `${session.persona.emoji} ${session.persona.name}开始凝听你的问题…` };
 
-  const MAX_ROUNDS = 12;
+  // 轮次上限：逐张解读模式下轮次翻倍
+  // 承约1 + 呼召1 + 选牌1 + 检索2 + (翻牌+解读)×3 + 综合1 + 收束1 ≈ 14 轮
+  const MAX_ROUNDS = Number(process.env.MAX_ROUNDS) || 22;
   let round = 0;
   // 模型跳过工具直接回答的纠偏计数（首答模式防行为漂移）
   let noToolRetries = 0;
-  // 看门狗：整场占卜的总时长上限（默认 5 分钟），超时主动收尾并落库
-  const totalDeadline = Date.now() + (Number(process.env.SESSION_DEADLINE_MS) || 5 * 60 * 1000);
+  // 待补齐响应的 tool_call（见下方 extraTools 处理）
+  let pendingToolResponses: Array<{ id: string; name: string }> = [];
 
+  /**
+   * 补齐被跳过的 tool_call 响应（保持 assistant→tool 配对完整）。
+   * 本轮只执行一个 tool_call，其余的必须也有对应的 tool 消息，
+   * 否则 OpenAI 兼容协议错位："tool call result does not follow tool call" (400)。
+   * 必须在**每次退出前**调用（含 return / 异常路径）。
+   */
+  const flushPendingToolResponses = () => {
+    for (const skipped of pendingToolResponses) {
+      session.messages.push({
+        role: "tool",
+        tool_call_id: skipped.id,
+        content: JSON.stringify({
+          deferred: true,
+          hint: `「${skipped.name}」本轮未执行——一次只做一个动作。请在下一轮单独调用它。`,
+        }),
+      });
+    }
+    pendingToolResponses = [];
+  };
+
+  // 看门狗：整场占卜的总时长上限（默认 8 分钟）
+  // 逐张解读模式轮次多、每轮有用户思考时间，总时长天然更长
+  const totalDeadline = Date.now() + (Number(process.env.SESSION_DEADLINE_MS) || 8 * 60 * 1000);
+
+  // try/finally：无论从哪条路径退出（正常 done / 错误 / 超时），
+  // 都要补齐被跳过的 tool_call 响应，否则会话历史里的 tool_call_id 未配对，
+  // 下一次追问时 MiniMax 会直接返回 400 "tool call result does not follow tool call"。
+  try {
   while (round < MAX_ROUNDS) {
+    // 补齐上一轮被跳过的 tool_call 响应
+    flushPendingToolResponses();
+
+    // ---- 插入暂存的插话（方案 C）----
+    // 位置已安全（上一轮 assistant→tool 已配对完成）
+    if (session.pendingInterjections.length > 0) {
+      for (const t of session.pendingInterjections) {
+        session.messages.push({ role: "user", content: `（用户补充说明：${t}）` });
+      }
+      session.pendingInterjections = [];
+    }
+
     // 看门狗检查：超时 → 放弃并明确标记
     if (Date.now() > totalDeadline) {
       yield { type: "error", error: "占卜耗时超过上限，已中止（可在观测面板查看）" };
@@ -1233,8 +1555,10 @@ export async function* runAgent(
       let trimmed = trimHistory(session.messages);
       // ---- 临期强制收尾（防 max_rounds 死循环撞墙）----
       // 轮次接近上限时注入"必须立即收尾"指令（只注入到本次调用，不污染会话历史）
-      const LATE_ROUND = 8; // MAX_ROUNDS=12，留 4 轮缓冲执行收尾
-      const needWrapUp = round >= LATE_ROUND || session.ragCallCount > RAG_BUDGET;
+      // 注意：逐张解读模式下不能过早催促——还有牌没讲完时催促会导致模型乱来。
+      const LATE_ROUND = Math.max(10, MAX_ROUNDS - 6); // 留 6 轮缓冲
+      const perCardPending = session.cardReadings.filter((r) => r.reading).length < session.drawnCards.length;
+      const needWrapUp = (round >= LATE_ROUND || session.ragCallCount > RAG_BUDGET) && !perCardPending;
       if (needWrapUp && session.drawnCards.length > 0) {
         trimmed = [
           ...trimmed,
@@ -1259,6 +1583,7 @@ export async function* runAgent(
       return;
     }
     if (decision.reasoning) yield { type: "reasoning", reasoning: decision.reasoning };
+    // 决策消息原样推入历史（保留全部 tool_calls，保证 assistant→tool 配对完整）
     session.messages.push(decision.message);
 
     // ---- P1.2：决策附带文本作为对话回应流出 ----
@@ -1328,16 +1653,212 @@ export async function* runAgent(
     }
     noToolRetries = 0;
 
-    for (const tc of toolCalls) {
+    // ⚠️ 一轮只执行一个工具调用
+    // 真实占卜师的节奏是"做一个动作 → 看用户反应 → 再做下一个"。
+    // 若一轮里执行多个 HITL 工具（如 3 个 interpret_card），
+    // 用户会看到"问都没问就连续讲了三张牌"——退化成一次性生成。
+    // 多余的 tool_calls 直接丢弃。提示信息写进**当前 tool 的返回内容**里
+    // （不能插 user 消息：那会打断 assistant→tool 的配对，
+    //  导致 OpenAI 兼容协议错位 "tool call result does not follow tool call"）。
+    const extraTools = toolCalls.slice(1);
+    // 记录待补齐的 tool_call（本轮结束后统一补响应，保持协议配对）
+    pendingToolResponses = extraTools.map((t) => ({ id: t.id, name: t.function.name }));
+
+    for (const tc of toolCalls.slice(0, 1)) {
       const name = tc.function.name;
       let args: Record<string, unknown> = {};
       try { args = JSON.parse(tc.function.arguments || "{}"); } catch { /* 空参 */ }
       const t0 = Date.now();
       session.toolSeq++;
       const seq = session.toolSeq;
+      // HITL 通用变量（承约/呼召/澄清/选牌/岔路共用）
+      let askPrompt = "";
+      let options: string[] | undefined;
+
+      /* ---- D：收束 + 收尾追问 ---- */
+      if (name === "close_reading") {
+        const closing = String(args.closing || "").trim();
+        const question = String(args.question || "这三段里，哪一段最贴近你现在的状态？").trim();
+        let cOptions = Array.isArray(args.options)
+          ? (args.options as unknown[]).map(String).filter((s) => s.trim())
+          : [];
+        if (cOptions.length < 2) {
+          cOptions = session.drawnCards.map((d, i) => {
+            const pos = session.drawnCards.length === 1 ? "核心指引" : (["过去", "当下", "未来"][i] ?? `第${i + 1}张`);
+            return `${pos}那段`;
+          });
+        }
+        // 收束语作为正文流出
+        if (closing) {
+          for (const chunk of closing.match(/[\s\S]{1,6}/g) ?? []) {
+            yield { type: "delta", delta: chunk };
+          }
+          yield { type: "delta", delta: "\n\n" };
+        }
+        yield { type: "phase", phase: "wait_user", label: "占卜师收束这场占卜…" };
+        yield {
+          type: "ask_user",
+          ask: { question, options: cOptions, allowFree: true, prompt: question, kind: "closing" },
+        };
+        const answer = await new Promise<string>((resolve) => {
+          session.pendingAsk = { resolve, question, options: cOptions, kind: "closing" };
+        });
+        session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ closing, question, userAnswer: answer }) });
+        yield { type: "tool", tool: { name, args, resultSummary: `收束完成，用户回应：${answer.slice(0, 40)}`, durationMs: Date.now() - t0 } };
+        db.logToolCall(session.id, seq, "supervisor", name, args, `收束｜${answer.slice(0, 50)}`, Date.now() - t0);
+        roundToolNames.push(name);
+        // 收束完成 → 落库结束
+        const finalReading = buildFinalReading(session);
+        db.updateSessionReading(session.id, finalReading);
+        // 审校结果（若已产生）一并落库
+        const lastReview = (session as unknown as { __lastReview?: ReviewResult | null }).__lastReview ?? null;
+        db.finishSession(session.id, lastReview);
+        session.finished = true;
+        yield { type: "done" };
+        return;
+      }
+
+      /* ---- B1：逐张翻牌（念牌 + 确认问题）---- */
+      if (name === "reveal_card") {
+        const idx = Math.max(0, Math.min(Number(args.card_index) || 0, session.drawnCards.length - 1));
+        const drawn = session.drawnCards[idx];
+        if (!drawn) {
+          session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ error: "还没有抽牌" }) });
+          continue;
+        }
+        const narrative = String(args.narrative || drawn.card.description || "").trim();
+        const meaning = String(args.meaning || (drawn.reversed ? drawn.card.reversed : drawn.card.upright)).trim();
+        const question = String(args.question || "这张牌对你来说，是什么意思？").trim();
+        let qOptions = Array.isArray(args.options)
+          ? (args.options as unknown[]).map(String).filter((s) => s.trim())
+          : [];
+        if (qOptions.length < 2) qOptions = ["是这样", "其实不太像", "我说不上来"];
+
+        const posNames = ["过去", "当下", "未来"];
+        const pos = session.drawnCards.length === 1 ? "核心指引" : (posNames[idx] ?? `第${idx + 1}张`);
+
+        // 落库该张牌的"念牌"内容
+        const slot = ensureCardSlot(session, idx);
+        slot.reveal = { narrative, meaning, question, options: qOptions };
+        slot.pos = pos;
+
+        // 发翻牌事件（前端做 3D 翻牌动画 + 牌面叙述）
+        yield {
+          type: "card_reveal",
+          cardReveal: {
+            cardIndex: idx,
+            total: session.drawnCards.length,
+            id: drawn.card.id,
+            nameZh: drawn.card.nameZh,
+            image: drawn.card.image,
+            reversed: drawn.reversed,
+            pos,
+            narrative,
+            meaning,
+          },
+        };
+        yield {
+          type: "phase",
+          phase: "wait_user",
+          label: `翻到「${pos}·${drawn.card.nameZh}」，请占卜师与你说说话`,
+        };
+        // 提确认问题（这是 HITL：等用户回答）
+        yield {
+          type: "ask_user",
+          ask: { question, options: qOptions, allowFree: true, prompt: question, kind: "card_confirm" },
+        };
+        const answer = await new Promise<string>((resolve) => {
+          session.pendingAsk = { resolve, question, options: qOptions, kind: "card_confirm" };
+        });
+        slot.answer = answer;
+        for (const tag of extractEmotionTags(answer)) {
+          if (!session.emotionTags.includes(tag)) session.emotionTags.push(tag);
+        }
+        session.messages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            card: `${pos}·${drawn.card.nameZh}`,
+            narrative, meaning, question,
+            userAnswer: answer,
+          }),
+        });
+        yield { type: "tool", tool: { name, args, resultSummary: `翻牌 ${pos}·${drawn.card.nameZh}，用户回应：${answer.slice(0, 40)}`, durationMs: Date.now() - t0 } };
+        db.logToolCall(session.id, seq, "supervisor", name, args, `翻牌 ${drawn.card.nameZh}｜回应：${answer.slice(0, 50)}`, Date.now() - t0);
+        roundToolNames.push(name);
+        continue;
+      }
+
+      /* ---- B2：讲透这一张牌 ---- */
+      if (name === "interpret_card") {
+        const idx = Math.max(0, Math.min(Number(args.card_index) || 0, session.drawnCards.length - 1));
+        const text = String(args.reading || "").trim();
+        if (!text) {
+          session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ error: "缺少 reading" }) });
+          continue;
+        }
+        const slot = ensureCardSlot(session, idx);
+        // ⚠️ 守卫：这张牌还没"翻"过（没有念牌 + 用户的确认回答）→ 不允许直接讲透。
+        // 真实占卜师必须"翻一张、问一句、听回答、再讲"。模型偶尔会一口气
+        // 调多个 interpret_card 跳过这个节奏（实测：3 张牌只翻了第 1 张）。
+        if (!slot.reveal || !slot.answer) {
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              error: `第 ${idx + 1} 张牌尚未翻牌确认`,
+              hint: `必须先调用 reveal_card(card_index=${idx}) 念牌并等待用户回答，才能 interpret_card。`,
+            }),
+          });
+          roundToolNames.push(name);
+          continue;
+        }
+        slot.reading = text;
+        // 该牌解读作为正文流出（前端逐段显示）
+        for (const chunk of text.match(/[\s\S]{1,6}/g) ?? []) {
+          yield { type: "delta", delta: chunk };
+        }
+        yield { type: "delta", delta: "\n\n" };
+        yield { type: "card_reading", cardReading: { cardIndex: idx, text } };
+        session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ interpreted: slot.nameZh, text }) });
+        yield { type: "tool", tool: { name, args, resultSummary: `解读 ${slot.nameZh}：${text.slice(0, 50)}`, durationMs: Date.now() - t0 } };
+        db.logToolCall(session.id, seq, "supervisor", name, args, `解读 ${slot.nameZh}`, Date.now() - t0);
+        roundToolNames.push(name);
+        continue;
+      }
 
       /* ---- write_reading：子 Agent 管线 ---- */
       if (name === "write_reading") {
+        // ⚠️ 守卫：逐张解读模式下，所有牌都讲完才允许进入最终综合。
+        // 模型容易在讲完第 1 张后就调用 write_reading 提前收尾（实测：3 张牌只讲了 1 张）。
+        // 这里拦住并明确告知还差哪几张，逼它继续 reveal_card/interpret_card。
+        const total = session.drawnCards.length;
+        const doneIdx = session.cardReadings
+          .map((r, i) => ({ r, i }))
+          .filter(({ r }) => r.reading)
+          .map(({ i }) => i);
+        if (total > 0 && doneIdx.length < total) {
+          const missing = session.drawnCards
+            .map((d, i) => ({ d, i }))
+            .filter(({ i }) => !doneIdx.includes(i))
+            .map(({ d, i }) => `第${i + 1}张「${d.card.nameZh}」`);
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              error: "还有牌没讲完",
+              missing,
+              hint: `请先对 ${missing.join("、")} 依次调用 reveal_card（念牌+等用户回答）与 interpret_card（讲透这一张），全部讲完后才能调用 write_reading 做最终综合。`,
+            }),
+          });
+          yield {
+            type: "phase",
+            phase: "interpret",
+            label: `还有 ${missing.length} 张牌没讲——继续翻牌`,
+          };
+          roundToolNames.push("write_reading(拦截)");
+          continue;
+        }
         const focus = (args.focus as string) || "综合";
         yield { type: "phase", phase: "interpret", label: `子 Agent 管线启动（侧重：${focus}）…` };
         yield { type: "tool", tool: { name, args, resultSummary: "启动分析师→撰写者→审校者管线", durationMs: Date.now() - t0 } };
@@ -1364,21 +1885,33 @@ export async function* runAgent(
         }
 
         // ② 撰写者（初稿）
+        // ⚠️ 逐张解读模式：正文已由 interpret_card 逐段生成并流给用户，
+        //    这里**不再重写全文**（会与已流出的内容重复），只跑分析+审校。
+        const perCardMode = session.cardReadings.some((r) => r.reading);
         let reading = "";
-        try {
-          const gen = runWriter(config, session, focus);
-          let first = true;
-          while (true) {
-            const { done, value } = await gen.next();
-            if (done) break;
-            if (first && value.type === "subagent") { first = false; }
-            if (value.type === "delta") reading += value.delta;
-            yield value;
+        if (perCardMode) {
+          // 用已生成的逐张解读作为待审校正文
+          reading = buildFinalReading(session);
+          yield {
+            type: "subagent",
+            subagent: { agent: "writer", action: "逐张解读已就位，跳过重写", detail: `${reading.length} 字` },
+          };
+        } else {
+          try {
+            const gen = runWriter(config, session, focus);
+            let first = true;
+            while (true) {
+              const { done, value } = await gen.next();
+              if (done) break;
+              if (first && value.type === "subagent") { first = false; }
+              if (value.type === "delta") reading += value.delta;
+              yield value;
+            }
+          } catch (e) {
+            yield { type: "error", error: `撰写中断：${e instanceof Error ? e.message : "未知"}` };
+            db.failSession(session.id);
+            return;
           }
-        } catch (e) {
-          yield { type: "error", error: `撰写中断：${e instanceof Error ? e.message : "未知"}` };
-          db.failSession(session.id);
-          return;
         }
 
         // ③ 审校者
@@ -1396,42 +1929,166 @@ export async function* runAgent(
         }
 
         // Reflexion：不过 → 重写一次 → 重新审校
+        // ⚠️ 逐张模式不重写（正文已分段落给用户，重写会造成内容不一致），
+        //    改为把审校意见作为提示，让后续 close_reading 收束时采纳。
         if (review && !review.pass && revision) {
-          yield { type: "phase", phase: "interpret", label: "审校未通过 · 撰写者依据修改指令重写…" };
-          db.updateSessionReading(session.id, reading); // 先存初稿
-          try {
-            reading = "";
-            for await (const evt of runWriter(config, session, focus, revision)) {
-              if (evt.type === "delta") reading += evt.delta;
-              yield evt;
-            }
-            // 重写后再审校一次（判断新版是否达标，而非沿用旧结论）
-            yield { type: "phase", phase: "review", label: "审校者复检重写稿…" };
-            let reReview: ReviewResult | null = null;
+          if (!perCardMode) {
+            yield { type: "phase", phase: "interpret", label: "审校未通过 · 撰写者依据修改指令重写…" };
+            db.updateSessionReading(session.id, reading); // 先存初稿
             try {
-              for await (const evt of runReviewer(config, session, reading)) {
-                if (evt.type === "review") reReview = evt.review ?? null;
+              reading = "";
+              for await (const evt of runWriter(config, session, focus, revision)) {
+                if (evt.type === "delta") reading += evt.delta;
                 yield evt;
               }
-            } catch { /* 复检失败沿用原 review */ }
-            if (reReview) review = reReview;
-          } catch (e) {
-            yield { type: "error", error: `重写中断：${e instanceof Error ? e.message : "未知"}` };
+              // 重写后再审校一次（判断新版是否达标，而非沿用旧结论）
+              yield { type: "phase", phase: "review", label: "审校者复检重写稿…" };
+              let reReview: ReviewResult | null = null;
+              try {
+                for await (const evt of runReviewer(config, session, reading)) {
+                  if (evt.type === "review") reReview = evt.review ?? null;
+                  yield evt;
+                }
+              } catch { /* 复检失败沿用原 review */ }
+              if (reReview) review = reReview;
+            } catch (e) {
+              yield { type: "error", error: `重写中断：${e instanceof Error ? e.message : "未知"}` };
+            }
+          } else {
+            // 逐张模式：把审校意见挂到 session，供收束阶段采纳
+            (session as unknown as { __revision?: string }).__revision = revision;
+            yield {
+              type: "phase",
+              phase: "review",
+              label: "审校提出修改意见，将在收束时采纳",
+            };
           }
         }
 
         db.updateSessionReading(session.id, reading);
-        db.finishSession(session.id, review);
-        session.finished = true;
-        yield { type: "done" };
-        return;
+        // 存审校结果（供 close_reading 收束时落库）
+        (session as unknown as { __lastReview?: ReviewResult | null }).__lastReview = review;
+        // ⚠️ 不在这里结束会话：逐张模式下还需要 close_reading 做收束
+        // （收束语 + 一条行动建议 + 收尾追问）。
+        // 旧流程（没有逐张解读）也走 close_reading，保证流程一致。
+        session.messages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            review: review ? { pass: review.pass, scores: review.scores } : null,
+            revision: perCardMode ? "" : revision,
+            note: "最终综合已完成。请接着调用 close_reading 做收束（收束语 + 一条行动建议 + 收尾追问）。",
+          }),
+        });
+        roundToolNames.push(name);
+        continue;
+      }
+
+      /* ---- 承约阶段（A1：问题重述确认）---- */
+      if (name === "establish_contract") {
+        const contractQ = String(args.question || session.question).trim();
+        const scope = String(args.scope || "我看过去、现在，以及你正在犹豫的那条路").trim();
+        session.contractQuestion = contractQ;
+        session.scopeNote = scope;
+        // 确认选项（模型可能漏传 → 通用兜底）
+        let confirmOptions = Array.isArray(args.confirm_options)
+          ? (args.confirm_options as unknown[]).map(String).filter((s) => s.trim())
+          : [];
+        if (confirmOptions.length < 2) confirmOptions = ["对，就是这个", "其实我想问点别的", "再具体一点"];
+        askPrompt = contractQ;
+        options = confirmOptions;        yield { type: "contract", contract: { question: contractQ, scope } };
+        yield {
+          type: "phase",
+          phase: "wait_user",
+          label: "占卜师复述问题，请你确认…",
+        };
+        yield {
+          type: "ask_user",
+          ask: {
+            question: contractQ,
+            options: confirmOptions,
+            allowFree: true,
+            prompt: contractQ,
+            kind: "contract",
+          },
+        };
+        const answer = await new Promise<string>((resolve) => {
+          session.pendingAsk = { resolve, question: contractQ, options: confirmOptions, kind: "contract" };
+        });
+        for (const tag of extractEmotionTags(answer)) {
+          if (!session.emotionTags.includes(tag)) session.emotionTags.push(tag);
+        }
+        // 用户说"不是这个" → 用用户自己的话作为具体问题
+        if (/^(不是|不对|其实|我想问|换)/.test(answer.trim()) && answer.length > 6) {
+          session.contractQuestion = answer.trim();
+        }
+        session.messages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ contract: session.contractQuestion, scope, userConfirmed: answer }),
+        });
+        yield { type: "tool", tool: { name, args, resultSummary: `承约确认：${session.contractQuestion}`, durationMs: Date.now() - t0 } };
+        db.logToolCall(session.id, seq, "supervisor", name, args, `承约：${session.contractQuestion}`, Date.now() - t0);
+        roundToolNames.push(name);
+        continue;
+      }
+
+      /* ---- 呼召阶段（A3：三问呼召）---- */
+      if (name === "invoke_three_questions") {
+        let questions = Array.isArray(args.questions)
+          ? (args.questions as unknown[]).map(String).filter((s) => s.trim())
+          : [];
+        if (questions.length < 3) {
+          // 兜底：模型漏传或传少了 → 用通用三问
+          questions = [
+            `关于「${session.contractQuestion ?? session.question}」，你最想知道的答案是什么？`,
+            "在这件事上，你已经打算做什么了？",
+            "有什么是你担心发生、但还没真正面对的？",
+          ];
+        }
+        questions = questions.slice(0, 3);
+        session.invocation = { questions, answers: [] };
+        yield { type: "invocation", invocation: { questions } };
+        yield { type: "phase", phase: "wait_user", label: "呼召——请你回答三个问题…" };
+        yield {
+          type: "ask_user",
+          ask: {
+            question: questions.join("\n"),
+            options: undefined,
+            allowFree: true,
+            prompt: questions.join("\n"),
+            kind: "invocation",
+          },
+        };
+        const answer = await new Promise<string>((resolve) => {
+          session.pendingAsk = { resolve, question: questions.join("\n"), kind: "invocation" };
+        });
+        // 解析 "1. xxx\n2. xxx\n3. xxx" 形式的回答
+        const answers = answer
+          .split("\n")
+          .map((l) => l.replace(/^\s*\d+[.、)]\s*/, "").trim())
+          .filter((l) => l.length > 0);
+        session.invocation = { questions, answers: answers.length ? answers : [answer] };
+        for (const tag of extractEmotionTags(answer)) {
+          if (!session.emotionTags.includes(tag)) session.emotionTags.push(tag);
+        }
+        session.messages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            invocation: questions.map((q, i) => ({ q, a: session.invocation?.answers[i] ?? "" })),
+          }),
+        });
+        yield { type: "tool", tool: { name, args, resultSummary: `三问呼召：${session.invocation.answers.length} 个回答`, durationMs: Date.now() - t0 } };
+        db.logToolCall(session.id, seq, "supervisor", name, args, `呼召：${session.invocation.answers.join(" / ").slice(0, 80)}`, Date.now() - t0);
+        roundToolNames.push(name);
+        continue;
       }
 
       /* ---- HITL 工具（ask_user / offer_card_selection / fate_crossroads）---- */
       if (name === "ask_user" || name === "offer_card_selection" || name === "fate_crossroads") {
         let askEvent: AgentEvent;
-        let askPrompt: string;
-        let options: string[] | undefined;
+        // askPrompt / options 已在工具循环顶部声明（承约与呼召分支共用）
 
         if (name === "ask_user") {
           const q = String(args.question || "请补充你的困惑");
@@ -1608,6 +2265,10 @@ export async function* runAgent(
 
   yield { type: "error", error: "占卜师陷入沉思无法自拔…（达到最大轮次）" };
   db.failSession(session.id, "max_rounds");
+  } finally {
+    // 退出路径统一补齐 tool_call 响应（保持协议配对）
+    flushPendingToolResponses();
+  }
 }
 
 /* ------------------------------------------------------------------ */

@@ -20,7 +20,9 @@ const CASES = [
   { id: "money", question: "最近想投资一个朋友推荐的项目，靠谱吗", expectClarify: true },
 ];
 
-const TIMEOUT_MS = Number(process.env.EVAL_TIMEOUT_MS) || 300000;
+// 逐张解读模式下轮次翻倍（承约+呼召+选牌+检索+3×(翻牌+解读)+综合+收束 ≈14 轮），
+// 加上每轮有用户思考时间，总耗时比旧流程长 —— 超时放宽到 8 分钟
+const TIMEOUT_MS = Number(process.env.EVAL_TIMEOUT_MS) || 480000;
 
 /** 失败类型 */
 const FAIL = {
@@ -112,14 +114,23 @@ async function runCase(tc) {
 
           if (evt.type === "ask_user" && sessionId) {
             answered++;
-            const ans =
-              evt.cardSelection
-                ? "Fool,Lovers,Star|2000,1500,3000"
-                : evt.ask.options?.[0] ?? "我想更进一步了解";
+            const kind = evt.ask?.kind;
+            let body;
+            if (evt.cardSelection) {
+              body = { sessionId, answer: "Fool,Lovers,Star|2000,1500,3000" };
+            } else if (kind === "invocation") {
+              // 三问呼召：一次提交三个回答（多答案形式）
+              body = {
+                sessionId,
+                answers: ["想知道大概什么时候有消息", "打算继续投但只投精准的", "怕又白投一场"],
+              };
+            } else {
+              body = { sessionId, answer: evt.ask.options?.[0] ?? "我想更进一步了解" };
+            }
             await fetch(`${BASE}/api/answer`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ sessionId, answer: ans }),
+              body: JSON.stringify(body),
             });
           }
         } catch {}
@@ -141,12 +152,25 @@ async function runCase(tc) {
   const complete = events.some((e) => e.type === "done") && reading.length > 200;
   const reviewed = events.some((e) => e.type === "review");
 
+  /* ---- 仪式流程断言（真实塔罗流程）---- */
+  const hasContract = events.some((e) => e.type === "contract");
+  const hasInvocation = events.some((e) => e.type === "invocation");
+  const cardReveals = events.filter((e) => e.type === "card_reveal");
+  const cardReadings = events.filter((e) => e.type === "card_reading");
+  const hasClosing = events.some((e) => e.type === "ask_user" && e.ask?.kind === "closing");
+  const perCardOk = cardReveals.length > 0 && cardReadings.length >= cardReveals.length;
+
   const scores = {
     clarify: tc.expectClarify ? (asked ? 1 : 0) : (asked ? 0.5 : 1),
     rag: ragHit ? 1 : 0,
     cite: cited ? 1 : 0,
     complete: complete ? 1 : 0,
     review: reviewed ? 1 : 0,
+    // 仪式流程：承约 / 呼召 / 逐张解读 / 收束
+    contract: hasContract ? 1 : 0,
+    invocation: hasInvocation ? 1 : 0,
+    percard: perCardOk ? 1 : 0,
+    closing: hasClosing ? 1 : 0,
   };
 
   const failedDims = Object.entries(scores).filter(([, v]) => v === 0).map(([k]) => k);
@@ -201,11 +225,17 @@ if (disconnected.length) console.log(`  🔌 连接中断: ${disconnected.length
 
 if (valid.length > 0) {
   const avg = (k) => valid.reduce((s, r) => s + r.scores[k], 0) / valid.length;
+  console.log(`  ── 基础质量 ──`);
   console.log(`  clarify:  ${(avg("clarify") * 100).toFixed(0)}%`);
   console.log(`  rag:      ${(avg("rag") * 100).toFixed(0)}%`);
   console.log(`  cite:     ${(avg("cite") * 100).toFixed(0)}%`);
   console.log(`  complete: ${(avg("complete") * 100).toFixed(0)}%`);
   console.log(`  review:   ${(avg("review") * 100).toFixed(0)}%`);
+  console.log(`  ── 仪式流程（真实塔罗）──`);
+  console.log(`  承约:     ${(avg("contract") * 100).toFixed(0)}%`);
+  console.log(`  呼召:     ${(avg("invocation") * 100).toFixed(0)}%`);
+  console.log(`  逐张解读: ${(avg("percard") * 100).toFixed(0)}%`);
+  console.log(`  收束:     ${(avg("closing") * 100).toFixed(0)}%`);
   const overall =
     valid.reduce((s, r) => s + Object.values(r.scores).reduce((a, b) => a + b, 0), 0) /
     (valid.length * Object.keys(valid[0].scores).length);

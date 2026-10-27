@@ -1,0 +1,44 @@
+feat: real-tarot-reader ritual flow — contract, invocation, card-by-card, closing
+
+Rebuilt the divination as a genuine tarot reader's ritual instead of a
+one-shot generation pipeline:
+
+A1 Contract (承约): establish_contract tool + ContractPanel. The reader
+restates the vague question as a specific, card-answerable one and
+declares the spread scope before touching any card ("我的运势怎么样" →
+"能不能得到回应，卡住你的是什么").
+
+A2 Scope declaration travels with the contract event.
+
+A3 Three-question invocation (呼召): invoke_three_questions +
+InvocationPanel with three separate inputs (want to know / plan to do /
+afraid of). Answers become the reading skeleton.
+
+B Card-by-card reading: reveal_card (narrative + meaning + a
+specific two-choice confirm question) then interpret_card (grounded in
+the user's answer) per card, iterating 过去→当下→未来. CardSpread shows
+flip progress; CardConfirmPanel renders the reader "reading you".
+Guards: interpret before reveal is rejected; write_reading before all
+cards done is rejected with explicit next-step hint; one tool call per
+round (deferred tool_responses flushed to keep assistant→tool pairing —
+fixes MiniMax 400 "tool call result does not follow tool call").
+
+C Interjections: /api/interject + always-visible input. Appends to
+history without waking pending asks; safe-position check defers to next
+round when insertion would break tool pairing.
+
+D Closing: close_reading (closing narrative + ONE actionable step +
+boundary reminder + "which part hit closest" follow-up). Persona voice
+expanded with concrete speech habits (意象句式/接住情绪/挑战式提问).
+write_reading no longer ends the session — it runs analyst+reviewer over
+the assembled per-card text and hands off to close_reading.
+
+Citations: reveal_card/interpret_card now require 「典籍所载：… [n]」
+marks (cite was 0% in per-card mode before this fix, 100% after).
+
+Budget/limits: MAX_ROUNDS 12→22 (per-card needs ~14), deadline 5→8min,
+late-round nudge disabled while cards remain unread, invocation answered
+via multi-answer API.
+
+Eval: 98% overall — ritual dimensions contract/invocation/percard/closing
+all 100%, cite 100%, 17-19 tool calls per session (was 5-10).
