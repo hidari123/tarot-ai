@@ -14,10 +14,10 @@ import { motion } from "framer-motion";
 export interface ShareCardData {
   question: string;
   cards: Array<{ nameZh: string; image: string; reversed: boolean; pos: string }>;
-  /** 摘要：收束语（优先）或解读末段，展示在卡面上 */
+  /** 摘要兜底（LLM 总结失败时用本地提取的收束段） */
   summary: string;
-  /** 完整解读（可选）：生成"扫码/截图看全文"的引导语长度参考 */
-  fullReadingLength?: number;
+  /** 完整解读全文（供 LLM 总结；缺失时回落 summary） */
+  fullReading?: string;
   personaName?: string;
   sessionId?: string;
 }
@@ -160,30 +160,20 @@ export async function renderShareCard(data: ShareCardData): Promise<Blob | null>
     ctx.fillText(c.pos, x + cardW / 2, cardY + cardH + 86);
   }
 
-  /* ---- 摘要（收束语或末段，最多 8 行，字号自适应）---- */
+  /* ---- 摘要（LLM 总结的分享文案，自适应展示，不截断）---- */
   const sumY = cardY + cardH + 160;
   ctx.textAlign = "left";
-  ctx.fillStyle = "rgba(243, 232, 255, 0.9)";
+  ctx.fillStyle = "rgba(243, 232, 255, 0.92)";
 
-  // 摘要较长时缩小字号，保证放得下
+  // 文案较长时缩小字号；行数上限 8（LLM 总结 80~150 字通常 2~4 行，余量充足）
   const summaryLen = data.summary.length;
   const fontPx = summaryLen > 200 ? 26 : summaryLen > 120 ? 28 : 32;
   ctx.font = `400 ${fontPx}px 'Noto Sans SC', sans-serif`;
-  const lineH = fontPx + 20; // 行高随字号
-  const maxLines = 8; // 最多 8 行（1620 高度富余）
+  const lineH = fontPx + 20;
+  const maxLines = 8;
 
   const lines = wrapText(ctx, data.summary, W - 240, maxLines);
   lines.forEach((l, i) => ctx.fillText(l, 120, sumY + i * lineH));
-
-  // 若原文比展示的长 → 末尾标注"完整解读"
-  const shown = lines.join("").length;
-  const hasMore = shown < data.summary.length || (data.fullReadingLength ?? 0) > shown;
-  if (hasMore) {
-    const noteY = sumY + lines.length * lineH + 14;
-    ctx.font = "400 22px 'Noto Sans SC', sans-serif";
-    ctx.fillStyle = "rgba(196, 181, 253, 0.55)";
-    ctx.fillText("——完整解读见占卜正文——", 120, noteY);
-  }
 
   /* ---- 落款 ---- */
   ctx.textAlign = "center";
@@ -217,13 +207,38 @@ export default function ShareCardButton({ data }: { data: ShareCardData }) {
   const [preview, setPreview] = useState<string | null>(null);
   const previewUrlRef = useRef<string | null>(null);
   const [downloaded, setDownloaded] = useState(false);
+  const [summarizing, setSummarizing] = useState(false);
 
+  /**
+   * 先用 LLM 把整篇解读浓缩成 80~150 字的分享文案（不截断，是重新提炼），
+   * 再交给 Canvas 自适应渲染。
+   * 总结失败时回落本地提取（extractShareSummary 已在 page.tsx 传入 summary 兜底）。
+   */
   const handleGenerate = useCallback(async () => {
     if (busy) return;
     setBusy(true);
     setError("");
+    let summary = data.summary;
     try {
-      const blob = await renderShareCard(data);
+      // ① LLM 总结（不截断——重新提炼成适配篇幅）
+      setSummarizing(true);
+      try {
+        const res = await fetch("/api/summarize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: data.sessionId, reading: data.fullReading ?? "" }),
+        });
+        if (res.ok) {
+          const j = await res.json();
+          if (j.summary && typeof j.summary === "string" && j.summary.length >= 20) {
+            summary = j.summary;
+          }
+        }
+      } catch { /* 回落本地 summary */ }
+      setSummarizing(false);
+
+      // ② Canvas 渲染
+      const blob = await renderShareCard({ ...data, summary });
       if (!blob) throw new Error("canvas 渲染失败");
       // 关闭旧预览时释放旧 URL
       if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
@@ -234,6 +249,7 @@ export default function ShareCardButton({ data }: { data: ShareCardData }) {
     } catch {
       setError("生成失败，请重试");
     } finally {
+      setSummarizing(false);
       setBusy(false);
     }
   }, [busy, data]);
@@ -273,7 +289,7 @@ export default function ShareCardButton({ data }: { data: ShareCardData }) {
         className="px-8 py-3 rounded-full border border-amber-500/40 text-amber-200 hover:bg-amber-900/30 transition-all tracking-[0.2em] disabled:opacity-50"
         style={{ fontFamily: "'Ma Shan Zheng', serif" }}
       >
-        {busy ? "绘制中…" : "生成分享卡"}
+        {summarizing ? "正在提炼文案…" : busy ? "绘制中…" : "生成分享卡"}
       </motion.button>
       {error && <p className="w-full text-center text-xs text-red-300/80 mt-1">{error}</p>}
 

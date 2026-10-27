@@ -983,10 +983,10 @@ export default function TarotApp() {
                     data={{
                       question,
                       cards: cards.map((c) => ({ nameZh: c.nameZh, image: c.image, reversed: c.reversed, pos: c.pos })),
-                      // 摘要取"收束段"（最后一段，通常是最精炼的总结）；
-                      // 没有明确分段时取末尾 240 字。绝不硬截前 120 字。
+                      // 兜底摘要（LLM 总结失败时用）：收束段
                       summary: extractShareSummary(reading),
-                      fullReadingLength: reading.length,
+                      // 完整解读全文：交给 LLM 提炼成 80~150 字分享文案
+                      fullReading: reading,
                       personaName: persona?.name,
                       sessionId,
                     }}
