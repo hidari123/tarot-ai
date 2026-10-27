@@ -452,7 +452,7 @@ export function splitThinkTags(raw: string): { content: string; reasoning?: stri
   };
 }
 
-/** 单次原始 HTTP 调用（不 failover） */
+/** 单次原始 HTTP 调用（不 failover；快速网络抖动在同 provider 重试 1 次） */
 async function rawCall(
   p: LLMProvider,
   messages: SessionMessage[],
@@ -460,6 +460,8 @@ async function rawCall(
   sessionId: string | undefined,
   agent: SubAgent
 ): Promise<CallResult> {
+  const timeoutMs = llmTimeoutFor(agent);
+  const attempt = async (): Promise<CallResult> => {
   const t0 = Date.now();
   const res = await fetch(`${p.baseURL}/chat/completions`, {
     method: "POST",
@@ -476,7 +478,7 @@ async function rawCall(
       // - analyst/reviewer 是结构化任务，关掉提速
       ...(agent === "supervisor" ? {} : { thinking: { type: "disabled" } }),
     }),
-    signal: AbortSignal.timeout(llmTimeoutFor(agent)),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) {
     const errText = await res.text().catch(() => res.statusText);
@@ -507,6 +509,19 @@ async function rawCall(
     usage: json.usage,
     provider: p.name,
   };
+  };
+
+  // 方向④：瞬时网络错误（断连/重置/5xx）先在同一个 provider 上重试一次，
+  // 仍失败才交给上层 callLLM 走 failover 换 provider。
+  // 例外：超时（abort）不原地重试 —— 首次已烧满 45s 预算，再等 45s 才切换
+  // 体验太差，直接 failover；业务错误（4xx）不重试直接抛。
+  try {
+    return await attempt();
+  } catch (e) {
+    const timedOut = e instanceof Error && /timeout|abort/i.test(e.message);
+    if (timedOut || !isFailoverError(e)) throw e;
+    return await attempt();
+  }
 }
 
 /** 非流式调用（决策/分析/审校）——失败自动切换备用 provider */
@@ -2190,11 +2205,12 @@ export async function* runAgent(
           notes = session.analystNotes;
         } catch (e) {
           yield { type: "error", error: `分析师异常：${e instanceof Error ? e.message : "未知"}` };
-          db.failSession(session.id);
+          db.failSession(session.id, "llm_error");
           return;
         }
         if (!notes) {
           yield { type: "error", error: "分析师未产出笔记" };
+          db.failSession(session.id, "analyst_empty");
           return;
         }
 
@@ -2223,7 +2239,7 @@ export async function* runAgent(
             }
           } catch (e) {
             yield { type: "error", error: `撰写中断：${e instanceof Error ? e.message : "未知"}` };
-            db.failSession(session.id);
+            db.failSession(session.id, "llm_error");
             return;
           }
         }
@@ -2267,6 +2283,8 @@ export async function* runAgent(
               if (reReview) review = reReview;
             } catch (e) {
               yield { type: "error", error: `重写中断：${e instanceof Error ? e.message : "未知"}` };
+              // 方向④：重写失败不终止会话（沿用原稿），但落库归因便于统计
+              try { db.logTiming(session.id, "rewrite_fail", 0, e instanceof Error ? e.message.slice(0, 80) : "未知"); } catch { /* ignore */ }
             }
           } else {
             // 逐张模式：把审校意见挂到 session，供收束阶段采纳
