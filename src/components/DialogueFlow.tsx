@@ -288,10 +288,14 @@ export default function DialogueFlow({
   streaming: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  /** 用户是否手动上滚（暂停自动滚动） */
+  /** 用户是否手动上滚（暂停流式跟随） */
   const userScrolled = useRef(false);
   /** 到底部距离阈值 */
   const STICK = 80;
+  /** 已滚动锚定的 ask 条目 id（同一问题只滚一次，delta 期间不再拽动视图） */
+  const anchoredAskRef = useRef<string | null>(null);
+  /** 上一次的条目数（区分"新问题出现"与"流式增长"） */
+  const prevCountRef = useRef(0);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -300,12 +304,44 @@ export default function DialogueFlow({
     userScrolled.current = !atBottom;
   };
 
-  // 自动滚动：仅当用户没有上滚时
-  useEffect(() => {
-    if (userScrolled.current) return;
+  /** 滚动到指定条目（居中展示，不打断阅读） */
+  const scrollToEntry = (entryId: string) => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [entries, streaming]);
+    const node = el?.querySelector(`[data-entry-id="${entryId}"]`);
+    if (el && node instanceof HTMLElement) {
+      el.scrollTo({ top: node.offsetTop - el.clientHeight / 2 + node.clientHeight / 2, behavior: "smooth" });
+    }
+  };
+
+  // 滚动策略（三层）：
+  // ① 新的待答问题出现（ask 条目 / card 上的确认问题）→ 无论用户是否上滚，
+  //    滚到该问题（只滚一次；delta 期间不再拽动视图）
+  // ② 流式 delta 增长 → 仅当用户在底部时跟随（不拽动阅读位置）
+  // ③ 用户上滚后不强制跟随，但新问题到来时恢复（回①）
+  const pendingAsk = entries.find(
+    (e) =>
+      (e.kind === "ask" && !e.settled) ||
+      (e.kind === "card" && e.card && !e.card.answer && e.card.question)
+  );
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // ① 新待答问题：锚定滚动一次
+    if (pendingAsk && anchoredAskRef.current !== pendingAsk.id) {
+      anchoredAskRef.current = pendingAsk.id;
+      // 等条目渲染完成
+      requestAnimationFrame(() => scrollToEntry(pendingAsk.id));
+      userScrolled.current = false; // 新问题 = 新上下文，恢复跟随
+      prevCountRef.current = entries.length;
+      return;
+    }
+    // ② 流式增长（条目数不变，文本变长）或新气泡：用户在底部才跟随
+    if (!userScrolled.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+    prevCountRef.current = entries.length;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pendingAsk 为每次渲染新算的引用，仅需响应其 id（锚定去重）
+  }, [entries, streaming, pendingAsk?.id]);
 
   /** 最后一个 card 条目的 index（判断"翻下一张"是否该显示） */
   const lastCardIdx = (() => {
@@ -324,32 +360,43 @@ export default function DialogueFlow({
       {entries.map((e, i) => {
         switch (e.kind) {
           case "teller":
-            return <TellerBubble key={e.id} text={e.text ?? ""} />;
+            return (
+              <div key={e.id} data-entry-id={e.id}>
+                <TellerBubble text={e.text ?? ""} />
+              </div>
+            );
           case "user":
-            return <UserBubble key={e.id} text={e.text ?? ""} />;
+            return (
+              <div key={e.id} data-entry-id={e.id}>
+                <UserBubble text={e.text ?? ""} />
+              </div>
+            );
           case "ask":
-            return e.settled ? (
-              <UserBubble key={e.id} text={e.text ?? ""} />
-            ) : (
-              <AskPanel key={e.id} entry={e} onAnswer={(a) => onAskAnswer(e.id, a)} />
+            return (
+              <div key={e.id} data-entry-id={e.id}>
+                {e.settled ? (
+                  <UserBubble text={e.text ?? ""} />
+                ) : (
+                  <AskPanel entry={e} onAnswer={(a) => onAskAnswer(e.id, a)} />
+                )}
+              </div>
             );
           case "card":
             return (
-              <CardBlock
-                key={e.id}
-                entry={{ ...e, onToggle: () => onToggleEntry(e.id) }}
-                onAnswer={(a) => onCardAnswer(e.id, a)}
-                onNext={onNextCard}
-                isLastCard={i === lastCardIdx}
-              />
+              <div key={e.id} data-entry-id={e.id}>
+                <CardBlock
+                  entry={{ ...e, onToggle: () => onToggleEntry(e.id) }}
+                  onAnswer={(a) => onCardAnswer(e.id, a)}
+                  onNext={onNextCard}
+                  isLastCard={i === lastCardIdx}
+                />
+              </div>
             );
           case "scroll":
             return (
-              <ScrollCard
-                key={e.id}
-                entry={e}
-                onToggle={() => onToggleEntry(e.id)}
-              />
+              <div key={e.id} data-entry-id={e.id}>
+                <ScrollCard entry={e} onToggle={() => onToggleEntry(e.id)} />
+              </div>
             );
           default:
             return null;
@@ -414,6 +461,24 @@ function AskPanel({ entry, onAnswer }: { entry: FlowEntry; onAnswer: (answer: st
             className="flex-1 min-w-[140px] px-3.5 py-2 rounded-lg bg-purple-950/40 border border-purple-500/20 text-purple-50 placeholder-purple-300/30 focus:outline-none focus:border-purple-400/60 text-sm"
           />
         </div>
+      </div>
+    );
+  }
+
+  /* ---- 选牌（cardSelection）：提示条——选牌动作在流外扇面完成 ---- */
+  if (a.cardSelection) {
+    return (
+      <div className="w-full rounded-2xl border border-amber-500/30 bg-amber-950/10 backdrop-blur-md px-4 py-3">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="text-base">🃏</span>
+          <span className="text-[10px] tracking-[0.25em] text-amber-200/70">选 牌</span>
+        </div>
+        <p className="text-sm text-purple-100/85" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>
+          {a.question}
+        </p>
+        <p className="text-[11px] text-amber-300/50 mt-1.5">
+          ↓ 请在下方牌扇中凭直觉点选
+        </p>
       </div>
     );
   }

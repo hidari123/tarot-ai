@@ -592,10 +592,12 @@ export default function TarotApp() {
                   prev.map((e) => (e.id === target.entryId ? { ...e, text: (e.text ?? "") + d } : e))
                 );
               } else {
-                // 无目标：占卜师的开场白/过渡语 → teller 气泡
+                // 无目标：占卜师的开场白/回应 → teller 气泡
                 setEntries((prev) => {
-                  // 复用最后一个 teller 气泡（连续 delta 拼接）
                   const last = prev[prev.length - 1];
+                  // 仅当最后一条就是 teller 气泡（连续 delta）才拼接；
+                  // 刚答完题（ask/user）或翻新牌后必须开新气泡，
+                  // 否则不同问题的回应会拼进同一个气泡里。
                   if (last?.kind === "teller" && !last.settled) {
                     return [...prev.slice(0, -1), { ...last, text: (last.text ?? "") + d }];
                   }
@@ -676,8 +678,21 @@ export default function TarotApp() {
     }
   }, [sessionId]);
 
-  /* 选牌确认 */
+  /* 选牌确认（扇面选完 / 随机代抽）——流内 ask 条目同步转为用户气泡 */
   const confirmFanSelection = useCallback((payload: string) => {
+    // 选牌详情（"id,id,id|dwell,ms"）转为可读描述
+    const [idsStr] = payload.split("|");
+    const count = idsStr.split(",").filter(Boolean).length;
+    const label = payload.trim() === "random" || count === 0
+      ? "请星辰替我选（随机 3 张）"
+      : `我亲手选了 ${count} 张牌`;
+    // 把流内未 settle 的选牌 ask 条目固定为用户气泡
+    setEntries((prev) => {
+      const idx = [...prev].reverse().findIndex((e) => e.kind === "ask" && !e.settled && e.ask?.cardSelection);
+      if (idx === -1) return prev;
+      const realIdx = prev.length - 1 - idx;
+      return prev.map((e, i) => (i === realIdx ? { ...e, settled: true, kind: "user", text: label, ask: undefined } : e));
+    });
     answerAsk(payload);
   }, [answerAsk]);
 
@@ -941,7 +956,7 @@ export default function TarotApp() {
               </p>
               <p className="text-xs text-emerald-200/60 animate-pulse">命运之牌正在洗牌归位…（扇面数据未送达，已请求降级选牌）</p>
               <button
-                onClick={() => answerAsk("random")}
+                onClick={() => confirmFanSelection("random")}
                 className="mt-4 px-6 py-3 rounded-xl bg-gradient-to-r from-purple-700 to-indigo-700 text-white text-sm"
               >
                 ✦ 代替我随机抽 3 张
