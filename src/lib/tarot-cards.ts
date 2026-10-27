@@ -24,13 +24,6 @@ export interface TarotCard {
 
 /* ---------- 解析 tarot-lab 数据 ---------- */
 
-const SUIT_MAP: Record<string, CardSuit> = {
-  wands: "wands",
-  cups: "cups",
-  swords: "swords",
-  pents: "pentacles",
-};
-
 function classify(link: string, nameEn: string): { suit: CardSuit; number: number } {
   const minorMatch = nameEn.match(/^(Ace|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Page|Knight|Queen|King)\s+of\s+(Wands|Cups|Swords|Pentacles)/);
   if (minorMatch) {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 
 /**
  * 选牌扇面 —— HITL 仪式感核心组件
@@ -47,7 +47,18 @@ export default function CardFan({
   const spread = 150; // 总角度
   const step = n > 1 ? spread / (n - 1) : 0;
   const startAngle = -spread / 2;
-  const radius = 420;
+  // 弧形参数按容器宽度自适应（固定 420 在 ≤360px 屏会被 main 的 overflow-hidden 裁切，边缘牌不可点）
+  const [containerW, setContainerW] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => setContainerW(el.clientWidth);
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+  const radius = containerW > 0 ? Math.min(420, containerW * 0.95) : 420;
 
   return (
     <div className="w-full flex flex-col items-center">
@@ -58,7 +69,7 @@ export default function CardFan({
         已选 {selected.length} / {count} · 你的犹豫与顺序都会成为解读的一部分
       </p>
 
-      <div className="relative w-full max-w-3xl h-64 md:h-72 select-none">
+      <div ref={containerRef} className="relative w-full max-w-3xl h-64 md:h-72 select-none">
         {cards.map((card, i) => {
           const angle = startAngle + step * i;
           const isSel = selected.includes(card.id);

@@ -33,7 +33,8 @@ export default function KnowledgePanel({ hits }: { hits: RagHitView[] }) {
   const rowRefs = useRef<Array<HTMLDivElement | null>>([]);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  /* 监听 CitedReading 派发的引文高亮事件 */
+  /* 监听 CitedReading 派发的引文高亮事件
+     （依赖用 hits 引用而非 hits.length：同长度不同内容的更新会拿到过期闭包） */
   useEffect(() => {
     const onHighlight = (e: Event) => {
       const n = (e as CustomEvent<{ n: number }>).detail?.n;
@@ -46,7 +47,7 @@ export default function KnowledgePanel({ hits }: { hits: RagHitView[] }) {
     };
     window.addEventListener("tarot:highlight-cite", onHighlight);
     return () => window.removeEventListener("tarot:highlight-cite", onHighlight);
-  }, [hits.length]);
+  }, [hits]);
 
   if (hits.length === 0) return null;
 

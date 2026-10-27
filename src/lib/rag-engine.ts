@@ -36,14 +36,27 @@ const FIELD_WEIGHT: Record<ChunkField, number> = {
   keywords: 1.4,      // 关键词权重最高（短而准）
 };
 
-/** 中文 2-gram 切词（无分词依赖，兼顾召回） */
+/** 中文 2-gram + 单字 + 英文按词切分的混合切词（无分词依赖，兼顾召回） */
 export function tokenize(text: string): string[] {
   const clean = text.toLowerCase().replace(/\s+/g, " ").trim();
   const tokens: string[] = [];
-  for (let i = 0; i < clean.length - 1; i++) {
-    tokens.push(clean.slice(i, i + 2));
+  // 英文先按词边界切出（避免 "the fool" 被切成 th/he/e_/_f 碎片污染 DF）
+  // 中文按 2-gram 切（保留单字：单字查询"钱""爱"此前 BM25 必然零命中）
+  const parts = clean.match(/[a-z]+|[\u4e00-\u9fff]|\S/g) ?? [];
+  for (const part of parts) {
+    if (/^[a-z]+$/.test(part)) {
+      tokens.push(part);
+    } else if (/^[\u4e00-\u9fff]$/.test(part)) {
+      tokens.push(part);
+      // 单字也参与组合（后续字会在下个 part 处理 2-gram）
+    } else {
+      // 连续中文段：2-gram + 首尾单字
+      for (let i = 0; i < part.length - 1; i++) {
+        tokens.push(part.slice(i, i + 2));
+      }
+      for (const ch of part) tokens.push(ch);
+    }
   }
-  if (clean.length === 1) tokens.push(clean);
   return tokens;
 }
 
@@ -109,20 +122,24 @@ export interface RagHit {
   channels: string[]; // 命中通道：bm25 / vector / hybrid
 }
 
+/** 每 chunk 的 TF 表（模块加载时一次算好——tokens 是静态的，
+ * 此前每次查询为全部 312 chunk 重建 tfMap） */
+const CHUNK_TF: Map<string, number>[] = KNOWLEDGE_CHUNKS.map((chunk) => {
+  const m = new Map<string, number>();
+  for (const t of chunk.tokens) m.set(t, (m.get(t) ?? 0) + 1);
+  return m;
+});
+
 export function ragSearch(query: string, topK = 5, filterCardIds?: string[]): RagHit[] {
   const qTokens = tokenize(query);
   if (qTokens.length === 0) return [];
 
   const qSet = new Set(qTokens);
   const pool = filterCardIds
-    ? KNOWLEDGE_CHUNKS.filter((c) => filterCardIds.includes(c.cardId))
-    : KNOWLEDGE_CHUNKS;
+    ? KNOWLEDGE_CHUNKS.map((c, i) => ({ c, tf: CHUNK_TF[i] })).filter(({ c }) => filterCardIds.includes(c.cardId))
+    : KNOWLEDGE_CHUNKS.map((c, i) => ({ c, tf: CHUNK_TF[i] }));
 
-  const scored = pool.map((chunk) => {
-    // 查询 token 在 chunk 中的词频
-    const tfMap = new Map<string, number>();
-    for (const t of chunk.tokens) tfMap.set(t, (tfMap.get(t) ?? 0) + 1);
-
+  const scored = pool.map(({ c: chunk, tf: tfMap }) => {
     let score = 0;
     for (const t of qSet) {
       const tf = tfMap.get(t) ?? 0;
@@ -191,11 +208,12 @@ const CARD_NAME_INDEX: Array<{ names: string[]; cardId: string }> = TAROT_CARDS.
   cardId: c.id,
 }));
 
-/** 返回查询中显式提到的牌 id（含别名命中） */
+/** 返回查询中显式提到的牌 id（含别名命中；统一小写匹配，"the fool" 也能命中 "The Fool"） */
 export function extractMentionedCards(query: string): string[] {
+  const q = query.toLowerCase();
   const found: string[] = [];
   for (const { names, cardId } of CARD_NAME_INDEX) {
-    if (names.some((n) => n && query.includes(n))) found.push(cardId);
+    if (names.some((n) => n && q.includes(n.toLowerCase()))) found.push(cardId);
   }
   return found;
 }
@@ -204,7 +222,9 @@ export function extractMentionedCards(query: string): string[] {
 /* 混合检索（Hybrid）：精确 + BM25 + 向量，RRF 融合                       */
 /* ------------------------------------------------------------------ */
 
-const RRF_K = 60; // Reciprocal Rank Fusion 常数
+const RRF_K = 20; // Reciprocal Rank Fusion 常数（k=60 时 rank 分差被压平，exact 通道优势体现不出来）
+/** 精确通道加权倍数：显式提到的牌必须显著置顶（"必进 top-k"不能只靠 rank 叠加） */
+const EXACT_BOOST = 3;
 
 /** 精确通道命中（查询显式提到的牌，取正位/逆位/关键词 3 个最常用字段，通道标记 exact） */
 function exactCardHits(cardIds: string[]): RagHit[] {
@@ -242,11 +262,15 @@ function exactCardHits(cardIds: string[]): RagHit[] {
  */
 export async function hybridSearch(query: string, topK = 5): Promise<RagHit[]> {
   // 向量通道软超时：无论模型加载/嵌入多慢，最多等 8 秒，超时按无命中处理（纯 BM25 兜底）
+  // ⚠️ race 胜出后清掉定时器（setTimeout 空挂会延迟进程退出）
   const VECTOR_SOFT_TIMEOUT_MS = 8_000;
-  const vecWithTimeout = Promise.race([
-    vectorSearch(query, topK * 2),
-    new Promise<null>((resolve) => setTimeout(() => resolve(null), VECTOR_SOFT_TIMEOUT_MS)),
-  ]).catch(() => null);
+  let vecTimer: ReturnType<typeof setTimeout> | undefined;
+  const vecTimeout = new Promise<null>((resolve) => {
+    vecTimer = setTimeout(() => resolve(null), VECTOR_SOFT_TIMEOUT_MS);
+  });
+  const vecWithTimeout = Promise.race([vectorSearch(query, topK * 2), vecTimeout])
+    .catch(() => null)
+    .finally(() => clearTimeout(vecTimer));
 
   // 牌名精确通道（同步、零成本）
   const mentioned = extractMentionedCards(query);
@@ -260,8 +284,9 @@ export async function hybridSearch(query: string, topK = 5): Promise<RagHit[]> {
 
   if (exactHits.length === 0 && bm25Hits.length === 0 && (!vecHits || vecHits.length === 0)) return [];
   // 向量通道不可用（未装模型/降级/软超时）→ 精确 + BM25
+  // ⚠️ 复用已算好的 bm25Hits（此前重复跑一次 ragSearch(query, topK) 白扔已有结果）
   if (!vecHits || vecHits.length === 0) {
-    return fuseAndDedup(exactHits, ragSearch(query, topK), [], topK);
+    return fuseAndDedup(exactHits, bm25Hits, [], topK);
   }
 
   // 向量命中转为通用 RagHit 形状（补齐 rawScore/source/channels）
@@ -287,11 +312,14 @@ function fuseAndDedup(exactHits: RagHit[], bm25Hits: RagHit[], vecHits: RagHit[]
   // 无精确命中时退化为原两路
   if (exactHits.length === 0 && bm25Hits.length === 0 && vecHits.length === 0) return [];
 
-  // RRF 融合：score = Σ 1/(k + rank)；同一 chunk 多通道命中排名叠加
+  // RRF 融合：score = Σ 1/(k + rank)；同一 chunk 多通道命中排名叠加。
+  // ⚠️ 精确通道乘 EXACT_BOOST：显式提到的牌必须置顶——
+  // 纯 rank 叠加下（k=60，topK*2=10 候选）rank 分差仅 ~15%，
+  // 双通道命中的无关牌可反超 exact-only，"必进 top-k 且置顶"数学上不成立。
   const fused = new Map<string, RagHit & { rrf: number; chans: Set<string> }>();
-  const addRank = (hits: RagHit[], channel: string) => {
+  const addRank = (hits: RagHit[], channel: string, boost = 1) => {
     hits.forEach((h, idx) => {
-      const rrf = 1 / (RRF_K + idx + 1);
+      const rrf = (1 / (RRF_K + idx + 1)) * boost;
       const prev = fused.get(h.chunkId);
       if (prev) {
         prev.rrf += rrf;
@@ -303,8 +331,8 @@ function fuseAndDedup(exactHits: RagHit[], bm25Hits: RagHit[], vecHits: RagHit[]
       }
     });
   };
-  // 精确通道优先加入（排名最靠前），再 BM25、向量
-  addRank(exactHits, "exact");
+  // 精确通道优先加入（加权置顶），再 BM25、向量
+  addRank(exactHits, "exact", EXACT_BOOST);
   addRank(bm25Hits, "bm25");
   addRank(vecHits, "vector");
 

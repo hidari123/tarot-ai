@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 /**
@@ -67,14 +67,12 @@ export interface FlowEntry {
   settled?: boolean;
   /** 折叠态（card 完成后默认折叠） */
   collapsed?: boolean;
-  /** 展开/收起回调（由容器注入，避免条目数据与渲染函数耦合） */
-  onToggle?: () => void;
 }
 
 /* ---------------- 单条渲染 ---------------- */
 
-/** 占卜师气泡（左） */
-function TellerBubble({ text }: { text: string }) {
+/** 占卜师气泡（左）— memo：delta 只重渲染正在增长的最后一个气泡 */
+const TellerBubble = memo(function TellerBubble({ text }: { text: string }) {
   return (
     <div className="flex justify-start">
       <div
@@ -85,10 +83,10 @@ function TellerBubble({ text }: { text: string }) {
       </div>
     </div>
   );
-}
+});
 
-/** 用户气泡（右，靛蓝） */
-function UserBubble({ text }: { text: string }) {
+/** 用户气泡（右，靛蓝）— memo */
+const UserBubble = memo(function UserBubble({ text }: { text: string }) {
   return (
     <div className="flex justify-end">
       <div
@@ -100,29 +98,35 @@ function UserBubble({ text }: { text: string }) {
       </div>
     </div>
   );
-}
+});
 
-/** 一张牌的段落（翻牌时展开，完成后折叠成摘要行；摘要可点开/收起） */
-function CardBlock({
+/** 一张牌的段落（翻牌时展开，完成后折叠成摘要行；摘要可点开/收起）— memo：
+ * delta 流式期间只有"正在解读的那张牌"条目变化，其余 20+ 条目全部跳过重渲染。
+ * ⚠️ 回调 props 必须引用稳定（容器传 useCallback），否则 memo 失效 */
+const CardBlock = memo(function CardBlock({
   entry,
   onAnswer,
+  onToggle,
   onNext,
   isLastCard,
 }: {
   entry: FlowEntry;
-  onAnswer: (text: string) => void;
+  /** 回答该牌的确认问题（entryId 由本组件内部携带） */
+  onAnswer: (entryId: string, text: string) => void;
+  /** 展开/收起（引用稳定） */
+  onToggle: (entryId: string) => void;
   onNext: () => void;
   isLastCard: boolean;
 }) {
   const c = entry.card!;
   const [custom, setCustom] = useState("");
-  /* 完成 + 折叠 → 摘要行；其余情况展开（onToggle 控制切换） */
+  /* 完成 + 折叠 → 摘要行；其余情况展开 */
 
   /* ---- 完成态：折叠摘要行 ---- */
   if (c.readingDone && entry.collapsed) {
     return (
       <button
-        onClick={() => entry.onToggle?.()}
+        onClick={() => onToggle(entry.id)}
         className="w-full text-left px-4 py-2.5 rounded-xl border border-amber-400/25 bg-amber-950/10 hover:bg-amber-900/20 transition-all flex items-center gap-3"
       >
         <span className="text-amber-300/80 text-xs font-mono shrink-0">{c.pos}</span>
@@ -159,7 +163,7 @@ function CardBlock({
         </div>
         {c.readingDone && (
           <button
-            onClick={() => entry.onToggle?.()}
+            onClick={() => onToggle(entry.id)}
             className="ml-auto text-amber-300/50 text-[10px] shrink-0 hover:text-amber-200/80 transition-colors"
           >
             收起 ▴
@@ -201,7 +205,7 @@ function CardBlock({
                 {(c.options ?? ["是这样", "其实不太像", "我说不上来"]).map((o) => (
                   <button
                     key={o}
-                    onClick={() => onAnswer(o)}
+                    onClick={() => onAnswer(entry.id, o)}
                     className="text-left px-3.5 py-2 rounded-lg border border-purple-500/25 bg-purple-900/20 text-purple-100/90 hover:bg-purple-800/30 hover:border-purple-400/50 transition-all text-sm"
                     style={{ fontFamily: "'Ma Shan Zheng', serif" }}
                   >
@@ -213,13 +217,13 @@ function CardBlock({
                 <input
                   value={custom}
                   onChange={(e) => setCustom(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && custom.trim() && onAnswer(custom.trim())}
+                  onKeyDown={(e) => e.key === "Enter" && custom.trim() && onAnswer(entry.id, custom.trim())}
                   placeholder="或说点别的…"
                   maxLength={100}
                   className="flex-1 px-3 py-2 rounded-lg bg-purple-950/40 border border-purple-500/20 text-purple-50 placeholder-purple-300/30 focus:outline-none focus:border-purple-400/50 text-sm"
                 />
                 <button
-                  onClick={() => custom.trim() && onAnswer(custom.trim())}
+                  onClick={() => custom.trim() && onAnswer(entry.id, custom.trim())}
                   disabled={!custom.trim()}
                   className="px-3.5 py-2 rounded-lg bg-purple-700/70 text-white text-sm disabled:opacity-40 hover:bg-purple-600/70 transition-all"
                 >
@@ -245,7 +249,7 @@ function CardBlock({
       {c.readingDone && (
         <div className="px-4 py-2.5 border-t border-purple-500/10 flex items-center justify-between">
           <button
-            onClick={() => entry.onToggle?.()}
+            onClick={() => onToggle(entry.id)}
             className="text-[10px] text-purple-400/40 hover:text-purple-300/70 transition-colors"
           >
             {entry.collapsed ? "展开全部 ▾" : "收起 ▴"}
@@ -263,7 +267,7 @@ function CardBlock({
       )}
     </div>
   );
-}
+});
 
 /* ---------------- 对话流容器 ---------------- */
 
@@ -355,7 +359,7 @@ export default function DialogueFlow({
     <div
       ref={scrollRef}
       onScroll={onScroll}
-      className="w-full max-w-2xl flex-1 min-h-[300px] max-h-[62vh] overflow-y-auto px-1 flex flex-col gap-3 scroll-smooth"
+      className="w-full max-w-2xl flex-1 min-h-[300px] max-h-[62dvh] overflow-y-auto px-1 flex flex-col gap-3"
     >
       {entries.map((e, i) => {
         switch (e.kind) {
@@ -385,8 +389,9 @@ export default function DialogueFlow({
             return (
               <div key={e.id} data-entry-id={e.id}>
                 <CardBlock
-                  entry={{ ...e, onToggle: () => onToggleEntry(e.id) }}
-                  onAnswer={(a) => onCardAnswer(e.id, a)}
+                  entry={e}
+                  onAnswer={onCardAnswer}
+                  onToggle={onToggleEntry}
                   onNext={onNextCard}
                   isLastCard={i === lastCardIdx}
                 />
@@ -395,7 +400,7 @@ export default function DialogueFlow({
           case "scroll":
             return (
               <div key={e.id} data-entry-id={e.id}>
-                <ScrollCard entry={e} onToggle={() => onToggleEntry(e.id)} />
+                <ScrollCard entry={e} onToggle={onToggleEntry} />
               </div>
             );
           default:
@@ -413,7 +418,7 @@ export default function DialogueFlow({
 
 /* ---------------- 问题面板（承约/呼召/澄清/岔路，插入流中的待答条目） ---------------- */
 
-function AskPanel({ entry, onAnswer }: { entry: FlowEntry; onAnswer: (answer: string) => void }) {
+const AskPanel = memo(function AskPanel({ entry, onAnswer }: { entry: FlowEntry; onAnswer: (answer: string) => void }) {
   const [custom, setCustom] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   // 三问呼召：三个输入框（必须在所有条件分支之前声明，保持 Hook 顺序）
@@ -589,15 +594,15 @@ function AskPanel({ entry, onAnswer }: { entry: FlowEntry; onAnswer: (answer: st
       )}
     </div>
   );
-}
+});
 
 /* ---------------- 命运之卷（最终总结卡片，可折叠） ---------------- */
 
-function ScrollCard({ entry, onToggle }: { entry: FlowEntry; onToggle: () => void }) {
+const ScrollCard = memo(function ScrollCard({ entry, onToggle }: { entry: FlowEntry; onToggle: (entryId: string) => void }) {
   const [open, setOpen] = useState(true);
   const toggle = () => {
     setOpen(!open);
-    onToggle();
+    onToggle(entry.id);
   };
   return (
     <div className="w-full rounded-2xl border border-purple-500/30 bg-gradient-to-b from-[#170d24]/85 to-[#0b0514]/85 backdrop-blur-md overflow-hidden">
@@ -624,4 +629,4 @@ function ScrollCard({ entry, onToggle }: { entry: FlowEntry; onToggle: () => voi
       </AnimatePresence>
     </div>
   );
-}
+});

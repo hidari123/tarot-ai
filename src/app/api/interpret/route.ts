@@ -1,7 +1,6 @@
 import {
   createSession,
   getSession,
-  resolvePendingAsk,
   runAgent,
   type AgentEvent,
 } from "@/lib/tarot-agent";
@@ -34,6 +33,11 @@ export async function POST(req: Request) {
     if (!session) {
       return Response.json({ error: "会话已过期，请重新开始占卜" }, { status: 410 });
     }
+    // ⚠️ 并发互斥：会话正在推进（生成器运行中 / 挂在 HITL 等待）时，
+    // 新 interpret 会把消息插到未配对的 tool_calls 后 → 协议 400 + 历史交叉污染。
+    if (session.busy) {
+      return Response.json({ error: "这场占卜正在进行中，请先回应占卜师或稍候" }, { status: 409 });
+    }
     followup = (body.followup ?? "").trim();
     if (!followup) {
       return Response.json({ error: "请写下你的追问" }, { status: 400 });
@@ -46,6 +50,9 @@ export async function POST(req: Request) {
     }
     session = createSession(question, body.persona);
   }
+
+  // 把客户端断开信号注入会话：HITL 等待中的 Promise 可被取消（防生成器/内存泄漏）
+  session.abortSignal = req.signal;
 
   const encoder = new TextEncoder();
   const sid = session.id;

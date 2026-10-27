@@ -22,6 +22,9 @@ const db: Database.Database = g.__tarotDb__ ?? new Database(join(DATA_DIR, "taro
 g.__tarotDb__ = db;
 
 db.pragma("journal_mode = WAL");
+// ⚠️ busy_timeout：跨进程写冲突（dev 多 worker / 脚本同写）默认直接抛
+// SQLITE_BUSY——等 5 秒重试比崩掉 SSE 流好得多
+db.pragma("busy_timeout = 5000");
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS sessions (
@@ -62,7 +65,25 @@ CREATE TABLE IF NOT EXISTS llm_usage (
 
 CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_created ON tool_calls(created_at);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage(created_at);
 `);
+
+// ---- 数据保留：90 天 TTL（观测数据无限膨胀会让面板全表聚合线性变慢） ----
+const RETENTION_MS = Number(process.env.DATA_RETENTION_DAYS ?? 90) * 24 * 60 * 60 * 1000;
+const gClean = globalThis as unknown as { __tarotDbCleanTimer__?: NodeJS.Timeout };
+if (!gClean.__tarotDbCleanTimer__) {
+  gClean.__tarotDbCleanTimer__ = setInterval(() => {
+    try {
+      const cutoff = Date.now() - RETENTION_MS;
+      db.prepare(`DELETE FROM tool_calls WHERE created_at < ?`).run(cutoff);
+      db.prepare(`DELETE FROM llm_usage WHERE created_at < ?`).run(cutoff);
+      db.prepare(`DELETE FROM sessions WHERE created_at < ?`).run(cutoff);
+    } catch { /* 清理失败不阻断 */ }
+  }, 24 * 60 * 60 * 1000); // 每天一次
+  gClean.__tarotDbCleanTimer__.unref?.();
+}
 
 // ---- 迁移：新增 error_reason 字段（记录会话异常结束的原因） ----
 try {
@@ -210,7 +231,20 @@ export interface DashboardStats {
   }[];
 }
 
+/** 面板统计缓存：9 条全表聚合没必要每个 GET 都跑（60s 内存缓存） */
+let dashboardCache: { at: number; data: DashboardStats } | null = null;
+const DASHBOARD_CACHE_MS = 60_000;
+
 export function getDashboardStats(): DashboardStats {
+  if (dashboardCache && Date.now() - dashboardCache.at < DASHBOARD_CACHE_MS) {
+    return dashboardCache.data;
+  }
+  const data = computeDashboardStats();
+  dashboardCache = { at: Date.now(), data };
+  return data;
+}
+
+function computeDashboardStats(): DashboardStats {
   const total = db.prepare(`SELECT COUNT(*) c FROM sessions`).get() as { c: number };
   const done = db.prepare(`SELECT COUNT(*) c FROM sessions WHERE status='done'`).get() as { c: number };
   const tools = db.prepare(`SELECT COUNT(*) c FROM tool_calls`).get() as { c: number };

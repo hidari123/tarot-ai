@@ -9,7 +9,6 @@
  * 3. 全部失败 → 纯 BM25（hybridSearch 已处理）
  */
 
-import { TAROT_CARDS } from "./tarot-cards";
 import { KNOWLEDGE_CHUNKS, type ChunkField } from "./rag-engine";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -106,8 +105,12 @@ async function getPipeline() {
     env.remoteHost = "https://hf-mirror.com";
   }
   // 若本地已存在模型文件，则禁用远程加载（完全离线，杜绝下载挂起）
-  const localModelFile = join(CACHE_DIR, "Xenova", "all-MiniLM-L6-v2", "onnx", "model_quantized.onnx");
-  const hasLocalModel = existsSync(localModelFile);
+  // ⚠️ 探测路径由 MODEL_ID 拼接：EMBEDDING_MODEL 换模型后旧硬编码路径
+  // 永远 miss → 走远程下载 → 60s 超时 → 哈希降级且永不纠正
+  const modelSlug = MODEL_ID.replace(/\//g, "--");
+  const localModelFile = join(CACHE_DIR, modelSlug, "onnx", "model_quantized.onnx");
+  const localModelFileAlt = join(CACHE_DIR, ...MODEL_ID.split("/"), "onnx", "model_quantized.onnx");
+  const hasLocalModel = existsSync(localModelFile) || existsSync(localModelFileAlt);
   if (hasLocalModel) {
     env.allowRemoteModels = false;
     env.allowLocalModels = true;
@@ -121,17 +124,20 @@ async function getPipeline() {
     } catch { /* undici 不可用则直连 */ }
   }
   // 硬超时保护：模型下载（HF 域名不可达时会无限挂起）超过时限即放弃
-  pipeline = await Promise.race([
-    createPipeline("feature-extraction", MODEL_ID, { dtype: "q8" }),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`模型加载超时(${MODEL_TIMEOUT_MS}ms)，降级哈希向量`)), MODEL_TIMEOUT_MS)
-    ),
-  ]);
+  // ⚠️ race 胜出后清掉定时器（空挂的 setTimeout 延迟进程退出）
+  let modelTimer: ReturnType<typeof setTimeout> | undefined;
+  const modelTimeout = new Promise<never>((_, reject) => {
+    modelTimer = setTimeout(() => reject(new Error(`模型加载超时(${MODEL_TIMEOUT_MS}ms)，降级哈希向量`)), MODEL_TIMEOUT_MS);
+  });
+  try {
+    pipeline = await Promise.race([createPipeline("feature-extraction", MODEL_ID, { dtype: "q8" }), modelTimeout]);
+  } finally {
+    clearTimeout(modelTimer);
+  }
   return pipeline;
 }
 
 /** transformers.js 向量化（均值池化 + L2 归一化），全程带超时保护 */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function modelEmbed(texts: string[]): Promise<Float32Array[] | null> {
   try {
     const pipe = await getPipeline();
@@ -147,13 +153,16 @@ async function modelEmbed(texts: string[]): Promise<Float32Array[] | null> {
       }
       return out;
     };
-    // 嵌入计算整体限时（首次含模型下载，给足 3 倍）
-    return await Promise.race([
-      run(),
-      new Promise<null>((resolve) =>
-        setTimeout(() => resolve(null), MODEL_TIMEOUT_MS * 3)
-      ),
-    ]);
+    // 嵌入计算整体限时（首次含模型下载，给足 3 倍）；race 胜出后清定时器
+    let embedTimer: ReturnType<typeof setTimeout> | undefined;
+    const embedTimeout = new Promise<null>((resolve) => {
+      embedTimer = setTimeout(() => resolve(null), MODEL_TIMEOUT_MS * 3);
+    });
+    try {
+      return await Promise.race([run(), embedTimeout]);
+    } finally {
+      clearTimeout(embedTimer);
+    }
   } catch {
     modelLoadFailed = true; // 失败标记：本进程后续直接走哈希
     return null;
@@ -247,8 +256,22 @@ export async function vectorSearch(query: string, topK = 5): Promise<VectorHit[]
       chunk,
       score: cosine(qVec, embedMatrix[i]),
     }))
-      .filter((s) => s.score > (embedMode === "hash" ? 0.05 : 0.25))
+      // ⚠️ 阈值按模式分开校准：
+      //  - hash 模式余弦分布高而密（n-gram 重叠普遍），0.05 只滤纯噪声
+      //  - model 模式（all-MiniLM 系）：中文-中文余弦普遍 0.2~0.4，
+      //    0.25 会把整通道滤空（"混合检索"退化为 BM25+exact）→ 放宽到 0.15
+      .filter((s) => s.score > (embedMode === "hash" ? 0.05 : 0.15))
       .sort((a, b) => b.score - a.score);
+
+    // 兜底：阈值过滤后一条不剩时，取原始 top 分数 ≥0.10 的前 3 条
+    // （向量通道不至于整场缺席，RRF 融合仍有第三路信号）
+    if (scored.length === 0) {
+      const fallback = KNOWLEDGE_CHUNKS.map((chunk, i) => ({ chunk, score: cosine(qVec, embedMatrix[i]) }))
+        .filter((s) => s.score > 0.1)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3);
+      scored.push(...fallback);
+    }
 
     const seen = new Set<string>();
     const hits: VectorHit[] = [];

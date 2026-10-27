@@ -154,10 +154,17 @@ function TarotCardView({ card, index, flipped, onFlip }: { card: AgentCard; inde
 function AgentStatusBar({ phase }: { phase: Phase | null }) {
   const order = useMemo(() => {
     if (!phase) return PHASE_ORDER;
-    const idx = PHASE_ORDER.indexOf(phase);
+    // wait_user / error 不在 PHASE_ORDER 里（是"横切状态"而非流程步骤）：
+    // 显示为在当前进度基础上叠加高亮，而不是把状态条塌缩成一项
+    const base = PHASE_ORDER.includes(phase as Phase) ? phase : null;
+    if (!base) {
+      // 横切状态：展示到 interpret 为止（等待/出错发生在解读流程中段）
+      return PHASE_ORDER.slice(0, 4);
+    }
+    const idx = PHASE_ORDER.indexOf(base);
     return PHASE_ORDER.slice(0, Math.max(idx + 1, 1));
   }, [phase]);
-  const curIdx = phase ? PHASE_ORDER.indexOf(phase) : -1;
+  const curIdx = phase && PHASE_ORDER.includes(phase as Phase) ? PHASE_ORDER.indexOf(phase as Phase) : -1;
 
   return (
     <div className="flex items-center gap-1.5 flex-wrap justify-center">
@@ -183,6 +190,22 @@ function AgentStatusBar({ phase }: { phase: Phase | null }) {
           </div>
         );
       })}
+      {/* 横切状态徽章：wait_user / error 不属于流程步骤，单独追加显示 */}
+      {phase && !PHASE_ORDER.includes(phase as Phase) && phase !== null && PHASE_TEXT[phase] && (
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] text-amber-300/60">→</span>
+          <div
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] md:text-xs animate-pulse ${
+              phase === "error"
+                ? "bg-rose-900/40 border border-rose-400/50 text-rose-100"
+                : "bg-amber-900/40 border border-amber-400/50 text-amber-100"
+            }`}
+          >
+            <span>{PHASE_TEXT[phase].icon}</span>
+            <span>{PHASE_TEXT[phase].title}</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -269,6 +292,8 @@ export default function TarotApp() {
   const [error, setError] = useState("");
   const [listening, setListening] = useState(false);
   const [streamStart, setStreamStart] = useState(0);
+  /** 过程细节区展开态（默认折叠 = 零渲染开销） */
+  const [showDetails, setShowDetails] = useState(false);
   /* ---- 真实塔罗仪式流程状态（仅保留仍在使用的部分；仪式对话已并入对话流）---- */
   /** 逐张解读的牌阵状态 */
   const [spread, setSpread] = useState<SpreadCard[]>([]);
@@ -296,6 +321,61 @@ export default function TarotApp() {
     );
   }, []);
 
+  /* ---- delta 节流（rAF 批量合并）----
+   * 流式 delta 每秒 20+ 事件，逐条 setEntries 全量 map 会让整页树
+   * 每秒重渲染 20+ 次（长会话明显卡顿）。改为：
+   *  - delta 到达只写进 bufferRef（零渲染成本）
+   *  - requestAnimationFrame 逐帧把缓冲一次性 flush 进 state
+   * 一帧内的 N 条 delta 合并为 1 次 setState，渲染次数从"每事件"降到"每帧"。 */
+  const deltaBufferRef = useRef<{
+    reading: string;
+    card: { entryId: string; text: string } | null;
+    scroll: { entryId: string; text: string } | null;
+    teller: string | null;
+  }>({ reading: "", card: null, scroll: null, teller: null });
+  const flushScheduledRef = useRef(false);
+
+  const flushDeltaBuffer = useCallback(() => {
+    flushScheduledRef.current = false;
+    const buf = deltaBufferRef.current;
+    if (buf.reading) {
+      const d = buf.reading;
+      setReading((prev) => prev + d);
+      buf.reading = "";
+    }
+    if (buf.card) {
+      const { entryId, text } = buf.card;
+      if (text) setEntries((prev) => prev.map((e) => (e.id === entryId && e.card ? { ...e, card: { ...e.card, reading: (e.card.reading ?? "") + text } } : e)));
+      buf.card = null;
+    }
+    if (buf.scroll) {
+      const { entryId, text } = buf.scroll;
+      if (text) setEntries((prev) => prev.map((e) => (e.id === entryId ? { ...e, text: (e.text ?? "") + text } : e)));
+      buf.scroll = null;
+    }
+    if (buf.teller !== null) {
+      const d = buf.teller;
+      buf.teller = null;
+      if (d) {
+        setEntries((prev) => {
+          const last = prev[prev.length - 1];
+          // 仅当最后一条就是 teller 气泡（连续 delta）才拼接；
+          // 刚答完题（ask/user）或翻新牌后必须开新气泡
+          if (last?.kind === "teller" && !last.settled) {
+            return [...prev.slice(0, -1), { ...last, text: (last.text ?? "") + d }];
+          }
+          return [...prev, { id: nextEntryId(), kind: "teller", text: d }];
+        });
+      }
+    }
+  }, []);
+
+  const scheduleDeltaFlush = useCallback(() => {
+    if (flushScheduledRef.current) return;
+    flushScheduledRef.current = true;
+    requestAnimationFrame(() => flushDeltaBuffer());
+  }, [flushDeltaBuffer]);
+
   /**
    * 回答对话流中的 ask 条目：条目转 settled（用户气泡），并发送 API。
    * card 条目的确认问题走 answerCardConfirm（挂在 card 上）。
@@ -309,11 +389,15 @@ export default function TarotApp() {
     // 呼召走多答案接口
     const isInvocation = answer.includes("\n");
     try {
-      await fetch("/api/answer", {
+      const res = await fetch("/api/answer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(isInvocation ? { sessionId, answers: answer.split("\n") } : { sessionId, answer }),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "回应失败" }));
+        setError(err.error || "回应发送失败，请重试");
+      }
     } catch {
       setError("回应发送失败，请重试");
     }
@@ -326,11 +410,15 @@ export default function TarotApp() {
     setAsk(null);
     if (!sessionId) return;
     try {
-      await fetch("/api/answer", {
+      const res = await fetch("/api/answer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, answer }),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "回应失败" }));
+        setError(err.error || "回应发送失败，请重试");
+      }
     } catch {
       setError("回应发送失败，请重试");
     }
@@ -338,38 +426,51 @@ export default function TarotApp() {
 
   /**
    * "翻下一张"：应答后端的 continue 型 HITL。
-   * answerFlowAsk 已把 ask 条目固定为用户气泡，这里只需补发 API（条目已处理）。
    * 找到最近的 kind=continue 且未 settled 的 ask 条目，把它转成气泡再提交。
+   * ⚠️ 用 setEntries 函数式更新读最新状态（不依赖 entries，保持引用稳定供 memo 使用）
    */
   const answerNextCard = useCallback(async () => {
-    const target = [...entries].reverse().find((e) => e.kind === "ask" && !e.settled && e.ask?.kind === "continue");
-    if (target) {
-      updateEntry(target.id, { settled: true, kind: "user", text: "翻下一张 →", ask: undefined });
-    }
+    setEntries((prev) => {
+      const target = [...prev].reverse().find((e) => e.kind === "ask" && !e.settled && e.ask?.kind === "continue");
+      if (!target) return prev;
+      return prev.map((e) => (e.id === target.id ? { ...e, settled: true, kind: "user", text: "翻下一张 →", ask: undefined } : e));
+    });
     setAsk(null);
     if (!sessionId) return;
     try {
-      await fetch("/api/answer", {
+      const res = await fetch("/api/answer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, answer: "翻下一张 →" }),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "回应失败" }));
+        setError(err.error || "回应发送失败，请重试");
+      }
     } catch {
       setError("回应发送失败，请重试");
     }
-  }, [entries, sessionId, updateEntry]);
+  }, [sessionId]);
 
   /** 展开/收起条目 */
   const toggleEntry = useCallback((entryId: string) => {
     setEntries((prev) => prev.map((e) => (e.id === entryId ? { ...e, collapsed: !e.collapsed } : e)));
   }, []);
 
-  /* 拉取人格列表 */
+  /* 拉取人格列表 + 恢复上次会话（刷新后 sessionId 从 localStorage 找回，
+   * "追问"仍可用——十几分钟的仪式流程不因刷新作废） */
   useEffect(() => {
     fetch("/api/personas")
       .then((r) => r.json())
       .then((d) => setPersonas(d.personas ?? []))
       .catch(() => {});
+    // 会话恢复：localStorage 是外部系统，用微任务回填（避免 effect 内同步 setState 的级联渲染）
+    Promise.resolve().then(() => {
+      try {
+        const saved = localStorage.getItem("tarot:sessionId");
+        if (saved) setSessionId((cur) => (cur ? cur : saved));
+      } catch { /* 隐私模式 */ }
+    });
   }, []);
 
   /* SSE 消费 */
@@ -395,6 +496,8 @@ export default function TarotApp() {
           switch (p.type) {
             case "session":
               setSessionId(p.sessionId);
+              // 持久化：刷新后可恢复会话继续追问（十几分钟的仪式流程不该因刷新作废）
+              try { localStorage.setItem("tarot:sessionId", p.sessionId); } catch { /* 隐私模式 */ }
               break;
             case "phase":
               setPhase(p.phase);
@@ -574,36 +677,29 @@ export default function TarotApp() {
             case "delta": {
               const d = p.delta ?? "";
               if (!d) break;
-              setReading((prev) => prev + d); // 完整正文仍累积（分享卡/落库用）
-              // ---- 对话流分流 ----
+              // ---- 节流：只写缓冲，rAF 统一 flush（见 deltaBufferRef） ----
               const target = deltaTargetRef.current;
+              deltaBufferRef.current.reading += d; // 完整正文仍累积（分享卡/落库用）
               if (target?.type === "card" && target.entryId) {
-                // 流进当前牌条目的解读区
-                setEntries((prev) =>
-                  prev.map((e) =>
-                    e.id === target.entryId && e.card
-                      ? { ...e, card: { ...e.card, reading: (e.card.reading ?? "") + d } }
-                      : e
-                  )
-                );
+                const t = target.entryId;
+                // 同帧多条 delta 合并进同一目标
+                if (deltaBufferRef.current.card?.entryId === t) {
+                  deltaBufferRef.current.card.text += d;
+                } else {
+                  deltaBufferRef.current.card = { entryId: t, text: d };
+                }
               } else if (target?.type === "scroll" && target.entryId) {
-                // 流进命运之卷条目
-                setEntries((prev) =>
-                  prev.map((e) => (e.id === target.entryId ? { ...e, text: (e.text ?? "") + d } : e))
-                );
+                const t = target.entryId;
+                if (deltaBufferRef.current.scroll?.entryId === t) {
+                  deltaBufferRef.current.scroll.text += d;
+                } else {
+                  deltaBufferRef.current.scroll = { entryId: t, text: d };
+                }
               } else {
                 // 无目标：占卜师的开场白/回应 → teller 气泡
-                setEntries((prev) => {
-                  const last = prev[prev.length - 1];
-                  // 仅当最后一条就是 teller 气泡（连续 delta）才拼接；
-                  // 刚答完题（ask/user）或翻新牌后必须开新气泡，
-                  // 否则不同问题的回应会拼进同一个气泡里。
-                  if (last?.kind === "teller" && !last.settled) {
-                    return [...prev.slice(0, -1), { ...last, text: (last.text ?? "") + d }];
-                  }
-                  return [...prev, { id: nextEntryId(), kind: "teller", text: d }];
-                });
+                deltaBufferRef.current.teller = (deltaBufferRef.current.teller ?? "") + d;
               }
+              scheduleDeltaFlush();
               break;
             }
             case "done":
@@ -616,10 +712,12 @@ export default function TarotApp() {
         } catch { /* 忽略 */ }
       }
     }
-  }, [pushEntry]);
+  }, [pushEntry, scheduleDeltaFlush]);
 
   /* 开始占卜 */
   const startDivination = useCallback(async () => {
+    // ⚠️ 连点防护：流式进行中再触发会并发两个 SSE 流交错写同一批 state
+    if (streaming) return;
     const q = question.trim();
     if (!q) {
       setError("请先在心中默念并写下你的问题 ✦");
@@ -661,20 +759,30 @@ export default function TarotApp() {
     } finally {
       setStreaming(false);
     }
-  }, [question, persona, consumeStream]);
+  }, [question, persona, consumeStream, streaming]);
 
-  /* HITL 应答（选牌扇面 / 随机代抽等仍在流外的交互） */
+  /* HITL 应答（选牌扇面 / 随机代抽等仍在流外的交互）。
+     ⚠️ 提交锁：双击选项/按钮会双发 POST，第二次 409 报错干扰用户 */
+  const answeringRef = useRef(false);
   const answerAsk = useCallback(async (answer: string) => {
     if (!answer.trim() || !sessionId) return;
+    if (answeringRef.current) return; // 防连点
+    answeringRef.current = true;
     setAsk(null);
     try {
-      await fetch("/api/answer", {
+      const res = await fetch("/api/answer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, answer: answer.trim() }),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "回应失败" }));
+        setError(err.error || "回应发送失败，请重试");
+      }
     } catch {
       setError("回应发送失败，请重试");
+    } finally {
+      answeringRef.current = false;
     }
   }, [sessionId]);
 
@@ -718,6 +826,8 @@ export default function TarotApp() {
 
   /* 追问 */
   const sendFollowup = useCallback(async () => {
+    // ⚠️ 连点防护：流式进行中再追问会并发两个 SSE 流
+    if (streaming) return;
     const f = followup.trim();
     if (!f || !sessionId) return;
     setFollowup("");
@@ -740,7 +850,7 @@ export default function TarotApp() {
     } finally {
       setStreaming(false);
     }
-  }, [followup, sessionId, consumeStream, pushEntry]);
+  }, [followup, sessionId, consumeStream, pushEntry, streaming]);
 
   /* 语音输入 */
   const startVoice = useCallback(() => {
@@ -784,6 +894,7 @@ export default function TarotApp() {
   const restart = useCallback(() => {
     setStage("input");
     setSessionId("");
+    try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
     setQuestion("");
     setCards([]);
     setFlipped([]);
@@ -903,6 +1014,29 @@ export default function TarotApp() {
             </motion.button>
           </div>
           {error && <p className="mt-3 text-purple-400/90 text-sm text-center sm:text-left">{error}</p>}
+          {/* 上次会话可继续（刷新后 sessionId 已从 localStorage 恢复） */}
+          {sessionId && !streaming && (
+            <div className="mt-4 rounded-2xl border border-purple-500/25 bg-purple-950/20 px-4 py-3 text-center">
+              <p className="text-xs text-purple-300/60 mb-2">检测到上次未完结的占卜，可以直接追问（不用重新走仪式）</p>
+              <div className="flex gap-2 justify-center">
+                <input
+                  className="flex-1 max-w-xs px-3.5 py-2 rounded-xl bg-purple-950/40 border border-purple-500/30 text-purple-50 placeholder-purple-300/40 focus:outline-none focus:border-purple-400/60 text-sm"
+                  style={{ fontFamily: "'Ma Shan Zheng', serif" }}
+                  placeholder="继续问点什么…"
+                  value={followup}
+                  onChange={(e) => setFollowup(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && sendFollowup()}
+                  maxLength={150}
+                />
+                <button
+                  onClick={() => { setStage("reading"); sendFollowup(); }}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-purple-700 to-indigo-700 text-white text-sm"
+                >
+                  追问
+                </button>
+              </div>
+            </div>
+          )}
           <p className="mt-5 text-center text-purple-300/40 text-sm tracking-wide">
             {persona ? `${persona.emoji} ${persona.name}将主持这场占卜` : "AI 占卜师与你对话澄清 · 亲手选牌 · 典籍引用 · 审校质检"}
           </p>
@@ -934,7 +1068,7 @@ export default function TarotApp() {
             entries={entries}
             onAskAnswer={answerFlowAsk}
             onCardAnswer={answerCardConfirm}
-            onNextCard={() => answerNextCard()}
+            onNextCard={answerNextCard}
             onToggleEntry={toggleEntry}
             streaming={streaming}
           />
@@ -960,6 +1094,24 @@ export default function TarotApp() {
                 className="mt-4 px-6 py-3 rounded-xl bg-gradient-to-r from-purple-700 to-indigo-700 text-white text-sm"
               >
                 ✦ 代替我随机抽 3 张
+              </button>
+            </motion.div>
+          )}
+
+          {/* ---------- 错误常驻出口（流中断/应答失败时可见 + 可恢复）---------- */}
+          {error && !streaming && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-3 w-full max-w-2xl rounded-2xl border border-rose-500/40 bg-rose-950/20 backdrop-blur-md px-4 py-3 flex items-center gap-3"
+            >
+              <span className="text-base shrink-0">⚠️</span>
+              <p className="flex-1 text-sm text-rose-200/90">{error}</p>
+              <button
+                onClick={restart}
+                className="shrink-0 px-4 py-2 rounded-xl border border-rose-400/40 text-rose-100/90 text-sm hover:bg-rose-900/30 transition-all"
+              >
+                重新开始
               </button>
             </motion.div>
           )}
@@ -1040,36 +1192,51 @@ export default function TarotApp() {
             </motion.div>
           )}
 
-          {/* ---------- 过程细节（可折叠：面试演示时展开）---------- */}
-          <details className="w-full max-w-2xl mt-6 group">
-            <summary className="text-xs text-purple-400/50 tracking-wider cursor-pointer select-none hover:text-purple-300/80 transition-colors text-center">
-              ▸ 过程细节（子 Agent 流水线 · Trace · RAG 检索 · 审校报告 · 旧版卡牌）
-            </summary>
-            <div className="mt-4 flex flex-col items-center gap-4">
-              {/* 卡牌区（3D 翻牌，旧交互保留） */}
-              {cards.length > 0 && (
-                <div className="flex gap-3 md:gap-8 justify-center flex-wrap">
-                  {cards.map((card, i) => (
-                    <TarotCardView key={`${card.id}-${i}`} card={card} index={i} flipped={flipped[i]} onFlip={handleFlip} />
-                  ))}
-                </div>
-              )}
-              <SubAgentPipeline events={subagentEvents} />
-              <AgentTrace tools={tools} reasoning={reasoning} streaming={streaming && !ask} rounds={rounds} />
-              <KnowledgePanel hits={ragHits} />
-              {review && <ReviewCard review={review} />}
-              {/* 完整正文（旧版卷轴，含可点击引文） */}
-              {(reading || error) && (
-                <div className="w-full rounded-3xl bg-gradient-to-b from-[#170d24]/85 to-[#0b0514]/85 backdrop-blur-md border border-purple-500/20 p-6 md:p-9 shadow-2xl max-h-[50vh] overflow-y-auto">
-                  {error ? (
-                    <p className="text-purple-300/90 text-center py-6">{error}</p>
-                  ) : (
-                    <CitedReading text={reading} maxCite={ragHits.length} streaming={streaming} />
-                  )}
-                </div>
-              )}
+          {/* ---------- 过程细节（可折叠：面试演示时展开）----------
+              ⚠️ 用 state 而非原生 <details>：折叠时 React 仍渲染全部子树
+              （旧 3D 翻牌 + CitedReading 每次 delta 重新分段解析在隐藏状态下空转）。
+              现在未展开 = 零渲染。 */}
+          {showDetails ? (
+            <div className="w-full max-w-2xl mt-6">
+              <button
+                onClick={() => setShowDetails(false)}
+                className="w-full text-xs text-purple-300/70 tracking-wider cursor-pointer select-none hover:text-purple-200 transition-colors text-center"
+              >
+                ▾ 收起过程细节（子 Agent 流水线 · Trace · RAG 检索 · 审校报告 · 旧版卡牌）
+              </button>
+              <div className="mt-4 flex flex-col items-center gap-4">
+                {/* 卡牌区（3D 翻牌，旧交互保留） */}
+                {cards.length > 0 && (
+                  <div className="flex gap-3 md:gap-8 justify-center flex-wrap">
+                    {cards.map((card, i) => (
+                      <TarotCardView key={`${card.id}-${i}`} card={card} index={i} flipped={flipped[i]} onFlip={handleFlip} />
+                    ))}
+                  </div>
+                )}
+                <SubAgentPipeline events={subagentEvents} />
+                <AgentTrace tools={tools} reasoning={reasoning} streaming={streaming && !ask} rounds={rounds} />
+                <KnowledgePanel hits={ragHits} />
+                {review && <ReviewCard review={review} />}
+                {/* 完整正文（旧版卷轴，含可点击引文） */}
+                {(reading || error) && (
+                  <div className="w-full rounded-3xl bg-gradient-to-b from-[#170d24]/85 to-[#0b0514]/85 backdrop-blur-md border border-purple-500/20 p-6 md:p-9 shadow-2xl max-h-[50vh] overflow-y-auto">
+                    {error ? (
+                      <p className="text-purple-300/90 text-center py-6">{error}</p>
+                    ) : (
+                      <CitedReading text={reading} maxCite={ragHits.length} streaming={streaming} />
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
-          </details>
+          ) : (
+            <button
+              onClick={() => setShowDetails(true)}
+              className="mt-6 text-xs text-purple-400/50 tracking-wider cursor-pointer select-none hover:text-purple-300/80 transition-colors text-center"
+            >
+              ▸ 过程细节（子 Agent 流水线 · Trace · RAG 检索 · 审校报告 · 旧版卡牌）
+            </button>
+          )}
         </motion.div>
       )}
 

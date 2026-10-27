@@ -226,6 +226,10 @@ export interface AgentSession {
   pendingInterjections: string[];
   /** 最终正文（旧管线由 writer 写入；逐张模式由 buildFinalReading 汇总） */
   reading?: string;
+  /** 运行互斥：一个会话同时只允许一个生成器推进（防并发 interpret 交叉写历史） */
+  busy?: boolean;
+  /** 客户端断开信号（interpret 路由注入；HITL 等待期间可取消挂起的 Promise） */
+  abortSignal?: AbortSignal;
 }
 
 const sessions: Map<string, AgentSession> = (() => {
@@ -259,8 +263,25 @@ const SESSION_TTL = 30 * 60 * 1000;
 function cleanExpired() {
   const now = Date.now();
   for (const [id, s] of sessions) {
-    if (now - s.lastActive > SESSION_TTL) sessions.delete(id);
+    if (now - s.lastActive > SESSION_TTL) {
+      // 逐出前落库收尾：开着页面不答/生成器泄漏的会话在 DB 里仍是 running，
+      // 不收尾就成僵尸行（此前要等下次进程重启才被 reconcile 清掉）
+      if (!s.finished) {
+        try { db.failSession(id, "ttl_expired"); } catch { /* ignore */ }
+      }
+      sessions.delete(id);
+    }
   }
+}
+
+// 定时清理（此前只挂在 createSession：无新建即永不清理，Map 无限增长）
+const CLEAN_INTERVAL_MS = 5 * 60 * 1000;
+const g = globalThis as unknown as { __tarotCleanTimer__?: NodeJS.Timeout };
+if (!g.__tarotCleanTimer__) {
+  g.__tarotCleanTimer__ = setInterval(() => {
+    try { cleanExpired(); } catch { /* ignore */ }
+  }, CLEAN_INTERVAL_MS);
+  g.__tarotCleanTimer__.unref?.(); // 不阻塞进程退出
 }
 
 export function createSession(question: string, personaId?: string): AgentSession {
@@ -292,6 +313,54 @@ export function resolvePendingAsk(sessionId: string, answer: string): boolean {
   s.pendingAsk.resolve(answer);
   s.pendingAsk = undefined;
   return true;
+}
+
+/**
+ * HITL 等待（统一入口）：带超时 + 客户端断开取消。
+ *
+ * ⚠️ 此前 6 处裸 await new Promise 的问题：
+ *  - 无超时：用户开着页面不回答 → 生成器永久挂起，session 全量内存泄漏
+ *    （8 分钟看门狗只在轮首检查，等待期间完全不生效）
+ *  - 不随断开取消：客户端断开后 onAbort 只 failSession，
+ *    生成器仍挂在该 Promise 上，start() 闭包与 session 永久泄漏
+ *
+ * 现在：Promise.race 三路 —— 用户应答 / 无应答超时（默认 5 分钟）/ abort 信号。
+ * 超时与中断以哨兵值 resolve，调用方按哨兵走收尾路径。
+ */
+const HITL_TIMEOUT_MS = Number(process.env.HITL_TIMEOUT_MS) || 5 * 60 * 1000;
+const HITL_ABANDONED = "__hitl_abandoned__";
+const HITL_DISCONNECTED = "__hitl_disconnected__";
+
+function waitUserAnswer(
+  session: AgentSession,
+  question: string,
+  options: string[] | undefined,
+  kind?: AskKind,
+  /** 活跃计时控制（进入等待暂停，结束恢复）——deadline 不计用户思考时间 */
+  clock?: { pause: () => void; resume: () => void }
+): Promise<string> {
+  clock?.pause();
+  return new Promise<string>((resolve) => {
+    let settled = false;
+    const finish = (v: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      session.pendingAsk = undefined;
+      if (session.abortSignal) session.abortSignal.removeEventListener("abort", onAbort);
+      clock?.resume();
+      resolve(v);
+    };
+    const timer = setTimeout(() => finish(HITL_ABANDONED), HITL_TIMEOUT_MS);
+    const onAbort = () => finish(HITL_DISCONNECTED);
+    session.abortSignal?.addEventListener("abort", onAbort, { once: true });
+    session.pendingAsk = { resolve: finish, question, options, kind };
+  });
+}
+
+/** 判断 HITL 等待结果是否为放弃/中断哨兵 */
+function isHitlGone(answer: string): boolean {
+  return answer === HITL_ABANDONED || answer === HITL_DISCONNECTED;
 }
 
 /**
@@ -553,7 +622,14 @@ async function* tryStreamOnce(
       logUsage(totalChars === 0);
       onFail(e);
       if (totalChars === 0 && isFailoverError(e)) markFailed(p);
-      return totalChars === 0 ? "pre-output-fail" : "ok";
+      // ⚠️ 中断但已有输出 = 内容被截断。旧逻辑静默当"正常完成"，
+      // 截断正文照常送审落库，用户看到戛然而止却显示流程完成。
+      // 现在显式返回截断标记，调用方可见（目前仅日志，不改变降级行为）。
+      if (totalChars > 0) {
+        console.error(`[llm] 流中断但已有 ${totalChars} 字输出（${agent}/${p.name}），内容可能截断`);
+        return "truncated" as "ok";
+      }
+      return "pre-output-fail";
     }
     const { done, value } = chunk;
     if (done) break;
@@ -1080,8 +1156,8 @@ async function execRagSearch(query: string, topK: number, session: AgentSession)
       seen.add(h.chunkId);
     }
   }
-  // 上限保护：累积命中过多时保留最新的（旧牌通常已被使用）
-  if (session.ragHits.length > 12) session.ragHits = session.ragHits.slice(-12);
+  // ⚠️ 不再 slice(-12)：截断会让全局编号前移（已引用的 [3] 指向变了）。
+  // 上限保护改为"发前端只取前 12"（编号稳定），内存中保留全部（单场上限可控）。
 
   const budgetNote = session.ragCallCount >= RAG_BUDGET
     ? "（已达检索预算上限，请立即 write_reading）"
@@ -1374,6 +1450,18 @@ function clampScore(v: unknown): number {
   return Math.min(10, Math.max(0, Math.round(n)));
 }
 
+/**
+ * delta 合批发送：按 ~36 字符切块（SSE JSON 信封 ~40 字节，
+ * 6 字符净荷的信封开销是净荷 2 倍+，长正文事件数是必要值 5~10 倍）。
+ * 36 字符在打字机观感与事件数之间取平衡（约 1.5 行文字/事件）。
+ */
+function* chunkDelta(text: string): Generator<{ type: "delta"; delta: string }> {
+  const SIZE = 36;
+  for (let i = 0; i < text.length; i += SIZE) {
+    yield { type: "delta", delta: text.slice(i, i + SIZE) };
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* 上下文压缩（性能优化）                                              */
 /* ------------------------------------------------------------------ */
@@ -1381,21 +1469,25 @@ function clampScore(v: unknown): number {
 /**
  * 压缩 rag_search 的观察结果，回填给 LLM。
  *
- * 完整命中（带 80 字符 snippet + 完整来源串）发给前端展示，
- * 但回填给 LLM 的只保留**前 3 条的核心信息**（牌名 + 字段 + 精简片段），
- * 实测能省 30-40% 的 prompt token —— 因为每轮都要重发完整历史。
+ * ⚠️ 编号必须与前端知识面板同源：session.ragHits 的累计全局编号 [n]。
+ * 此前用"本次命中前 3 条"的相对编号——模型念牌标的 [3] 与面板点开的 [3]
+ * 常不是同一来源（引文溯源闭环断裂）。
+ * 现在按全局编号回填（传入全局 hits + 本次命中的 chunkId 集合）。
  */
-function compressRagResult(hits: RagHit[]): string {
-  if (hits.length === 0) return JSON.stringify({ result: "未检索到相关内容" });
-  const top = hits.slice(0, 3).map((h, i) => {
-    const card = h.cardNameZh;
+function compressRagResult(allHits: RagHit[], currentChunkIds: Set<string>): string {
+  // 本次命中的条目（保持全局编号），最多 5 条
+  const current = allHits
+    .map((h, i) => ({ h, n: i + 1 }))
+    .filter(({ h }) => currentChunkIds.has(h.chunkId))
+    .slice(0, 5);
+  if (current.length === 0) return JSON.stringify({ result: "未检索到相关内容" });
+  const top = current.map(({ h, n }) => {
     const fieldLabel =
       h.field === "description" ? "叙事" : h.field === "upright" ? "正位" : h.field === "reversed" ? "逆位" : "关键词";
-    // 片段截到 40 字，够 LLM 判断相关性
     const brief = h.snippet.length > 40 ? h.snippet.slice(0, 40) + "…" : h.snippet;
-    return `[${i + 1}] ${card}·${fieldLabel}: ${brief}`;
+    return `[${n}] ${h.cardNameZh}·${fieldLabel}: ${brief}`;
   });
-  return JSON.stringify({ hits: top, total: hits.length });
+  return JSON.stringify({ hits: top, total: allHits.length, note: "编号为累计命中序号，正文引用 [n] 时与此一致" });
 }
 
 /**
@@ -1444,6 +1536,12 @@ function trimHistory(messages: SessionMessage[], keepFullRounds = 4): SessionMes
       ...m,
       content: JSON.stringify({ result: "（早期结果已压缩）" }),
     };
+  }).map((m) => {
+    // 早期 assistant 过渡语一行化：content 的信息量在 tool_calls 骨架之外很低，
+    // 但每轮都全文重发（token 线性膨胀）。保留首尾各 ~20 字示意语气。
+    if (m.role !== "assistant" || !m.content || m.content.length <= 60) return m;
+    const brief = `${m.content.slice(0, 20)}…${m.content.slice(-20)}`;
+    return { ...m, content: brief };
   });
 }
 
@@ -1460,6 +1558,12 @@ export async function* runAgent(
   question: string,
   opts?: { followup?: string }
 ): AsyncGenerator<AgentEvent> {
+  // ⚠️ 并发互斥：同一会话同时只允许一个生成器推进。
+  // 挂在 pendingAsk 时（历史末尾是未配对的 tool_calls），并发 interpret 会把
+  // user 消息插到 tool 响应之前 → 下一次 callLLM 直接 400 协议错位。
+  // 路由层负责在入口检查 busy（409），这里兜底设置并在 finally 释放。
+  session.busy = true;
+  try {
   // provider 选择：会话内粘住上次成功的（风格一致），失败自动切换
   const all = buildProviders();
   if (all.length === 0) {
@@ -1529,9 +1633,19 @@ export async function* runAgent(
     pendingToolResponses = [];
   };
 
-  // 看门狗：整场占卜的总时长上限（默认 8 分钟）
-  // 逐张解读模式轮次多、每轮有用户思考时间，总时长天然更长
-  const totalDeadline = Date.now() + (Number(process.env.SESSION_DEADLINE_MS) || 8 * 60 * 1000);
+  // 看门狗：**活跃处理时间**上限（默认 8 分钟）。
+  // ⚠️ 只累计 Agent 实际工作的时间（LLM 调用 + 工具执行），
+  // HITL 等用户思考的时间不计——9 次交互每次 1 分钟就超的旧逻辑
+  // 会让慢用户在最后一次应答后被"超时中止"前功尽弃。
+  // waitUserAnswer 内部负责 HITL 等待（5 分钟无应答单独超时）。
+  const ACTIVE_BUDGET_MS = Number(process.env.SESSION_DEADLINE_MS) || 8 * 60 * 1000;
+  let activeMs = 0;
+  let roundStartClock = Date.now();
+  /** HITL 等待期间的活跃计时控制（deadline 不计用户思考时间） */
+  const hitlClock = {
+    pause: () => { activeMs += Date.now() - roundStartClock; },
+    resume: () => { roundStartClock = Date.now(); },
+  };
 
   // try/finally：无论从哪条路径退出（正常 done / 错误 / 超时），
   // 都要补齐被跳过的 tool_call 响应，否则会话历史里的 tool_call_id 未配对，
@@ -1550,14 +1664,15 @@ export async function* runAgent(
       session.pendingInterjections = [];
     }
 
-    // 看门狗检查：超时 → 放弃并明确标记
-    if (Date.now() > totalDeadline) {
+    // 看门狗检查：活跃处理超时 → 放弃并明确标记
+    if (activeMs + (Date.now() - roundStartClock) > ACTIVE_BUDGET_MS) {
       yield { type: "error", error: "占卜耗时超过上限，已中止（可在观测面板查看）" };
       db.failSession(session.id, "deadline_exceeded");
       return;
     }
     round++;
     const roundStart = Date.now();
+    roundStartClock = Date.now();
     let roundPromptTokens: number | undefined;
     const roundToolNames: string[] = [];
     let decision: CallResult;
@@ -1631,9 +1746,7 @@ export async function* runAgent(
     if (decision.message.content && session.messages.length > 3 && !hasHitl) {
       const intro = decision.message.content.trim();
       if (intro) {
-        for (const chunk of intro.match(/[\s\S]{1,6}/g) ?? []) {
-          yield { type: "delta", delta: chunk };
-        }
+        for (const evt of chunkDelta(intro)) yield evt;
         // 换行分隔，与后续解读正文区分
         yield { type: "delta", delta: "\n\n" };
       }
@@ -1645,10 +1758,11 @@ export async function* runAgent(
       if (isFollowup) {
         const text = decision.message.content;
         if (text) {
-          for (const chunk of text.match(/[\s\S]{1,6}/g) ?? []) {
-            yield { type: "delta", delta: chunk };
-          }
-          db.updateSessionReading(session.id, text);
+          for (const evt of chunkDelta(text)) yield evt;
+          // ⚠️ 追加而非覆盖：updateSessionReading 整体替换 reading 字段，
+          // 会把原逐张正文替换成本次追问回答（分享卡/dashboard 从此只见追问）
+          const prev = db.getSessionReading?.(session.id)?.reading ?? session.reading ?? "";
+          db.updateSessionReading(session.id, prev ? `${prev}\n\n【追问】${text}` : text);
         }
         yield { type: "done" };
         session.finished = true;
@@ -1673,9 +1787,7 @@ export async function* runAgent(
       // 两次纠偏仍不调工具：接受文本但标注（极小概率）
       const text = decision.message.content;
       if (text) {
-        for (const chunk of text.match(/[\s\S]{1,6}/g) ?? []) {
-          yield { type: "delta", delta: chunk };
-        }
+        for (const evt of chunkDelta(text)) yield evt;
         db.updateSessionReading(session.id, text);
       }
       yield { type: "done" };
@@ -1708,6 +1820,39 @@ export async function* runAgent(
 
       /* ---- D：收束 + 收尾追问 ---- */
       if (name === "close_reading") {
+        // ⚠️ 守卫：零牌路径绕过（第 1 轮就 close → reading='' 落库 done）
+        // close_reading 必须建立在"抽了牌且逐张讲完"之上。
+        if (session.drawnCards.length === 0) {
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              error: "还没有抽牌，不能收束",
+              hint: "请先 offer_card_selection / draw_cards 抽牌，再逐张 reveal_card + interpret_card，全部讲完后才能 close_reading。",
+            }),
+          });
+          roundToolNames.push("close_reading(拦截)");
+          continue;
+        }
+        const missingSlots = session.drawnCards.filter((d) => {
+          const slot = session.cardReadings.find((r) => r.cardId === d.card.id);
+          return !slot?.reading;
+        });
+        if (missingSlots.length > 0) {
+          const missing = missingSlots.map((d) => `第${session.drawnCards.indexOf(d) + 1}张「${d.card.nameZh}」`);
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              error: "还有牌没讲完，不能收束",
+              missing,
+              hint: `请先对 ${missing.join("、")} 依次 reveal_card + interpret_card，全部讲完后再 close_reading。`,
+            }),
+          });
+          yield { type: "phase", phase: "interpret", label: `还有 ${missing.length} 张牌没讲——继续翻牌` };
+          roundToolNames.push("close_reading(拦截)");
+          continue;
+        }
         const closing = String(args.closing || "").trim();
         const question = String(args.question || "这三段里，哪一段最贴近你现在的状态？").trim();
         let cOptions = Array.isArray(args.options)
@@ -1722,9 +1867,7 @@ export async function* runAgent(
         // 收束语作为正文流出（先建目标条目再流 delta，前端按"收束"标签建命运之卷）
         yield { type: "phase", phase: "interpret", label: "占卜师收束这场占卜…" };
         if (closing) {
-          for (const chunk of closing.match(/[\s\S]{1,6}/g) ?? []) {
-            yield { type: "delta", delta: chunk };
-          }
+          for (const evt of chunkDelta(closing)) yield evt;
           yield { type: "delta", delta: "\n\n" };
         }
         yield { type: "phase", phase: "wait_user", label: "收束——听听你的回响…" };
@@ -1732,9 +1875,18 @@ export async function* runAgent(
           type: "ask_user",
           ask: { question, options: cOptions, allowFree: true, prompt: question, kind: "closing" },
         };
-        const answer = await new Promise<string>((resolve) => {
-          session.pendingAsk = { resolve, question, options: cOptions, kind: "closing" };
-        });
+        const answer = await waitUserAnswer(session, question, cOptions, "closing", hitlClock);
+        // 超时/断开：以"未回应"收尾落库（不再无限挂起，也不拿哨兵值当用户回答）
+        if (isHitlGone(answer)) {
+          session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ closing, question, userAnswer: "（用户未回应，已收束）" }) });
+          const finalReading = buildFinalReading(session);
+          db.updateSessionReading(session.id, finalReading);
+          const lastReview = (session as unknown as { __lastReview?: ReviewResult | null }).__lastReview ?? null;
+          db.finishSession(session.id, lastReview);
+          session.finished = true;
+          yield { type: "done" };
+          return;
+        }
         session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ closing, question, userAnswer: answer }) });
         yield { type: "tool", tool: { name, args, resultSummary: `收束完成，用户回应：${answer.slice(0, 40)}`, durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, `收束｜${answer.slice(0, 50)}`, Date.now() - t0);
@@ -1756,6 +1908,21 @@ export async function* runAgent(
         const drawn = session.drawnCards[idx];
         if (!drawn) {
           session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ error: "还没有抽牌" }) });
+          continue;
+        }
+        // ⚠️ 幂等守卫：同一张牌不重复念牌/重问（模型偶发重复调用，
+        // 会覆盖用户已给的确认回答）
+        const existingSlot = session.cardReadings.find((r) => r.cardId === drawn.card.id);
+        if (existingSlot?.reveal && existingSlot.answer) {
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              error: `第 ${idx + 1} 张「${drawn.card.nameZh}」已翻过且用户已回答`,
+              hint: `请直接 interpret_card(card_index=${idx}) 讲透这张牌，或 reveal_card 下一张未翻的牌。`,
+            }),
+          });
+          roundToolNames.push("reveal_card(拦截)");
           continue;
         }
         const narrative = String(args.narrative || drawn.card.description || "").trim();
@@ -1799,9 +1966,24 @@ export async function* runAgent(
           type: "ask_user",
           ask: { question, options: qOptions, allowFree: true, prompt: question, kind: "card_confirm" },
         };
-        const answer = await new Promise<string>((resolve) => {
-          session.pendingAsk = { resolve, question, options: qOptions, kind: "card_confirm" };
-        });
+        const answer = await waitUserAnswer(session, question, qOptions, "card_confirm", hitlClock);
+        // 超时/断开：以"用户未回应"记录，流程不中断（占卜师按默认情况讲牌）
+        if (isHitlGone(answer)) {
+          slot.answer = "（用户未回应）";
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              card: `${pos}·${drawn.card.nameZh}`,
+              narrative, meaning, question,
+              userAnswer: "（用户未回应）",
+            }),
+          });
+          yield { type: "tool", tool: { name, args, resultSummary: `翻牌 ${pos}·${drawn.card.nameZh}（用户未回应）`, durationMs: Date.now() - t0 } };
+          db.logToolCall(session.id, seq, "supervisor", name, args, `翻牌 ${drawn.card.nameZh}｜未回应`, Date.now() - t0);
+          roundToolNames.push(name);
+          continue;
+        }
         slot.answer = answer;
         for (const tag of extractEmotionTags(answer)) {
           if (!session.emotionTags.includes(tag)) session.emotionTags.push(tag);
@@ -1845,11 +2027,22 @@ export async function* runAgent(
           roundToolNames.push(name);
           continue;
         }
+        // ⚠️ 幂等守卫：已有解读的牌不覆盖重讲（重复调用会推翻已流出的正文）
+        if (slot.reading) {
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              error: `第 ${idx + 1} 张「${slot.nameZh}」已解读完成`,
+              hint: `这张牌的解读已生成。请继续下一张（reveal_card），或全部讲完后调用 write_reading。`,
+            }),
+          });
+          roundToolNames.push("interpret_card(拦截)");
+          continue;
+        }
         slot.reading = text;
         // 该牌解读作为正文流出（前端逐段显示）
-        for (const chunk of text.match(/[\s\S]{1,6}/g) ?? []) {
-          yield { type: "delta", delta: chunk };
-        }
+        for (const evt of chunkDelta(text)) yield evt;
         yield { type: "delta", delta: "\n\n" };
         yield { type: "card_reading", cardReading: { cardIndex: idx, text } };
         session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ interpreted: slot.nameZh, text }) });
@@ -1874,11 +2067,12 @@ export async function* runAgent(
               kind: "continue",
             },
           };
-          const cont = await new Promise<string>((resolve) => {
-            session.pendingAsk = { resolve, question: "继续", options: ["翻下一张 →"], kind: "continue" };
-          });
-          // 用户在停顿处插话（自由输入）→ 记录为插话，供下一张牌引用
-          if (!/^(翻下一张|继续|好的?|嗯)/.test(cont.trim())) {
+          const cont = await waitUserAnswer(session, "继续", ["翻下一张 →"], "continue", hitlClock);
+          // 超时/断开：视同"翻下一张"继续流程（不让整场占卜挂死）
+          if (isHitlGone(cont)) {
+            session.messages.push({ role: "user", content: "（继续翻下一张）" });
+          } else if (!/^(翻下一张|继续|好的?|嗯)/.test(cont.trim())) {
+            // 用户在停顿处插话（自由输入）→ 记录为插话，供下一张牌引用
             session.interjections.push(cont.trim());
             session.messages.push({ role: "user", content: `（翻牌间隙补充：${cont.trim()}）` });
           } else {
@@ -1893,15 +2087,29 @@ export async function* runAgent(
         // ⚠️ 守卫：逐张解读模式下，所有牌都讲完才允许进入最终综合。
         // 模型容易在讲完第 1 张后就调用 write_reading 提前收尾（实测：3 张牌只讲了 1 张）。
         // 这里拦住并明确告知还差哪几张，逼它继续 reveal_card/interpret_card。
+        // ⚠️ 零牌路径：total=0 时旧条件直接放行整条管线（无牌面依据的"解读"）——必须拦。
+        // ⚠️ 卡槽对齐：cardReadings 按"首次触牌顺序" append，不能按下标对 drawnCards，
+        //    统一用 cardId 对齐（乱序翻牌时旧逻辑会点名错牌）。
         const total = session.drawnCards.length;
-        const doneIdx = session.cardReadings
-          .map((r, i) => ({ r, i }))
-          .filter(({ r }) => r.reading)
-          .map(({ i }) => i);
-        if (total > 0 && doneIdx.length < total) {
+        const doneCardIds = new Set(
+          session.cardReadings.filter((r) => r.reading).map((r) => r.cardId)
+        );
+        if (total === 0) {
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              error: "还没有抽牌，不能开始最终综合",
+              hint: "请先 offer_card_selection（用户亲手选）或 draw_cards（快速抽牌），再逐张 reveal_card + interpret_card。",
+            }),
+          });
+          roundToolNames.push("write_reading(拦截)");
+          continue;
+        }
+        if (doneCardIds.size < total) {
           const missing = session.drawnCards
             .map((d, i) => ({ d, i }))
-            .filter(({ i }) => !doneIdx.includes(i))
+            .filter(({ d }) => !doneCardIds.has(d.card.id))
             .map(({ d, i }) => `第${i + 1}张「${d.card.nameZh}」`);
           session.messages.push({
             role: "tool",
@@ -2047,6 +2255,19 @@ export async function* runAgent(
 
       /* ---- 承约阶段（A1：问题重述确认）---- */
       if (name === "establish_contract") {
+        // ⚠️ 幂等守卫：承约只做一次（重复承约会打断流程节奏）
+        if (session.contractQuestion) {
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              error: "承约已完成，不要重复",
+              hint: `已确认的问题是「${session.contractQuestion}」。请继续下一步：invoke_three_questions 或 offer_card_selection。`,
+            }),
+          });
+          roundToolNames.push("establish_contract(拦截)");
+          continue;
+        }
         const contractQ = String(args.question || session.question).trim();
         const scope = String(args.scope || "我看过去、现在，以及你正在犹豫的那条路").trim();
         session.contractQuestion = contractQ;
@@ -2073,20 +2294,22 @@ export async function* runAgent(
             kind: "contract",
           },
         };
-        const answer = await new Promise<string>((resolve) => {
-          session.pendingAsk = { resolve, question: contractQ, options: confirmOptions, kind: "contract" };
-        });
-        for (const tag of extractEmotionTags(answer)) {
-          if (!session.emotionTags.includes(tag)) session.emotionTags.push(tag);
-        }
-        // 用户说"不是这个" → 用用户自己的话作为具体问题
-        if (/^(不是|不对|其实|我想问|换)/.test(answer.trim()) && answer.length > 6) {
-          session.contractQuestion = answer.trim();
+        const answer = await waitUserAnswer(session, contractQ, confirmOptions, "contract", hitlClock);
+        // 超时/断开：以"用户未确认"记录，沿用原始问题继续（不阻塞流程）
+        const confirmed = isHitlGone(answer) ? "（用户未回应，按原问题继续）" : answer;
+        if (!isHitlGone(answer)) {
+          for (const tag of extractEmotionTags(answer)) {
+            if (!session.emotionTags.includes(tag)) session.emotionTags.push(tag);
+          }
+          // 用户说"不是这个" → 用用户自己的话作为具体问题
+          if (/^(不是|不对|其实|我想问|换)/.test(answer.trim()) && answer.length > 6) {
+            session.contractQuestion = answer.trim();
+          }
         }
         session.messages.push({
           role: "tool",
           tool_call_id: tc.id,
-          content: JSON.stringify({ contract: session.contractQuestion, scope, userConfirmed: answer }),
+          content: JSON.stringify({ contract: session.contractQuestion, scope, userConfirmed: confirmed }),
         });
         yield { type: "tool", tool: { name, args, resultSummary: `承约确认：${session.contractQuestion}`, durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, `承约：${session.contractQuestion}`, Date.now() - t0);
@@ -2096,6 +2319,19 @@ export async function* runAgent(
 
       /* ---- 呼召阶段（A3：三问呼召）---- */
       if (name === "invoke_three_questions") {
+        // ⚠️ 幂等守卫：呼召只做一次（重复呼召会覆盖已有回答）
+        if (session.invocation?.answers?.length) {
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              error: "三问呼召已完成，不要重复",
+              hint: `用户已回答 ${session.invocation.answers.length} 个问题。请继续 offer_card_selection 选牌。`,
+            }),
+          });
+          roundToolNames.push("invoke_three_questions(拦截)");
+          continue;
+        }
         let questions = Array.isArray(args.questions)
           ? (args.questions as unknown[]).map(String).filter((s) => s.trim())
           : [];
@@ -2121,9 +2357,23 @@ export async function* runAgent(
             kind: "invocation",
           },
         };
-        const answer = await new Promise<string>((resolve) => {
-          session.pendingAsk = { resolve, question: questions.join("\n"), kind: "invocation" };
-        });
+        const answer = await waitUserAnswer(session, questions.join("\n"), undefined, "invocation", hitlClock);
+        if (isHitlGone(answer)) {
+          // 超时/断开：呼召未完成——记录空回答继续（骨架缺失但不挂死）
+          session.invocation = { questions, answers: [] };
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              invocation: questions.map((q) => ({ q, a: "" })),
+              note: "用户未回应呼召",
+            }),
+          });
+          yield { type: "tool", tool: { name, args, resultSummary: "三问呼召：用户未回应", durationMs: Date.now() - t0 } };
+          db.logToolCall(session.id, seq, "supervisor", name, args, "呼召：未回应", Date.now() - t0);
+          roundToolNames.push(name);
+          continue;
+        }
         // 解析 "1. xxx\n2. xxx\n3. xxx" 形式的回答
         const answers = answer
           .split("\n")
@@ -2202,9 +2452,41 @@ export async function* runAgent(
         yield { type: "phase", phase: "wait_user", label: "占卜师需要你的回应…" };
         yield askEvent;
 
-        const userAnswer = await new Promise<string>((resolve) => {
-          session.pendingAsk = { resolve, question: askPrompt, options };
-        });
+        const userAnswer = await waitUserAnswer(session, askPrompt, options, undefined, hitlClock);
+
+        // 超时/断开：HITL 通道统一收尾——选牌超时改为随机代抽（保流程），
+        // 提问类以"（用户未回应）"记录，流程继续不挂死。
+        if (isHitlGone(userAnswer)) {
+          if (name === "offer_card_selection") {
+            const count = Math.min(Math.max(Number(args.count) || 3, 1), 5);
+            const pool = [...TAROT_CARDS];
+            const drawn: DrawnCard[] = [];
+            for (let i = 0; i < count; i++) {
+              const idx = Math.floor(Math.random() * pool.length);
+              const card = pool.splice(idx, 1)[0];
+              drawn.push({ card, reversed: Math.random() < 0.35 });
+            }
+            session.drawnCards = drawn;
+            session.dwellTimes = drawn.map(() => -1);
+            const posNames = ["过去", "当下", "未来"];
+            const cards = drawn.map((d, i) => ({
+              id: d.card.id, nameZh: d.card.nameZh, image: d.card.image,
+              reversed: d.reversed, pos: drawn.length === 1 ? "核心指引" : posNames[i],
+            }));
+            db.updateSessionCards(session.id, cards);
+            yield { type: "cards", cards };
+            session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ answer: "random", note: "用户未回应，已随机代抽" }) });
+            yield { type: "tool", tool: { name, args, resultSummary: `超时随机代抽：${cards.map((c) => c.nameZh).join("、")}`, durationMs: Date.now() - t0 } };
+            db.logToolCall(session.id, seq, "supervisor", name, args, "选牌超时→随机代抽", Date.now() - t0);
+            roundToolNames.push(name);
+            continue;
+          }
+          session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ answer: "（用户未回应）" }) });
+          yield { type: "tool", tool: { name, args, resultSummary: "用户未回应（超时/断开）", durationMs: Date.now() - t0 } };
+          db.logToolCall(session.id, seq, "supervisor", name, args, "未回应", Date.now() - t0);
+          roundToolNames.push(name);
+          continue;
+        }
 
         let resultSummary = `用户回应：${userAnswer.slice(0, 60)}`;
 
@@ -2290,13 +2572,14 @@ export async function* runAgent(
         const { summary, currentHits, allHits } = await execRagSearch(q, topK, session);
         resultSummary = summary;
         // 前端知识面板拿到**累计命中**（与解读 [n] 编号一致）
-        evExtra = { ragHits: allHits };
+        // ⚠️ 只发前 12 条（编号稳定不前移；内存 session.ragHits 保留全部）
+        evExtra = { ragHits: allHits.slice(0, 12) };
         yield { type: "phase", phase: "retrieve", label: `翻阅典籍：「${q.slice(0, 16)}」` };
         // 独立 rag_hits 事件：前端 KnowledgePanel 与外部集成方都依赖此事件
         // （tool 事件内嵌的 ragHits 仅作为冗余）
-        if (allHits.length > 0) yield { type: "rag_hits", ragHits: allHits };
-        // 回填给 LLM 的观察结果用**压缩版**（只含本次命中的相对编号，省 30-40% token）
-        toolContent = compressRagResult(currentHits);
+        if (allHits.length > 0) yield { type: "rag_hits", ragHits: allHits.slice(0, 12) };
+        // 回填给 LLM 的观察结果用**压缩版**（全局编号，与知识面板 [n] 一致）
+        toolContent = compressRagResult(allHits, new Set(currentHits.map((h) => h.chunkId)));
       } else {
         resultSummary = `未知工具：${name}`;
       }
@@ -2329,6 +2612,11 @@ export async function* runAgent(
   } finally {
     // 退出路径统一补齐 tool_call 响应（保持协议配对）
     flushPendingToolResponses();
+    session.busy = false; // 释放并发锁（允许后续追问）
+  }
+  } finally {
+    // runAgent 外层：无论从哪条路径退出（含 localFallback）都释放锁
+    session.busy = false;
   }
 }
 
@@ -2350,9 +2638,9 @@ async function* runLocalFallback(session: AgentSession, question: string): Async
     type: "ask_user",
     ask: { question: `关于「${question}」，你更想了解哪方面？`, options: ["原因与现状", "未来走向", "行动建议"], allowFree: true, prompt: `关于「${question}」，你更想了解哪方面？` },
   };
-  const answer = await new Promise<string>((resolve) => {
-    session.pendingAsk = { resolve, question: `关于「${question}」，你更想了解哪方面？`, options: ["原因与现状", "未来走向", "行动建议"] };
-  });
+  const askQ = `关于「${question}」，你更想了解哪方面？`;
+  const answer = await waitUserAnswer(session, askQ, ["原因与现状", "未来走向", "行动建议"]);
+  const userPick = isHitlGone(answer) ? "综合" : answer;
 
   // 模拟抽牌
   const spread = domainHint === "综合" ? "single" : "three";
@@ -2372,11 +2660,11 @@ async function* runLocalFallback(session: AgentSession, question: string): Async
   yield { type: "subagent", subagent: { agent: "analyst", action: "分析完成（本地）" } };
   yield { type: "subagent", subagent: { agent: "writer", action: "初稿完成（本地）" } };
 
-  const text = localInterpret(question, session.drawnCards, domainHint, answer);
+  const text = localInterpret(question, session.drawnCards, domainHint, userPick);
   yield { type: "phase", phase: "interpret", label: "占卜师正在撰写命运之卷…" };
-  for (const chunk of text.match(/[\s\S]{1,6}/g) ?? []) {
-    yield { type: "delta", delta: chunk };
-    await sleep(16);
+  for (const evt of chunkDelta(text)) {
+    yield evt;
+    await sleep(40);
   }
 
   yield { type: "review", review: { pass: true, scores: { grounding: 8, empathy: 8, tone: 8 }, comment: "本地引擎：审校通过" } };

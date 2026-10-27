@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
+import Link from "next/link";
 
 /**
  * 观测面板 —— Agent 系统运行数据一览
@@ -55,18 +56,39 @@ const ERROR_REASON_LABEL: Record<string, string> = {
   deadline_exceeded: "超时中止",
   max_rounds: "超出最大轮次",
   stale_timeout: "僵死超时",
+  ttl_expired: "会话过期",
   unknown: "未知原因",
 };
 
 export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const load = () => {
+    setLoading(true);
+    setError("");
+    fetch("/api/dashboard")
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`面板接口异常(${r.status})`);
+        const d = await r.json();
+        // ⚠️ 接口失败返回 {error}：直接 setStats 会让下方 stats.staleSessions.length 抛 TypeError 炸掉整页
+        if (!d || typeof d.totalSessions !== "number") throw new Error(d?.error || "面板数据格式异常");
+        setStats(d as Stats);
+        setLoading(false);
+      })
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : "面板加载失败");
+        setLoading(false);
+      });
+  };
 
   useEffect(() => {
-    fetch("/api/dashboard")
-      .then((r) => r.json())
-      .then((d) => { setStats(d); setLoading(false); })
-      .catch(() => setLoading(false));
+    // 异步加载（setState 都在 Promise 回调里，避免 effect 内同步 setState）
+    const t0 = setTimeout(load, 0);
+    // 30s 轮询：面板是观测工具，数据新鲜度比省请求重要
+    const t = setInterval(load, 30_000);
+    return () => { clearTimeout(t0); clearInterval(t); };
   }, []);
 
   return (
@@ -79,16 +101,28 @@ export default function Dashboard() {
             </h1>
             <p className="text-purple-300/50 text-sm mt-1">Agent 系统运行数据 · SQLite 持久化</p>
           </div>
-          <a
+          <Link
             href="/"
             className="px-5 py-2.5 rounded-full border border-purple-500/40 text-purple-200 hover:bg-purple-900/40 transition-all text-sm"
             style={{ fontFamily: "'Ma Shan Zheng', serif" }}
           >
             ← 返回占卜
-          </a>
+          </Link>
         </div>
 
-        {loading && <p className="text-purple-300/60 text-center py-20 animate-pulse">星辰数据汇聚中…</p>}
+        {loading && !stats && <p className="text-purple-300/60 text-center py-20 animate-pulse">星辰数据汇聚中…</p>}
+
+        {error && !stats && (
+          <div className="rounded-2xl border border-rose-500/40 bg-rose-950/20 px-6 py-10 text-center">
+            <p className="text-rose-200/90 mb-4">{error}</p>
+            <button
+              onClick={load}
+              className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-purple-700 to-indigo-700 text-white text-sm"
+            >
+              重新加载
+            </button>
+          </div>
+        )}
 
         {stats && (
           <>

@@ -19,7 +19,8 @@ export default function StardustCursor() {
     const coarse = window.matchMedia("(pointer: coarse)").matches;
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (coarse || reduced) return;
-    setEnabled(true);
+    // 微任务回填（避免 effect 内同步 setState 的级联渲染）
+    Promise.resolve().then(() => setEnabled(true));
     document.documentElement.classList.add("has-stardust-cursor");
     return () => document.documentElement.classList.remove("has-stardust-cursor");
   }, []);
