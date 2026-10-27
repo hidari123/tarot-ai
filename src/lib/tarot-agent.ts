@@ -345,6 +345,7 @@ function waitUserAnswer(
   clock?: { pause: () => void; resume: () => void }
 ): Promise<string> {
   clock?.pause();
+  const t0 = Date.now();
   return new Promise<string>((resolve) => {
     let settled = false;
     const finish = (v: string) => {
@@ -354,6 +355,8 @@ function waitUserAnswer(
       session.pendingAsk = undefined;
       if (session.abortSignal) session.abortSignal.removeEventListener("abort", onAbort);
       clock?.resume();
+      // 方向③：HITL 等待耗时落库（瀑布数据：用户思考时间是隐藏的大头）
+      db.logTiming(session.id, "hitl_wait", Date.now() - t0, kind ?? "ask");
       resolve(v);
     };
     const timer = setTimeout(() => finish(HITL_ABANDONED), HITL_TIMEOUT_MS);
@@ -478,6 +481,7 @@ async function rawCall(
   if (!res.ok) {
     const errText = await res.text().catch(() => res.statusText);
     db.logLLMUsage(sessionId ?? null, agent, p.name, 0, 0, Date.now() - t0, false);
+    if (sessionId) db.logTiming(sessionId, `llm_${agent}`, Date.now() - t0, `${p.name} fail`);
     throw new Error(`LLM 调用失败(${res.status}): ${errText.slice(0, 200)}`);
   }
   const json = await res.json();
@@ -486,6 +490,8 @@ async function rawCall(
     json.usage?.prompt_tokens ?? 0, json.usage?.completion_tokens ?? 0,
     Date.now() - t0, true
   );
+  // 方向③：LLM 调用耗时落库（瀑布数据：llm_supervisor / llm_analyst / ...）
+  if (sessionId) db.logTiming(sessionId, `llm_${agent}`, Date.now() - t0, p.name);
   markHealthy(p);
   const choice = json.choices?.[0];
   // Provider 适配：部分模型（如 MiniMax）把思考链内嵌在 content 的 <think> 标签里，
@@ -2096,6 +2102,15 @@ export async function* runAgent(
             },
           };
           const cont = await waitUserAnswer(session, "继续", ["翻下一张 →"], "continue", hitlClock);
+          // 方向③：Speculative 预检索——用户答"翻下一张"的瞬间，下一张牌名已知，
+          // 提前触发检索（fire-and-forget，结果进 session.ragHits 缓存）。
+          // 下一轮模型调 rag_search 时查重直接命中"已检索过"，省 1-3s 等待。
+          const nextCard = session.drawnCards[idx + 1];
+          if (nextCard) {
+            const nextName = nextCard.card.nameZh;
+            const preQ = rewriteQueryLocal(nextName, TAROT_CARDS.map((c) => c.nameZh));
+            void execRagSearch(preQ, 5, session).catch(() => { /* 预检索失败不影响主线 */ });
+          }
           // 超时/断开：视同"翻下一张"继续流程（不让整场占卜挂死）。
           // ⚠️ 一律走 pendingUserNotes（轮首 flush）：直接 push user 会把
           // deferred tool 响应与 tool_calls 隔断 → MiniMax 400 协议错位。
@@ -2625,6 +2640,8 @@ export async function* runAgent(
       });
       yield { type: "tool", tool: { name, args, resultSummary, durationMs: Date.now() - t0 }, ...evExtra };
       db.logToolCall(session.id, seq, "supervisor", name, args, resultSummary, Date.now() - t0);
+      // 方向③：普通工具耗时落库（HITL 类工具的等待已在 waitUserAnswer 统一记录）
+      db.logTiming(session.id, `tool_${name}`, Date.now() - t0);
       roundToolNames.push(name);
     }
 

@@ -79,6 +79,17 @@ CREATE TABLE IF NOT EXISTS user_profiles (
   last_active INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT 0
 );
+
+-- 方向③：阶段耗时瀑布（每会话每阶段一条）
+CREATE TABLE IF NOT EXISTS session_timings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  stage TEXT NOT NULL,            -- hitl_wait / llm_<agent> / tool_<name> / stream
+  detail TEXT NOT NULL DEFAULT '',-- 附加信息（如工具名/轮次）
+  duration_ms INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_timings_session ON session_timings(session_id);
 `);
 
 // ---- 数据保留：90 天 TTL（观测数据无限膨胀会让面板全表聚合线性变慢） ----
@@ -240,6 +251,10 @@ export interface DashboardStats {
     id: string; question: string; persona: string; status: string;
     reading: string; cards: SessionRow["cards"]; createdAt: number; errorReason?: string;
   }[];
+  /** 方向③：阶段瀑布总览（各阶段平均耗时 + 次数） */
+  stageAggregates: { stage: string; count: number; avgMs: number; totalMs: number }[];
+  /** 方向③：成本估算（token 总量 → 人民币，混合单价估算） */
+  costEstimate: { totalTokens: number; estCny: number };
 }
 
 /** 面板统计缓存：9 条全表聚合没必要每个 GET 都跑（60s 内存缓存） */
@@ -316,6 +331,17 @@ function computeDashboardStats(): DashboardStats {
       reading: r.reading, cards: JSON.parse(r.cards_json), createdAt: r.created_at,
       errorReason: r.error_reason || undefined,
     })),
+    // 方向③：阶段瀑布总览（各阶段平均耗时 + 次数，dashboard 渲染）
+    stageAggregates: getStageAggregates().map((s) => ({
+      stage: s.stage, count: s.count,
+      avgMs: Math.round(s.avgMs), totalMs: Math.round(s.totalMs),
+    })),
+    // 方向③：成本看板（token 总量折算人民币，按 MiniMax-M3 公开价估算）
+    costEstimate: {
+      totalTokens: tokens.t,
+      // MiniMax-M3 定价参考：输入 ¥4/M tokens，输出 ¥16/M（混合估算 ¥10/M）
+      estCny: Math.round((tokens.t / 1_000_000) * 10 * 100) / 100,
+    },
   };
 }
 
@@ -408,4 +434,31 @@ export function updateUserProfile(
     lastActive: p.lastActive,
     updatedAt: now,
   });
+}
+
+/* ---------------- 阶段耗时瀑布（方向③：延迟分解） ---------------- */
+
+const stmtInsertTiming = db.prepare(`
+  INSERT INTO session_timings (session_id, stage, detail, duration_ms, created_at)
+  VALUES (@sessionId, @stage, @detail, @durationMs, @createdAt)
+`);
+
+/** 记录一个阶段耗时（hitl_wait / llm_<agent> / tool_<name> / stream） */
+export function logTiming(sessionId: string, stage: string, durationMs: number, detail = ""): void {
+  try {
+    stmtInsertTiming.run({ sessionId, stage, detail: detail.slice(0, 120), durationMs, createdAt: Date.now() });
+  } catch { /* 计时失败不阻断 */ }
+}
+
+/** 某会话的瀑布数据（按时间序） */
+export function getSessionTimings(sessionId: string): Array<{ stage: string; detail: string; durationMs: number }> {
+  return db.prepare(`SELECT stage, detail, duration_ms FROM session_timings WHERE session_id = ? ORDER BY id`).all(sessionId) as Array<{ stage: string; detail: string; durationMs: number }>;
+}
+
+/** 全局阶段聚合（dashboard 瀑布总览：各阶段平均耗时 + 次数） */
+export function getStageAggregates(): Array<{ stage: string; count: number; avgMs: number; totalMs: number }> {
+  return db.prepare(`
+    SELECT stage, COUNT(*) count, COALESCE(AVG(duration_ms),0) avgMs, COALESCE(SUM(duration_ms),0) totalMs
+    FROM session_timings GROUP BY stage ORDER BY totalMs DESC
+  `).all() as Array<{ stage: string; count: number; avgMs: number; totalMs: number }>;
 }

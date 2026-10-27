@@ -30,6 +30,8 @@ interface Stats {
     reading: string; cards: { nameZh: string; reversed: boolean; pos: string }[]; createdAt: number;
     errorReason?: string;
   }[];
+  stageAggregates?: { stage: string; count: number; avgMs: number; totalMs: number }[];
+  costEstimate?: { totalTokens: number; estCny: number };
 }
 
 const TOOL_LABEL: Record<string, string> = {
@@ -148,6 +150,56 @@ export default function Dashboard() {
                 </motion.div>
               ))}
             </div>
+
+            {/* 方向③：延迟瀑布 + 成本估算 */}
+            {stats.stageAggregates && stats.stageAggregates.length > 0 && (
+              <div className="rounded-2xl border border-purple-500/20 bg-purple-950/20 backdrop-blur p-5 mb-8">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm text-purple-200/90 tracking-wider">⏱️ 阶段延迟瀑布（平均耗时 × 次数）</h2>
+                  {stats.costEstimate && (
+                    <span className="text-xs text-purple-300/50 font-mono">
+                      💰 累计成本估算 ¥{stats.costEstimate.estCny}（{stats.costEstimate.totalTokens.toLocaleString()} tokens）
+                    </span>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  {stats.stageAggregates.slice(0, 10).map((s) => {
+                    const maxMs = Math.max(...stats.stageAggregates!.map((x) => x.avgMs));
+                    const pct = Math.max(3, Math.round((s.avgMs / (maxMs || 1)) * 100));
+                    const stageLabel = s.stage
+                      .replace("hitl_wait", "💭 HITL 等待")
+                      .replace("llm_supervisor", "🧠 LLM·supervisor")
+                      .replace("llm_analyst", "🔍 LLM·analyst")
+                      .replace("llm_writer", "✍️ LLM·writer")
+                      .replace("llm_reviewer", "🧐 LLM·reviewer")
+                      .replace("tool_rag_search", "📖 工具·检索")
+                      .replace("tool_", "🔧 工具·");
+                    return (
+                      <div key={s.stage} className="flex items-center gap-3 text-xs">
+                        <span className="w-32 shrink-0 text-purple-200/70 truncate">{stageLabel}</span>
+                        <div className="flex-1 h-4 rounded-full bg-purple-950/40 overflow-hidden">
+                          <motion.div
+                            initial={{ width: 0 }}
+                            animate={{ width: `${pct}%` }}
+                            transition={{ duration: 0.6 }}
+                            className={`h-full rounded-full ${
+                              s.avgMs > 10000 ? "bg-amber-500/70" : s.avgMs > 3000 ? "bg-purple-500/70" : "bg-sky-500/60"
+                            }`}
+                          />
+                        </div>
+                        <span className="w-24 shrink-0 text-right font-mono text-purple-300/60">
+                          {s.avgMs >= 1000 ? `${(s.avgMs / 1000).toFixed(1)}s` : `${s.avgMs}ms`}
+                        </span>
+                        <span className="w-14 shrink-0 text-right font-mono text-purple-400/40">×{s.count}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="mt-3 text-[11px] text-purple-400/40">
+                  瀑布揭示隐藏的耗时大头（如 HITL 等待常被忽略）；红色 &gt;10s、紫色 &gt;3s。
+                </p>
+              </div>
+            )}
 
             {/* ⚠️ 卡死会话警告 */}
             {stats.staleSessions.length > 0 && (
