@@ -190,6 +190,28 @@ function AgentStatusBar({ phase }: { phase: Phase | null }) {
   );
 }
 
+/**
+ * 提取分享卡摘要：优先取"收束段"（最后一段，通常是占卜师的综合结论，
+ * 分享价值最高），没有明确分段时取末尾 240 字。
+ * 段标【牌面·…】与【启示】保留（它们在卡面上有视觉意义），【追问】/【补充】段剔除。
+ */
+function extractShareSummary(reading: string): string {
+  if (!reading) return "";
+  const paragraphs = reading
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0 && !p.startsWith("【追问】") && !p.startsWith("【补充】"));
+  if (paragraphs.length === 0) return "";
+  // 收束段：最后一段（若太短 < 40 字，往前再合一段）
+  let summary = paragraphs[paragraphs.length - 1];
+  if (summary.length < 40 && paragraphs.length >= 2) {
+    summary = `${paragraphs[paragraphs.length - 2]}\n${summary}`;
+  }
+  // 仍超长 → 截到 360 字（卡面 8 行 × ~28px 字号约能放下）
+  if (summary.length > 360) summary = summary.slice(0, 360) + "…";
+  return summary;
+}
+
 /** 等待反馈：显示已等待时长，超过 10 秒提示模型较慢 */
 function WaitingHint({ since }: { since: number }) {
   const [elapsed, setElapsed] = useState(0);
@@ -961,7 +983,10 @@ export default function TarotApp() {
                     data={{
                       question,
                       cards: cards.map((c) => ({ nameZh: c.nameZh, image: c.image, reversed: c.reversed, pos: c.pos })),
-                      summary: reading.replace(/\s+/g, " ").slice(0, 120),
+                      // 摘要取"收束段"（最后一段，通常是最精炼的总结）；
+                      // 没有明确分段时取末尾 240 字。绝不硬截前 120 字。
+                      summary: extractShareSummary(reading),
+                      fullReadingLength: reading.length,
                       personaName: persona?.name,
                       sessionId,
                     }}

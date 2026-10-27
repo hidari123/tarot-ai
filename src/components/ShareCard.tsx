@@ -14,8 +14,10 @@ import { motion } from "framer-motion";
 export interface ShareCardData {
   question: string;
   cards: Array<{ nameZh: string; image: string; reversed: boolean; pos: string }>;
-  /** 解读的结论一句话（取解读末段或首段摘要） */
+  /** 摘要：收束语（优先）或解读末段，展示在卡面上 */
   summary: string;
+  /** 完整解读（可选）：生成"扫码/截图看全文"的引导语长度参考 */
+  fullReadingLength?: number;
   personaName?: string;
   sessionId?: string;
 }
@@ -158,13 +160,30 @@ export async function renderShareCard(data: ShareCardData): Promise<Blob | null>
     ctx.fillText(c.pos, x + cardW / 2, cardY + cardH + 86);
   }
 
-  /* ---- 摘要 ---- */
+  /* ---- 摘要（收束语或末段，最多 8 行，字号自适应）---- */
   const sumY = cardY + cardH + 160;
   ctx.textAlign = "left";
-  ctx.font = "400 32px 'Noto Sans SC', sans-serif";
   ctx.fillStyle = "rgba(243, 232, 255, 0.9)";
-  const lines = wrapText(ctx, data.summary, W - 240, 4);
-  lines.forEach((l, i) => ctx.fillText(l, 120, sumY + i * 52));
+
+  // 摘要较长时缩小字号，保证放得下
+  const summaryLen = data.summary.length;
+  const fontPx = summaryLen > 200 ? 26 : summaryLen > 120 ? 28 : 32;
+  ctx.font = `400 ${fontPx}px 'Noto Sans SC', sans-serif`;
+  const lineH = fontPx + 20; // 行高随字号
+  const maxLines = 8; // 最多 8 行（1620 高度富余）
+
+  const lines = wrapText(ctx, data.summary, W - 240, maxLines);
+  lines.forEach((l, i) => ctx.fillText(l, 120, sumY + i * lineH));
+
+  // 若原文比展示的长 → 末尾标注"完整解读"
+  const shown = lines.join("").length;
+  const hasMore = shown < data.summary.length || (data.fullReadingLength ?? 0) > shown;
+  if (hasMore) {
+    const noteY = sumY + lines.length * lineH + 14;
+    ctx.font = "400 22px 'Noto Sans SC', sans-serif";
+    ctx.fillStyle = "rgba(196, 181, 253, 0.55)";
+    ctx.fillText("——完整解读见占卜正文——", 120, noteY);
+  }
 
   /* ---- 落款 ---- */
   ctx.textAlign = "center";
