@@ -1,0 +1,29 @@
+# 依赖与构建产物（镜像内会重新安装/构建）
+node_modules
+.next
+out
+build
+
+# 数据与密钥（绝不能进镜像层）
+data
+.env
+.env.*
+!.env.example
+
+# 版本控制与编辑器
+.git
+.gitignore
+.vscode
+.idea
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# 文档与测试脚本（不影响运行时）
+docs
+scripts
+*.md
+!README.md

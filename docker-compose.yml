@@ -1,0 +1,53 @@
+# Mystic Tarot · 一键起服务
+#
+# 用法：
+#   cp .env.example .env.local && 填好 API key
+#   docker compose up -d --build
+#   打开 http://localhost:3000
+#
+# 数据持久化：./data → 容器 /app/data（SQLite）
+# 端口冲突时改左侧宿主机端口即可：  "3001:3000"
+
+services:
+  tarot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mystic-tarot:latest
+    container_name: mystic-tarot
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - .env.local
+    environment:
+      NODE_ENV: production
+      # Agent 模式：plan = Plan-Execute（先出计划再执行）/ react = 默认
+      AGENT_MODE: "${AGENT_MODE:-react}"
+      # RAG 检索预算与轮次上限
+      MAX_ROUNDS: "${MAX_ROUNDS:-22}"
+      LLM_TIMEOUT_MS: "${LLM_TIMEOUT_MS:-45000}"
+      # HITL 等待上限（毫秒）
+      HITL_TIMEOUT_MS: "${HITL_TIMEOUT_MS:-300000}"
+      # 数据保留天数
+      DATA_RETENTION_DAYS: "${DATA_RETENTION_DAYS:-90}"
+      # 向量检索：local = 本地 ONNX / remote = 走远程 embedding API
+      RAG_VECTOR_MODE: "${RAG_VECTOR_MODE:-local}"
+    volumes:
+      # SQLite 落盘目录（容器重建不丢会话与观测数据）
+      - ./data:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/health').then(r=>r.json()).then(d=>{console.log(d.status);process.exit(0)}).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

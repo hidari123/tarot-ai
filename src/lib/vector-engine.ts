@@ -22,7 +22,15 @@ export interface VectorHit {
   snippet: string;
 }
 
-const CACHE_DIR = join(process.cwd(), "data", ".cache");
+/**
+ * 模型缓存目录。
+ *
+ * 方向⑥：可用 MODEL_CACHE_DIR 覆盖（默认 data/.cache）。
+ * Docker 部署时把模型缓存目录放在**镜像层**（/app/.model-cache），
+ * 而不是数据卷（/app/data）—— 模型是只读资源，卷是会话数据，
+ * 混在一起会导致：换卷丢模型 / 首次请求卡在 23MB 下载 / 镜像层混入运行数据。
+ */
+const CACHE_DIR = process.env.MODEL_CACHE_DIR || join(process.cwd(), "data", ".cache");
 const MODEL_ID = process.env.EMBEDDING_MODEL || "Xenova/all-MiniLM-L6-v2";
 
 // 语义检索模式：
@@ -297,5 +305,29 @@ export async function vectorSearch(query: string, topK = 5): Promise<VectorHit[]
 /** 预热（server 启动时可选调用） */
 export async function warmupVectorIndex(): Promise<void> {
   await ensureIndex();
+}
+
+/**
+ * 向量索引就绪状态（供 /api/health 与 Docker HEALTHCHECK 用）。
+ *
+ * 用途：容器健康检查不能只看"进程活着"——预热失败时服务仍可用
+ * （走 BM25/哈希降级），但向量通道未就绪需要被观测到。
+ */
+export function vectorStatus(): {
+  mode: "model" | "hash" | "off" | "building";
+  ready: boolean;
+  dim: number;
+  chunks: number;
+  cacheDir: string;
+  modelId: string;
+} {
+  return {
+    mode: building && !embedMatrix ? "building" : embedMode,
+    ready: !!embedMatrix,
+    dim: embedDim,
+    chunks: KNOWLEDGE_CHUNKS.length,
+    cacheDir: CACHE_DIR,
+    modelId: MODEL_ID,
+  };
 }
 

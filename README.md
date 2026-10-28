@@ -28,6 +28,9 @@ Supervisor（占卜师编排者，工具调用循环）
 
 - 312 个知识块（78 张牌 × 4 字段），**每牌去重**保证 top-k 是不同牌
 - 命中结果带 `channels` 标记（`bm25` / `vector` / `bm25+vector`），前端知识面板可视化分数与通道
+- **查询改写**（`src/lib/query-rewrite.ts`）：口语查询（"复合 前任"）不含牌名，BM25 字面匹配近零召回（实测 Recall@5 仅 44.6%）。主题词典补牌名候选 → **Recall@5 82.2%**（MRR 0.917 / NDCG 0.815 / 零命中 0）
+- **检索质量可量化**：`scripts/rag-golden-set.json`（51 条标注）+ `scripts/eval-rag.mjs`（Recall@5 / MRR / NDCG@5）——检索不再是"感觉变好了"，而是有基线的数字
+- **零命中自愈**：改写查询零命中时回退原始查询再检索一次（`rag_zero_retry` 落库归因）
 
 ### 🤝 人机协同（HITL）
 
@@ -38,19 +41,33 @@ Supervisor（占卜师编排者，工具调用循环）
 | **命运岔路** `fate_crossroads` | 解读中段呈现 2~3 条走向让用户选择，后续解读按选择分支 |
 | **多轮追问** | 内存会话（30min TTL）+ SQLite 持久化，解读完成后继续追问 |
 
+### 🧩 智能体自主性
+
+| 能力 | 说明 |
+|---|---|
+| **Plan-Execute 模式** | `AGENT_MODE=plan` 时 supervisor 先产出 5-8 步仪轨计划（`plan` 事件 → 前端 PLAN 路线图），注入系统提示作为每轮决策的"地图"；长流程不迷路，用户对 HITL 等待有预期。生成失败静默降级 ReAct |
+| **跨会话记忆** | `user_profiles` 表：主题分布 / 情绪轨迹 / 会话次数 / 上次问题，90 天衰减；承约阶段注入 ≤120 字画像摘要——占卜师"认识你" |
+| **情绪人格建议** | 收束点按情绪档案建议下一场人格（焦虑 + 直断 → 建议疗愈师；自驱 + 疗愈 → 建议直断），前端一键切换 |
+| **检索自愈** | 零命中回退原查询重试；检索预算耗尽时工具下架（防"换词重试"死循环） |
+
 ### 🛠️ 工程成熟度
 
-- **SQLite 持久化**（better-sqlite3）：sessions / tool_calls / llm_usage 三张表，WAL 模式；`error_reason`（llm_error / max_rounds / client_disconnect / deadline_exceeded / stale_timeout）与 `prompt_version` 全量记录
-- **观测面板** `/dashboard`：会话统计、工具调用频次与延迟、token 消耗、卡死会话、异常原因分布、各 Agent 性能明细、Prompt 版本效果对比、最近解读回看
-- **会话状态收敛**：启动对账（清理僵尸 running 会话）+ 客户端断连感知（abort 监听标记 client_disconnect）+ 看门狗 deadline（默认 5 分钟强制收敛）
-- **鲁棒 JSON 解析**（`src/lib/robust-json.ts`）：JSON.parse → 括号配平提取（含归一化）→ 字段级正则，三层兜底；审校解析失败绝不静默"默认通过"，显式呈现"审校未完成"
-- **上下文治理**：历史轮次压缩（保留最近 4 轮）+ RAG 结果瘦身（LLM 回填压缩版、前端展示完整版）——supervisor prompt tokens 不再随轮数线性膨胀
-- **轮次时间轴**：每轮 SSE `round` 事件（耗时/token/工具），前端渲染决策条形图，>15s 标黄定位瓶颈
-- **Agent 评估套件** `scripts/eval-agent.mjs`：固定题集自动 E2E，5 维度断言 + 失败分类（环境阻塞/超时/断言失败），`--ci` 模式环境阻塞不阻塞 CI
-- **MCP Server** `mcp-server/`：把 4 个塔罗工具封装为 Model Context Protocol 服务，Claude Desktop / Cursor 可直接接入
-- **多模型 Failover**：glm-5.3 主 + MiniMax-M3 备（`PRIMARY_PROVIDER` 可指定主模型），网络错误/超时/5xx 自动切换（粘性记忆 + 会话风格一致 + 流式首包安全切换），启动探活预标记不可达节点，主模型挂掉演示也不中断
-- **降级策略**：LLM 全挂 → 本地剧本引擎；向量模型不可用 → 特征哈希向量；全失败 → 纯 BM25
-- **向量模型脚本**：`scripts/download-model.mjs`（modelscope/hf-mirror/HF 三源下载）/ `warmup-vectors.mjs` / `test-embedding.mjs` / `analyze.cjs`（DB 体检）
+- **SQLite 持久层**（better-sqlite3）：sessions / tool_calls / llm_usage / user_profiles / session_timings 五张表，WAL 模式；`error_reason` 全量记录 + `prompt_version` 版本化
+- **观测面板** `/dashboard`：会话统计、**延迟瀑布**（逐阶段耗时条形图）、**成本估算**（¥ + token）、工具调用频次、卡死会话、异常原因分布、各 Agent 性能明细、Prompt 版本效果对比
+- **错误自动归因** `scripts/classify-errors.mjs`：error 会话规则聚类（client_disconnect / stale_timeout / max_rounds / ttl_expired / llm_error / analyst_empty）+ 占比 + 优先处理建议——从"出错了"到"该修哪里"
+- **混沌测试** `scripts/chaos-test.mjs`：故障注入断言（无效会话 409/410 / 畸形 body 400 / 空问题 400 / 并发互斥 409 / 恢复端点 404）
+- **会话恢复端点** `GET /api/session/[id]`：live 会话返回完整状态（牌面/解读/耗时），完成后从 DB 读，不存在 → 404
+- **瞬时故障重试**：网络抖动（断连/重置/5xx）同 provider 重试 1 次再 failover；超时直接 failover（首次已烧满 45s 预算，再等无意义）；4xx 业务错误不重试
+- **会话状态收敛**：启动对账（僵尸 running 会话）+ 客户端断连感知 + 看门狗 deadline（**活跃时间**口径，不计用户思考时间）+ 30min TTL
+- **鲁棒 JSON 解析**（`src/lib/robust-json.ts`）：JSON.parse → 括号配平提取（含归一化）→ 字段级正则，三层兜底；审校解析失败绝不静默"默认通过"
+- **上下文治理**：历史轮次压缩（保留最近 4 轮）+ RAG 结果瘦身——supervisor prompt tokens 不再随轮数线性膨胀
+- **投机预检索**：用户答"翻下一张"的瞬间提前触发下一张牌的检索（fire-and-forget），省 1-3s 等待
+- **PWA**：`manifest.json` + Service Worker（静态资源 SWR / 导航 network-first / **API 与 SSE 永不缓存**）+ 生成式图标，可安装到桌面
+- **Docker 化**：多阶段构建（deps → builder → runner），`output: standalone`，非 root 运行，ONNX 模型构建期预取，**构建期数据不入镜像层**
+- **Agent 评估套件** `scripts/eval-agent.mjs`：固定题集自动 E2E，9 维度断言 + 失败分类（环境阻塞/超时/断言失败），`--ci` 模式环境阻塞不阻塞 CI
+- **MCP Server** `mcp-server/`：把 4 个塔罗工具封装为 Model Context Protocol 服务
+- **多模型 Failover**：glm-5.3 主 + MiniMax-M3 备（`PRIMARY_PROVIDER` 可指定主模型），网络错误/超时/5xx 自动切换（粘性记忆 + 会话风格一致 + 流式首包安全切换），启动探活预标记不可达节点
+- **降级策略**（每层都不删）：LLM 全挂 → 本地剧本引擎；向量模型不可用 → 特征哈希向量；全失败 → 纯 BM25
 
 ### 🎨 交互体验
 
@@ -95,12 +112,26 @@ Supervisor（占卜师编排者，工具调用循环）
 
 ## 🚀 快速开始
 
+### 方式一：本地开发
+
 ```bash
 npm install
+cp .env.example .env.local     # 填入 API key
 npm run dev
 # http://localhost:3000        占卜主界面
 # http://localhost:3000/dashboard   观测面板
 ```
+
+### 方式二：Docker 一键起（推荐用于面试演示）
+
+```bash
+cp .env.example .env.local     # 填入 API key
+docker compose up -d --build   # 首次约 3-5 分钟（含 23MB 模型预取）
+# http://localhost:3000
+```
+
+多阶段构建：deps → builder（编译 + 模型预取）→ runner（standalone 产物，非 root 运行）。
+详细说明与故障排查见 [`docs/deployment.md`](docs/deployment.md)。
 
 ### 接入大模型（主备 failover）
 
@@ -138,23 +169,29 @@ EMBEDDING_MODEL=Xenova/all-MiniLM-L6-v2
 ```bash
 # 先启动 dev server
 node scripts/eval-agent.mjs http://localhost:3000
-# 输出：clarify / rag / cite / complete / review 各维度通过率 + 失败分类
+# 输出：clarify / rag / cite / complete / review 各维度通过率 + 仪式流程维度 + 失败分类
 #   env_error（模型不可达，不计入）/ timeout / assertion_failed
 # --ci 模式：环境阻塞时 exit 0 不阻塞 CI
 
-node scripts/inspect-db.cjs    # 查看会话、工具流水、LLM 用量、审校记录
-node scripts/analyze.cjs       # DB 体检：token 分布/审校解析失败率/会话状态/工具频次
+node scripts/eval-rag.mjs             # 检索质量：Recall@5 / MRR / NDCG@5（基线 Recall 82.2%）
+node scripts/eval-rag.mjs --rewrite   # 开启查询改写的对比基线
+node scripts/chaos-test.mjs           # 混沌测试：故障注入断言（409/400/互斥/404）
+node scripts/classify-errors.mjs      # 错误归因：error 会话聚类 + 优先处理建议
+node scripts/analyze.cjs              # DB 体检：token 分布/审校解析失败率/会话状态/工具频次
 ```
 
-### 向量模型（可选，用于语义检索）
+### 观测与调优脚本
 
 ```bash
 node scripts/download-model.mjs    # 从 hf-mirror 下载 5 个模型文件（约 22MB）
 node scripts/warmup-vectors.mjs    # 构建 312 块向量索引缓存 + 语义检索自检
 node scripts/test-embedding.mjs    # 验证模型离线加载与语义相似度
+node scripts/prefetch-model.mjs    # 构建期预取模型（Docker 用，见 Dockerfile）
+node scripts/debug-ritual.mjs http://localhost:3000 "你的问题"   # 全流程 SSE 事件回放
 ```
 
-模型缓存在 `data/.cache/`（已 gitignore）。未下载时自动降级为特征哈希向量 → 纯 BM25，流程不受影响。
+模型缓存在 `data/.cache/`（已 gitignore，可用 `MODEL_CACHE_DIR` 覆盖）。
+未下载时自动降级为特征哈希向量 → 纯 BM25，流程不受影响。
 
 ### 接入 MCP 客户端
 
@@ -174,30 +211,38 @@ node scripts/test-embedding.mjs    # 验证模型离线加载与语义相似度
 
 ## 📁 关键文件
 
-| 文件 | 行数 | 说明 |
-|---|---|---|
-| `src/lib/tarot-agent.ts` | ~1400 | 多 Agent 引擎：Supervisor 循环 + 三子 Agent 管线 + HITL + 轮次事件 + 看门狗 |
-| `src/lib/llm-providers.ts` | ~160 | 多模型 failover：健康记忆 + 粘性切换 + 启动探活 |
-| `src/lib/robust-json.ts` | ~150 | 三层 LLM JSON 解析器（parse → 配平提取 → 字段正则） |
-| `src/lib/prompts.ts` | ~180 | 全部 system prompts 集中管理（PROMPT_VERSION 版本化） |
-| `src/lib/rag-engine.ts` | ~260 | BM25 + RRF 融合 + 知识分块 + 引用组装 |
-| `src/lib/vector-engine.ts` | ~250 | 向量检索：ONNX 模型 + 特征哈希降级 |
-| `src/lib/db.ts` | ~230 | SQLite 持久层（三张表 + 对账 + error_reason + prompt_version） |
-| `src/app/api/interpret/route.ts` | ~85 | SSE 接口（abort 感知 + 断连标记） |
-| `src/app/api/answer/route.ts` | ~34 | HITL 应答（唤醒挂起流） |
-| `src/app/dashboard/page.tsx` | ~260 | 观测面板 UI（卡死会话/异常分布/Agent明细/Prompt版本） |
-| `src/components/CardFan.tsx` | ~110 | 选牌扇面（记录顺序+犹豫时长） |
-| `src/components/SubAgentPipeline.tsx` | ~80 | 子 Agent 生命周期可视化 |
-| `src/components/ReviewCard.tsx` | ~90 | 审校报告卡片（三维度评分条） |
-| `src/components/AgentTrace.tsx` | ~200 | 工具调用 Trace + 思考链 + 轮次时间轴 |
-| `src/components/KnowledgePanel.tsx` | ~110 | RAG 命中可视化（分数条 + 引文联动高亮） |
-| `src/components/CitedReading.tsx` | ~100 | 解读 [n] 引文角标（点击跳转知识面板） |
-| `src/components/ShareCard.tsx` | ~190 | Canvas 分享卡合成（星空+牌面+摘要） |
-| `src/components/StardustCursor.tsx` | ~140 | 星尘发光自定义光标 |
-| `mcp-server/index.mjs` | ~180 | MCP Server（stdio，4 工具） |
-| `scripts/eval-agent.mjs` | ~230 | Agent 评估套件（失败分类 + CI 模式） |
-| `scripts/analyze.cjs` | ~120 | DB 体检脚本 |
-| `scripts/download-model.mjs` | ~110 | 向量模型多源下载 |
+| 文件 | 说明 |
+|---|---|
+| `src/lib/tarot-agent.ts` | 多 Agent 引擎：Supervisor 循环 + 三子 Agent 管线 + HITL + 轮次事件 + 看门狗 + Plan-Execute |
+| `src/lib/llm-providers.ts` | 多模型 failover：健康记忆 + 粘性切换 + 启动探活 |
+| `src/lib/robust-json.ts` | 三层 LLM JSON 解析器（parse → 配平提取 → 字段正则） |
+| `src/lib/prompts.ts` | 全部 system prompts 集中管理（PROMPT_VERSION 版本化） |
+| `src/lib/rag-engine.ts` | BM25 + RRF 融合 + 知识分块 + 引用组装 |
+| `src/lib/vector-engine.ts` | 向量检索：ONNX 模型 + 特征哈希降级（`MODEL_CACHE_DIR` 可配） |
+| `src/lib/query-rewrite.ts` | 查询改写：主题词典补牌名候选（Recall 44.6% → 82.2%） |
+| `src/lib/memory.ts` | 跨会话记忆：主题分类 + 画像摘要注入 + 90 天衰减 |
+| `src/lib/db.ts` | SQLite 持久层（五张表 + 对账 + error_reason + 耗时聚合 + 成本估算） |
+| `src/app/api/interpret/route.ts` | SSE 接口（abort 感知 + 断连标记 + 互斥 409） |
+| `src/app/api/answer/route.ts` | HITL 应答（唤醒挂起流） |
+| `src/app/api/session/[id]/route.ts` | 会话恢复端点（live 状态 / DB 回放 / 404） |
+| `src/app/dashboard/page.tsx` | 观测面板 UI（延迟瀑布 + 成本卡 + 异常分布 + Agent 明细） |
+| `src/components/DialogueFlow.tsx` | 统一对话流（承约/呼召/翻牌/解读/收束同区） |
+| `src/components/CardFan.tsx` | 选牌扇面（记录顺序 + 犹豫时长） |
+| `src/components/SubAgentPipeline.tsx` | 子 Agent 生命周期可视化 |
+| `src/components/ReviewCard.tsx` | 审校报告卡片（三维度评分条） |
+| `src/components/AgentTrace.tsx` | 工具调用 Trace + 思考链 + 轮次时间轴 |
+| `src/components/KnowledgePanel.tsx` | RAG 命中可视化（分数条 + 引文联动高亮） |
+| `src/components/CitedReading.tsx` | 解读 [n] 引文角标（点击跳转知识面板） |
+| `src/components/ShareCard.tsx` | Canvas 分享卡合成（星空 + 牌面 + 摘要） |
+| `src/components/PwaRegister.tsx` | Service Worker 注册（生产环境） |
+| `mcp-server/index.mjs` | MCP Server（stdio，4 工具） |
+| `scripts/eval-agent.mjs` | Agent 评估套件（9 维度断言 + 失败分类 + CI 模式） |
+| `scripts/eval-rag.mjs` | 检索评估（Recall@5 / MRR / NDCG@5） |
+| `scripts/rag-golden-set.json` | 51 条标注检索评估集 |
+| `scripts/chaos-test.mjs` | 混沌测试（故障注入断言） |
+| `scripts/classify-errors.mjs` | 错误归因聚类 + 改进建议 |
+| `scripts/prefetch-model.mjs` | 构建期 ONNX 模型预取（Docker） |
+| `Dockerfile` / `docker-compose.yml` | 多阶段构建 + 一键起服务 |
 
 ## 🎨 面试讲点
 
@@ -218,6 +263,13 @@ node scripts/test-embedding.mjs    # 验证模型离线加载与语义相似度
 | **Token 治理** | 上下文随轮数线性膨胀（1357→2873 tokens）。历史压缩（最近 4 轮完整，早期工具结果一行摘要）+ RAG 回填瘦身（top-3 紧凑格式，省 30-40%）；给 LLM 的与给用户的信息不对称分流 |
 | **轮次时间轴** | 每轮 SSE `round` 事件（耗时/tokens/工具名），前端条形图可视化。>15s 标黄——把"Agent 慢"从体感变成可定位的数据 |
 | **MCP 协议** | 把内部工具封装为标准 MCP 服务，让 Claude/Cursor 等外部客户端复用同一套塔罗能力 |
+| **检索可量化** | 51 条标注 golden set + Recall@5/MRR/NDCG 评估。改写优化把 Recall 从 **44.6% 拉到 82.2%**（零命中 14→0）——"感觉变好"变成可复现的数字 |
+| **跨会话记忆** | user_profiles 表存主题/情绪轨迹，90 天衰减；承约阶段注入 ≤120 字画像。占卜师从"每次都当陌生人"变成"认识你" |
+| **Plan-Execute** | `AGENT_MODE=plan` 让 supervisor 先出 5-8 步仪轨计划再执行，注入系统提示当决策地图。**关键是失败静默降级 ReAct**——自主性增强不能以牺牲可用性为代价 |
+| **可靠性工程** | 混沌测试（5 项故障注入）+ 错误自动归因（unknown 从 37% 降到 4%）+ 瞬时重试 + 会话恢复端点。会话状态**必收敛**到 done/error |
+| **成本与延迟可见** | dashboard 延迟瀑布（逐阶段耗时）+ 成本估算（¥ + token）。优化前先能看见瓶颈——writer 平均 19.1s 是全链路最大瓶颈 |
+| **容器化陷阱** | 构建期 `db.ts` 的 mkdirSync 会把真实 SQLite 打进镜像层（数据泄露 + 70MB 冗余模型）。Dockerfile 显式清理 + 模型缓存与数据卷分离 |
+| **PWA 的正确姿势** | Service Worker 对 `/api/*` 与 SSE **永不缓存**——缓存流式响应会导致"读到上一次的占卜结果"，是正确性 bug 而非性能问题 |
 
 ## 📄 License
 
