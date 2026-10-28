@@ -101,7 +101,9 @@ export interface AgentEvent {
     | "invocation"      // A3：三问呼召
     | "card_reveal"     // B：翻牌（牌面叙述 + 牌意）
     | "card_reading"    // B：该牌的完整解读段落
-    | "closing";        // D：收束追问
+    | "closing"         // D：收束追问
+    | "plan"            // 方向⑤：Plan-Execute 模式的执行计划（步骤清单）
+    | "persona_suggest"; // 方向⑤：情绪驱动的人格切换建议（收束时给出）
   sessionId?: string;
   phase?: AgentPhase;
   label?: string;
@@ -144,6 +146,10 @@ export interface AgentEvent {
   };
   /** B：该牌解读段落 */
   cardReading?: { cardIndex: number; text: string };
+  /** 方向⑤：Plan-Execute 执行计划步骤 */
+  plan?: string[];
+  /** 方向⑤：情绪驱动的人格切换建议（收束时给出，前端渲染为下一次入口） */
+  personaSuggest?: { personaId: string; name: string; emoji: string; reason: string };
   subagent?: { agent: SubAgent; action: string; detail?: string }; // 子 Agent 生命周期
   review?: { pass: boolean; scores: { grounding: number; empathy: number; tone: number }; comment: string; rewritten?: boolean; parseLevel?: 0 | 1 | 2 | 3; retried?: boolean };
   /** 轮次时间轴：每轮耗时与 token，供前端可视化"Agent 在哪一步慢" */
@@ -234,6 +240,10 @@ export interface AgentSession {
   abortSignal?: AbortSignal;
   /** 方向①：跨会话记忆的用户标识（localStorage UUID，由前端携带） */
   userKey?: string;
+  /** 方向⑤：Plan-Execute 模式下 supervisor 先行的执行计划（步骤清单） */
+  plan?: string[];
+  /** 方向⑤：模式来源（plan=Plan-Execute / react=默认 ReAct），落库便于效果对比 */
+  agentMode?: "plan" | "react";
 }
 
 const sessions: Map<string, AgentSession> = (() => {
@@ -1057,6 +1067,49 @@ function extractEmotionTags(text: string): string[] {
 }
 
 /**
+ * 方向⑤：情绪驱动的人格切换建议（收束时计算，只建议不强制）。
+ *
+ * 设计动机：人格是用户入场时凭第一印象选的，但整场占卜中情绪会展开
+ * ——开场选了"直断导师"的用户，在三问呼召里暴露出高焦虑（紧张/迷茫），
+ * 犀利直断反而加剧不安；反之情绪平稳、目标明确的用户，疗愈系的
+ * 温柔绕圈会显得隔靴搔痒。收束点情绪轨迹已完整，是最自然的建议时机。
+ *
+ * 规则（与 EMOTION_LEXICON 的 tag 对齐）：
+ *   高焦虑（紧张不安/迷茫/失落受挫）+ 当前 blade → 建议 healer
+ *   平稳自驱（期待希望/渴望改变/兴奋跃跃）+ 当前 healer → 建议 blade
+ *   mystic 万金油不主动建议换出；无情绪档案不建议。
+ * 返回 null 表示不建议（保持现人格）。
+ */
+function suggestPersonaByEmotion(session: AgentSession): AgentEvent["personaSuggest"] | null {
+  const tags = session.emotionTags;
+  if (tags.length === 0) return null;
+  const anxious = tags.some((t) => ["紧张不安", "迷茫", "失落受挫"].includes(t));
+  const driven = tags.some((t) => ["期待希望", "渴望改变", "兴奋跃跃"].includes(t));
+
+  if (anxious && session.persona.id === "blade") {
+    const healer = PERSONAS.find((p) => p.id === "healer");
+    if (!healer) return null;
+    return {
+      personaId: healer.id,
+      name: healer.name,
+      emoji: healer.emoji,
+      reason: `这场你的情绪里写着「${tags.join("、")}」——下次不妨让疗愈系的声音陪你走完，先接住情绪，再谈牌面。`,
+    };
+  }
+  if (driven && !anxious && session.persona.id === "healer") {
+    const blade = PERSONAS.find((p) => p.id === "blade");
+    if (!blade) return null;
+    return {
+      personaId: blade.id,
+      name: blade.name,
+      emoji: blade.emoji,
+      reason: `你的状态里是「${tags.join("、")}」——目标明确时，或许想听一位不绕弯子的直断导师，一针见血。`,
+    };
+  }
+  return null;
+}
+
+/**
  * 从叙述性 prompt 里抠出候选分支（模型漏传 branches 时的兜底）。
  *
  * 识别常见编号格式：
@@ -1143,7 +1196,8 @@ function ensureCardSlot(session: AgentSession, idx: number): AgentSession["cardR
   return slot;
 }
 
-async function execRagSearch(query: string, topK: number, session: AgentSession) {
+async function execRagSearch(query: string, topK: number, session: AgentSession, origQuery?: string) {
+  // origQuery：改写前的用户原始查询（零命中时回退重试用）
   // ---- 重复检索负反馈（防死循环的关键）----
   // 归一化查询（去空格+小写）后与历史比对；重复查询直接返回"已检索过"标记，
   // 模型收到显式负反馈就不会再撞同一面墙（实测：max_rounds 会话里同一查询重复了 5 次）
@@ -1171,7 +1225,14 @@ async function execRagSearch(query: string, topK: number, session: AgentSession)
   session.ragCallCount++;
 
   const k = Math.min(Math.max(topK || 5, 1), 10);
-  const currentHits = await hybridSearch(query, k);
+  let currentHits = await hybridSearch(query, k);
+  // 方向⑤：零命中自评估重试——改写后的查询反而零命中时（词典改写可能跑偏），
+  // 用原始查询再试一次。两轮都空才算真的没资料（宁可多一次检索也不让
+  // 解读"无典籍依据"——引文闭环是本项目的核心展示点）。
+  if (currentHits.length === 0 && origQuery && query !== origQuery) {
+    try { db.logTiming(session.id, "rag_zero_retry", 0, `改写「${origQuery.slice(0, 16)}」零命中，回退原查询`); } catch { /* ignore */ }
+    currentHits = await hybridSearch(origQuery, k);
+  }
   // ⚠️ 累积而非覆盖：supervisor 一场占卜常检索多次（每张牌一次），
   // 覆盖会导致解读里的 [n] 编号对应不上知识面板（引文闭环断裂）。
   // 按 chunkId 去重合并，编号即检索顺序，知识面板与 [n] 永远一致。
@@ -1188,7 +1249,10 @@ async function execRagSearch(query: string, topK: number, session: AgentSession)
   const budgetNote = session.ragCallCount >= RAG_BUDGET
     ? "（已达检索预算上限，请立即 write_reading）"
     : "";
-  const summary = `检索到 ${currentHits.length} 条：${currentHits.slice(0, 3).map((h) => `${h.cardNameZh}(${h.score},${h.channels.join("+")})`).join("、")}${currentHits.length > 3 ? "…" : ""}（累计 ${session.ragHits.length} 条）${budgetNote}`;
+  const zeroNote = currentHits.length === 0
+    ? "（两轮查询均零命中——该主题典籍暂缺，请直接基于牌意知识解读，不要再次检索）"
+    : "";
+  const summary = `检索到 ${currentHits.length} 条：${currentHits.slice(0, 3).map((h) => `${h.cardNameZh}(${h.score},${h.channels.join("+")})`).join("、")}${currentHits.length > 3 ? "…" : ""}（累计 ${session.ragHits.length} 条）${budgetNote}${zeroNote}`;
   return { summary, currentHits, allHits: session.ragHits, duplicate: false };
 }
 
@@ -1581,6 +1645,50 @@ function buildSystemPrompt(session: AgentSession): string {
   return buildSupervisorPrompt(session.persona) + (memory ? `\n\n${memory}` : "");
 }
 
+/**
+ * 方向⑤：Plan-Execute 的计划生成器（独立函数，防生成器 return 陷阱）。
+ *
+ * ⚠️ 不能内联在 runAgent 生成器体内直接 `await callLLM` 后用值：
+ * 生成器 return 会立刻终结整场 SSE 流。这里把 LLM 调用隔离在普通 async
+ * 函数里，异常在函数内消化，返回 null = 降级 ReAct。
+ * 同时做硬超时（20s）：规划器卡死不能拖垮整场占卜。
+ */
+async function buildPlanSteps(
+  config: LLMProvider | null,
+  session: AgentSession
+): Promise<string[] | null> {
+  try {
+    const planRes = await Promise.race([
+      callLLM(
+        config,
+        [
+          {
+            role: "system",
+            content:
+              "你是占卜流程规划器。根据用户问题，用 5-8 条短句列出本次塔罗占卜的完整仪轨步骤（每条 ≤15 字，形如「① 确认问题与范围」）。只输出步骤清单，不要任何解释。",
+          },
+          {
+            role: "user",
+            content: `用户问题：${session.contractQuestion ?? session.question}\n用户情绪：${session.emotionTags.join("、") || "未知"}`,
+          },
+        ],
+        undefined,
+        session.id,
+        "supervisor"
+      ),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 20_000)),
+    ]);
+    if (!planRes) return null;
+    return (planRes.message.content ?? "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 1 && !/^[-—=*_#>]/.test(l))
+      .slice(0, 8);
+  } catch {
+    return null; // 计划失败降级 ReAct，不阻断主流程
+  }
+}
+
 export async function* runAgent(
   session: AgentSession,
   question: string,
@@ -1631,6 +1739,28 @@ export async function* runAgent(
   }
 
   yield { type: "phase", phase: "analyze", label: `${session.persona.emoji} ${session.persona.name}开始凝听你的问题…` };
+
+  /* ---- 方向⑤：Plan-Execute 模式（AGENT_MODE=plan）----
+   * 与默认 ReAct 的差异：进入工具循环前先让 supervisor 产出一份显式计划
+   * （步骤清单），作为系统提示注入后续所有轮次。收益：
+   * 1. 长流程（10+ 轮）不迷路——计划是"地图"，每轮决策对照计划推进
+   * 2. 用户可见"占卜仪轨路线图"（前端 plan 事件渲染），HITL 等待有预期
+   * 3. 落库 agent_mode 便于 A/B 对比轮次/token 差异（面试数据点）
+   * 计划生成失败（LLM 异常）静默降级回 ReAct——降级不删是底线。 */
+  const agentMode = process.env.AGENT_MODE === "plan" ? "plan" : "react";
+  session.agentMode = agentMode;
+  try { db.updateSessionPromptVersion(session.id, `${PROMPT_VERSION}/${agentMode}`); } catch { /* ignore */ }
+  const planSteps = agentMode === "plan" ? await buildPlanSteps(config, session) : null;
+  if (planSteps && planSteps.length >= 3) {
+    session.plan = planSteps;
+    // 计划注入历史（后续每轮 supervisor 都看得到，作为"地图"对照推进）
+    session.messages.push({
+      role: "system",
+      content: `【仪轨计划】按以下步骤推进，每完成一步对照清单；步骤顺序可依用户回答微调，但不得跳过抽牌与逐张解读：\n${planSteps.map((s, i) => `${i + 1}. ${s}`).join("\n")}`,
+    });
+    yield { type: "plan", plan: planSteps };
+    yield { type: "phase", phase: "analyze", label: `仪轨已定：${planSteps.length} 步（Plan-Execute 模式）` };
+  }
 
   // 轮次上限：逐张解读模式下轮次翻倍
   // 承约1 + 呼召1 + 选牌1 + 检索2 + (翻牌+解读)×3 + 综合1 + 收束1 ≈ 14 轮
@@ -1940,6 +2070,17 @@ export async function* runAgent(
         yield { type: "tool", tool: { name, args, resultSummary: `收束完成，用户回应：${answer.slice(0, 40)}`, durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, `收束｜${answer.slice(0, 50)}`, Date.now() - t0);
         roundToolNames.push(name);
+        // ---- 方向⑤：情绪驱动的人格切换建议 ----
+        // 收束点是最自然的"下一次入口"：整场情绪轨迹已完整（emotionTags
+        // 在承约/呼召/确认问题各环节累积）。规则：
+        //   高焦虑(紧张/焦虑/迷茫/压力) + 当前是"直断导师" → 建议疗愈师
+        //   情绪平稳 + 当前是疗愈师 → 建议直断（要真相不要安慰）
+        // 只建议不强制：yield 事件给前端渲染，下一场由用户自选。
+        const suggest = suggestPersonaByEmotion(session);
+        if (suggest) {
+          yield { type: "persona_suggest", personaSuggest: suggest };
+          db.logTiming(session.id, "persona_suggest", 0, `${session.persona.id} → ${suggest.personaId}: ${suggest.reason}`);
+        }
         // 收束完成 → 落库结束
         const finalReading = buildFinalReading(session);
         db.updateSessionReading(session.id, finalReading);
@@ -2124,7 +2265,7 @@ export async function* runAgent(
           if (nextCard) {
             const nextName = nextCard.card.nameZh;
             const preQ = rewriteQueryLocal(nextName, TAROT_CARDS.map((c) => c.nameZh));
-            void execRagSearch(preQ, 5, session).catch(() => { /* 预检索失败不影响主线 */ });
+            void execRagSearch(preQ, 5, session, nextName).catch(() => { /* 预检索失败不影响主线 */ });
           }
           // 超时/断开：视同"翻下一张"继续流程（不让整场占卜挂死）。
           // ⚠️ 一律走 pendingUserNotes（轮首 flush）：直接 push user 会把
@@ -2636,7 +2777,7 @@ export async function* runAgent(
         // BM25 字面匹配近零召回（golden set 实测 Recall@5 仅 44.6%）。
         // 主题词典补牌名候选（本地零延迟；已含牌名不改写）
         const rewritten = rewriteQueryLocal(q, TAROT_CARDS.map((c) => c.nameZh));
-        const { summary, currentHits, allHits } = await execRagSearch(rewritten, topK, session);
+        const { summary, currentHits, allHits } = await execRagSearch(rewritten, topK, session, q);
         resultSummary = summary;
         // 前端知识面板拿到**累计命中**（与解读 [n] 编号一致）
         // ⚠️ 只发前 12 条（编号稳定不前移；内存 session.ragHits 保留全部）
@@ -2724,7 +2865,7 @@ async function* runLocalFallback(session: AgentSession, question: string): Async
 
   // 模拟 RAG
   await sleep(400);
-  const { summary: ragSummary, allHits } = await execRagSearch(question + " " + cards.map((c) => c.nameZh).join(" "), 5, session);
+  const { summary: ragSummary, allHits } = await execRagSearch(question + " " + cards.map((c) => c.nameZh).join(" "), 5, session, question);
   yield { type: "phase", phase: "retrieve", label: `翻阅典籍：「${question.slice(0, 12)}…」` };
   yield { type: "rag_hits", ragHits: allHits };
   yield { type: "tool", tool: { name: "rag_search", args: { query: question.slice(0, 20) }, resultSummary: ragSummary, durationMs: 80 } };

@@ -305,6 +305,9 @@ export default function TarotApp() {
   const [followup, setFollowup] = useState("");
   const [subagentEvents, setSubagentEvents] = useState<SubAgentEvent[]>([]);
   const [review, setReview] = useState<ReviewData | null>(null);
+  /* 方向⑤：Plan-Execute 仪轨计划 + 情绪驱动人格建议 */
+  const [planSteps, setPlanSteps] = useState<string[]>([]);
+  const [personaSuggest, setPersonaSuggest] = useState<{ personaId: string; name: string; emoji: string; reason: string } | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState("");
   const [listening, setListening] = useState(false);
@@ -684,6 +687,13 @@ export default function TarotApp() {
             }
             case "subagent":
               setSubagentEvents((prev) => [...prev, p.subagent]);
+              break;
+            /* 方向⑤：Plan-Execute 计划 / 情绪人格建议 */
+            case "plan":
+              setPlanSteps(p.plan ?? []);
+              break;
+            case "persona_suggest":
+              setPersonaSuggest(p.personaSuggest ?? null);
               break;
             case "round":
               setRounds((prev) => [...prev, p.round]);
@@ -1080,6 +1090,24 @@ export default function TarotApp() {
             </motion.div>
           )}
 
+          {/* ---------- 方向⑤：仪轨计划（Plan-Execute 模式可见）---------- */}
+          {planSteps.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-3 w-full max-w-2xl rounded-2xl border border-indigo-500/25 bg-indigo-950/15 backdrop-blur-md px-5 py-3"
+            >
+              <p className="text-[11px] text-indigo-300/70 tracking-[0.25em] mb-1.5">PLAN · 仪轨路线图</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {planSteps.map((s, i) => (
+                  <span key={i} className="text-xs text-purple-200/75">
+                    <span className="text-indigo-400/80">{i + 1}.</span> {s.replace(/^[①②③④⑤⑥⑦⑧\d.、)\s]+/, "")}
+                  </span>
+                ))}
+              </div>
+            </motion.div>
+          )}
+
           {/* ---------- 对话流主体（问题与回答同区，逐张解读可折叠）---------- */}
           <DialogueFlow
             entries={entries}
@@ -1157,6 +1185,30 @@ export default function TarotApp() {
           {/* ---------- 追问 / 分享（完成态）---------- */}
           {done && sessionId && (
             <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-2xl mt-5">
+              {/* 方向⑤：情绪驱动的人格建议（下一场入口） */}
+              {personaSuggest && (
+                <div className="mb-5 rounded-2xl border border-amber-500/30 bg-amber-950/10 backdrop-blur-md px-5 py-4 flex items-start gap-4">
+                  <span className="text-2xl mt-0.5">{personaSuggest.emoji}</span>
+                  <div className="flex-1">
+                    <p className="text-sm text-amber-200/90" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>
+                      下一场，试试「{personaSuggest.name}」？
+                    </p>
+                    <p className="mt-1 text-xs text-purple-200/60 leading-relaxed">{personaSuggest.reason}</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const found = personas.find((p) => p.id === personaSuggest.personaId);
+                      if (found) {
+                        setPersona(found);
+                        setPersonaSuggest(null);
+                      }
+                    }}
+                    className="shrink-0 px-4 py-2 rounded-xl border border-amber-400/40 text-amber-200 text-xs hover:bg-amber-900/30 transition-all"
+                  >
+                    换 TA ↗
+                  </button>
+                </div>
+              )}
               <div className="flex gap-2">
                 <input
                   className="flex-1 px-5 py-3.5 rounded-2xl bg-purple-950/30 backdrop-blur-md border border-purple-500/30 text-purple-50 placeholder-purple-300/40 focus:outline-none focus:border-purple-400/70 transition-all"

@@ -101,6 +101,15 @@ while (true) {
       case "tool":
         console.log(`[${at}s] 🔧 ${evt.tool.name}: ${String(evt.tool.resultSummary).slice(0, 60)}`);
         break;
+      case "plan":
+        seq.push("plan");
+        console.log(`[${at}s] 📋 Plan-Execute 仪轨计划:`);
+        (evt.plan ?? []).forEach((s, i) => console.log(`         ${i + 1}. ${s}`));
+        break;
+      case "persona_suggest":
+        seq.push("persona_suggest");
+        console.log(`[${at}s] 🎭 人格建议: ${evt.personaSuggest?.emoji} ${evt.personaSuggest?.name}（${String(evt.personaSuggest?.reason).slice(0, 50)}…）`);
+        break;
       case "round":
         console.log(`[${at}s] ── round ${evt.round.round} (${evt.round.elapsedMs}ms) ${evt.round.toolNames.join(",")}`);
         break;
