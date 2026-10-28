@@ -332,7 +332,13 @@ const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview }: 
       {/* 三张牌 */}
       <div className="flex gap-3 md:gap-6 justify-center">
         {cards.map((c) => (
-          <motion.div key={c.id + c.index} className="flex flex-col items-center w-[68px] md:w-[80px]">
+          <motion.div
+            key={c.id + c.index}
+            /* 宽度内联兜底：w-[68px]/md:w-[80px] 同样是 Tailwind 任意值类，
+               dev 增量缓存不生成时牌列会挤成一条（与 aspect 塌陷是同源问题） */
+            style={{ width: "clamp(56px, 16vw, 80px)" }}
+            className="flex flex-col items-center"
+          >
             <span
               className={`text-[10px] px-1.5 py-0.5 rounded-full border mb-1.5 tracking-wider ${
                 c.current
@@ -358,7 +364,11 @@ const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview }: 
                   : { scale: 1 }
               }
               transition={c.current ? { duration: 2.2, repeat: Infinity } : { duration: 0.2 }}
-              className={`relative w-full aspect-[2/3] rounded-xl overflow-hidden border transition-all ${
+              /* ⚠️ aspect-ratio 同时用内联样式兜底：dev 增量编译缓存偶尔不生成
+                 aspect-[2/3] 任意值类（实测：卡牌塌成 1px 横线）。内联样式
+                 不经过 Tailwind，永不失效 —— 修复线上问题的最稳路径。 */
+              style={{ aspectRatio: "2 / 3" }}
+              className={`relative w-full rounded-xl overflow-hidden border transition-all ${
                 c.current
                   ? "border-purple-400/70 shadow-[0_0_26px_rgba(168,85,247,0.35)] cursor-pointer"
                   : c.done

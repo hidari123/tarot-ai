@@ -99,7 +99,10 @@ export default function CardSpread({ cards, onFlipCard, onPreview }: {
                   : { scale: 1 }
               }
               transition={c.current ? { duration: 2.2, repeat: Infinity } : { duration: 0.2 }}
-              className={`relative w-full aspect-[2/3] rounded-xl overflow-hidden border transition-all ${
+              /* ⚠️ aspect-ratio 内联兜底（同 DialogueFlow：防 dev 增量缓存不生成
+                 aspect-[2/3] 任意值类导致卡牌塌成横线） */
+              style={{ aspectRatio: "2 / 3" }}
+              className={`relative w-full rounded-xl overflow-hidden border transition-all ${
                 c.current
                   ? "border-purple-400/70 shadow-[0_0_30px_rgba(168,85,247,0.35)] cursor-pointer"
                   : c.done

@@ -64,7 +64,8 @@ export default function CardPreviewModal({ card, onClose }: {
             className="relative w-full max-w-sm"
           >
             {/* 大牌面 */}
-            <div className="relative w-full aspect-[2/3] rounded-2xl overflow-hidden border border-purple-400/50 shadow-[0_0_60px_rgba(139,92,246,0.35)] bg-[#0d0716]">
+            {/* ⚠️ aspect-ratio 内联兜底（防 dev 增量缓存不生成任意值类） */}
+            <div style={{ aspectRatio: "2 / 3" }} className="relative w-full rounded-2xl overflow-hidden border border-purple-400/50 shadow-[0_0_60px_rgba(139,92,246,0.35)] bg-[#0d0716]">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={card.image}
