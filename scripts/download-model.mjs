@@ -8,7 +8,7 @@
  *
  * 用法：node scripts/download-model.mjs
  */
-import { mkdirSync, writeFileSync, existsSync, statSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 
 const MODEL_ID = process.env.EMBEDDING_MODEL || "Xenova/all-MiniLM-L6-v2";

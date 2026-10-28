@@ -180,6 +180,7 @@ async function runCase(tc) {
     failType: failedDims.length ? FAIL.ASSERT : null,
     failReason: failedDims.length ? `未达标维度: ${failedDims.join(", ")}` : null,
     tools, readingLen: reading.length, scores, events, reading, errorEvent,
+    hitlCount: answered, // HITL 交互次数（承约/呼召/选牌/确认/继续/收束）
   };
 }
 
@@ -207,7 +208,9 @@ for (const tc of CASES) {
   } else {
     const total = Object.values(r.scores).reduce((a, b) => a + b, 0);
     const max = Object.keys(r.scores).length;
-    console.log(`${((total / max) * 100).toFixed(0)}%  (${r.tools.length} tools, ${r.readingLen} chars)`);
+    console.log(
+      `${((total / max) * 100).toFixed(0)}%  (${r.tools.length} tools, ${r.readingLen} chars, ${r.hitlCount} HITL)`
+    );
   }
 }
 

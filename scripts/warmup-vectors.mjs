@@ -6,7 +6,7 @@
  *       之后 vector-engine 启动直接读缓存，无需再算
  */
 import { pipeline, env } from "@huggingface/transformers";
-import { mkdirSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { mkdirSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 

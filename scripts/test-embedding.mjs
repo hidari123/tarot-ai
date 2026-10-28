@@ -1,7 +1,6 @@
 /** 验证 transformers.js 能加载本地模型并做真实语义 embedding */
 import { pipeline, env } from "@huggingface/transformers";
 import { join } from "node:path";
-import { existsSync } from "node:fs";
 
 const CACHE_DIR = join(process.cwd(), "data", ".cache");
 env.cacheDir = CACHE_DIR;
