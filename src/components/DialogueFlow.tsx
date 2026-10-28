@@ -11,7 +11,7 @@ import { AnimatePresence, motion } from "framer-motion";
  *      答完固定为用户气泡，占卜师的回应紧随其后
  *   2. 每张牌是一个"段落单元"：翻牌 → 念牌 → 确认问答 → 解读，
  *      完成后折叠为一行摘要（可点开看全部，再点收起）
- *   3. 节奏交给用户：每张牌解读完出现"翻下一张"按钮，不自动连播
+ *   3. 节奏交给用户：每张牌解读完，用户**亲手点开**牌阵里的下一张牌（不自动连播）
  *   4. 自动滚动只作用于本容器，用户上滚时暂停
  */
 
@@ -22,7 +22,29 @@ export type FlowEntryKind =
   | "user"            // 用户的回答/选择（气泡）
   | "ask"             // 待回答的问题面板（答完转为 user 条目）
   | "card"            // 一张牌的完整段落（翻牌+念牌+问答+解读，可折叠）
+  | "spread"          // 牌阵面板（三张牌背常驻，用户逐张亲手翻开）
   | "scroll";         // 命运之卷（最终总结/全文卡片）
+
+/**
+ * 牌阵面板里的一张牌（与 CardSpread 的 SpreadCard 同构）。
+ * 顶部时间线与对话流牌阵共用同一份数据 → 翻一张两边同步。
+ */
+export interface FlowSpreadCard {
+  index: number;
+  id: string;
+  nameZh: string;
+  image: string;
+  reversed: boolean;
+  pos: string;
+  /** 用户已亲手翻开 → 显示牌面 */
+  flipped: boolean;
+  /** 解读完成 → 金框 + ✓ */
+  done: boolean;
+  /** 当前该翻的 → 可点 + 呼吸光 */
+  current: boolean;
+  /** 典籍牌意（翻开后可显示） */
+  meaning?: string;
+}
 
 export interface FlowCardData {
   cardIndex: number;
@@ -43,7 +65,7 @@ export interface FlowCardData {
   reading?: string;
   /** 状态 */
   revealed: boolean;   // 是否已翻
-  readingDone: boolean; // 解读是否完成（完成后可折叠 + 出现"翻下一张"）
+  readingDone: boolean; // 解读是否完成（完成后可折叠为摘要行）
 }
 
 export interface FlowEntry {
@@ -61,6 +83,8 @@ export interface FlowEntry {
   };
   /** card 条目的数据 */
   card?: FlowCardData;
+  /** spread 条目的数据（三张牌，常驻面板） */
+  spread?: FlowSpreadCard[];
   /** scroll 条目的标题 */
   title?: string;
   /** 条目完成态（ask 已回答 / card 已完成） */
@@ -107,16 +131,12 @@ const CardBlock = memo(function CardBlock({
   entry,
   onAnswer,
   onToggle,
-  onNext,
-  isLastCard,
 }: {
   entry: FlowEntry;
   /** 回答该牌的确认问题（entryId 由本组件内部携带） */
   onAnswer: (entryId: string, text: string) => void;
   /** 展开/收起（引用稳定） */
   onToggle: (entryId: string) => void;
-  onNext: () => void;
-  isLastCard: boolean;
 }) {
   const c = entry.card!;
   const [custom, setCustom] = useState("");
@@ -257,7 +277,10 @@ const CardBlock = memo(function CardBlock({
         </div>
       )}
 
-      {/* 完成后：翻下一张 / 摘要折叠提示 */}
+      {/* 完成后：摘要折叠提示
+       * ⚠️ 旧版这里有「翻下一张 →」按钮 —— 已移除：
+       *    翻牌动作现在由**牌阵面板里点牌**触发（后端翻牌闸门）。
+       *    两个入口重复，且按钮会让人误以为"跳过翻牌也能继续"。 */}
       {c.readingDone && (
         <div className="px-4 py-2.5 border-t border-purple-500/10 flex items-center justify-between">
           <button
@@ -266,17 +289,146 @@ const CardBlock = memo(function CardBlock({
           >
             {entry.collapsed ? "展开全部 ▾" : "收起 ▴"}
           </button>
-          {onNext && !isLastCard && (
-            <button
-              onClick={onNext}
-              className="px-4 py-2 rounded-xl bg-gradient-to-r from-purple-700 to-indigo-700 text-white text-sm font-medium hover:shadow-[0_0_20px_rgba(139,92,246,0.4)] transition-all"
-              style={{ fontFamily: "'Ma Shan Zheng', serif" }}
-            >
-              翻下一张 →
-            </button>
-          )}
         </div>
       )}
+    </div>
+  );
+});
+
+/* ---------------- 牌阵面板（对话流里的三张牌） ---------------- */
+
+/**
+ * 牌阵面板 —— 用户逐张亲手翻牌的主界面
+ *
+ * 为什么在对话流里而不是只在顶部：
+ *   牌是这场占卜的**舞台**，用户与牌的互动必须发生在叙事流里
+ *   （"我翻开第一张 → 听解读 → 再翻开第二张" 是一个连续的动作序列）。
+ *   顶部时间线是同步的进度镜像，两处共用同一份状态。
+ *
+ * 点击语义（无翻转功能）：
+ *   - 点"当前该翻的"牌 → onFlipCard(index) → 后端闸门放行 → 牌面下发
+ *   - 点"已翻开"的牌   → onPreview(index) → 放大预览（只是看）
+ */
+const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview }: {
+  cards: FlowSpreadCard[];
+  onFlipCard: (index: number) => void;
+  onPreview: (index: number) => void;
+}) {
+  if (cards.length === 0) return null;
+  const doneCount = cards.filter((c) => c.done).length;
+  const nextCard = cards.find((c) => c.current);
+
+  return (
+    <div className="w-full rounded-2xl border border-amber-500/25 bg-gradient-to-b from-amber-950/10 to-[#0d0819]/70 backdrop-blur-sm px-4 py-3.5">
+      {/* 标题 + 进度 */}
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-base">🃏</span>
+        <span className="text-[10px] tracking-[0.25em] text-amber-200/70">你的命运之牌</span>
+        <span className="ml-auto text-[11px] text-purple-300/40 font-mono">
+          {doneCount}/{cards.length}
+        </span>
+      </div>
+
+      {/* 三张牌 */}
+      <div className="flex gap-3 md:gap-6 justify-center">
+        {cards.map((c) => (
+          <motion.div key={c.id + c.index} className="flex flex-col items-center w-[68px] md:w-[80px]">
+            <span
+              className={`text-[10px] px-1.5 py-0.5 rounded-full border mb-1.5 tracking-wider ${
+                c.current
+                  ? "border-purple-400/60 text-purple-200 bg-purple-900/40"
+                  : c.done
+                    ? "border-amber-400/40 text-amber-300/80 bg-amber-900/20"
+                    : "border-purple-700/40 text-purple-400/50"
+              }`}
+            >
+              {c.pos}
+            </span>
+
+            <motion.button
+              type="button"
+              onClick={() => {
+                if (c.flipped) onPreview(c.index);
+                else if (c.current) onFlipCard(c.index);
+              }}
+              whileHover={c.flipped || c.current ? { scale: 1.06, y: -3 } : undefined}
+              animate={
+                c.current
+                  ? { scale: [1, 1.05, 1], boxShadow: ["0 0 0px rgba(168,85,247,0)", "0 0 22px rgba(168,85,247,0.6)", "0 0 0px rgba(168,85,247,0)"] }
+                  : { scale: 1 }
+              }
+              transition={c.current ? { duration: 2.2, repeat: Infinity } : { duration: 0.2 }}
+              className={`relative w-full aspect-[2/3] rounded-xl overflow-hidden border transition-all ${
+                c.current
+                  ? "border-purple-400/70 shadow-[0_0_26px_rgba(168,85,247,0.35)] cursor-pointer"
+                  : c.done
+                    ? "border-amber-400/55 cursor-zoom-in hover:border-amber-300/80"
+                    : c.flipped
+                      ? "border-purple-500/40 cursor-zoom-in hover:border-purple-400/60"
+                      : "border-purple-800/40"
+              }`}
+            >
+              {c.flipped && c.image ? (
+                <motion.div
+                  initial={{ rotateY: 180, opacity: 0.5 }}
+                  animate={{ rotateY: 0, opacity: 1 }}
+                  transition={{ duration: 0.9, ease: [0.4, 0.1, 0.2, 1] }}
+                  className="absolute inset-0 [perspective:600px]"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={c.image}
+                    alt={c.nameZh}
+                    className={`w-full h-full object-cover ${c.reversed ? "rotate-180" : ""}`}
+                  />
+                </motion.div>
+              ) : (
+                <div className="absolute inset-0 bg-[#160b26] flex items-center justify-center">
+                  <div className="w-8 h-8 rounded-full border-2 border-purple-400/50 flex items-center justify-center rune-breathe">
+                    <span className="text-lg text-purple-300/70">✦</span>
+                  </div>
+                  <div className="absolute inset-1 rounded-lg border border-purple-500/25" />
+                  {c.current && (
+                    <span className="absolute bottom-1 inset-x-0 text-center text-[9px] text-purple-200/85 tracking-wider">
+                      点我翻开
+                    </span>
+                  )}
+                </div>
+              )}
+              {c.done && (
+                <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-amber-400/90 flex items-center justify-center z-10">
+                  <span className="text-[9px] text-purple-950 font-bold">✓</span>
+                </div>
+              )}
+            </motion.button>
+
+            <span
+              className={`mt-1.5 text-[11px] text-center leading-tight ${
+                c.done ? "text-amber-200/90" : c.flipped ? "text-purple-100/85" : "text-purple-400/30"
+              }`}
+              style={{ fontFamily: "'Ma Shan Zheng', serif" }}
+            >
+              {c.flipped ? (
+                <>
+                  {c.nameZh}
+                  {c.reversed && <span className="text-[9px] block text-purple-300/50">逆位</span>}
+                </>
+              ) : (
+                "？"
+              )}
+            </span>
+          </motion.div>
+        ))}
+      </div>
+
+      {/* 提示 */}
+      <p className="mt-3 text-center text-[11px] text-purple-300/50 leading-relaxed">
+        {nextCard
+          ? "点开那张发光的牌，占卜师会为你念牌"
+          : doneCount >= cards.length
+            ? "三张牌都已讲透"
+            : "等你亲手翻开下一张"}
+      </p>
     </div>
   );
 });
@@ -287,8 +439,9 @@ export default function DialogueFlow({
   entries,
   onAskAnswer,
   onCardAnswer,
-  onNextCard,
   onToggleEntry,
+  onFlipCard,
+  onPreviewCard,
   streaming,
 }: {
   entries: FlowEntry[];
@@ -296,10 +449,12 @@ export default function DialogueFlow({
   onAskAnswer: (entryId: string, answer: string) => void;
   /** 回答 card 条目上的确认问题（牌面确认，答案挂到牌上） */
   onCardAnswer: (entryId: string, answer: string) => void;
-  /** 翻下一张牌（由"翻下一张"按钮触发） */
-  onNextCard: () => void;
   /** 展开/收起条目 */
   onToggleEntry: (entryId: string) => void;
+  /** 用户亲手翻牌（点当前该翻的牌） */
+  onFlipCard: (index: number) => void;
+  /** 放大预览已翻开的牌 */
+  onPreviewCard: (index: number) => void;
   /** 是否有流式输出进行中（影响自动滚动） */
   streaming: boolean;
 }) {
@@ -359,21 +514,13 @@ export default function DialogueFlow({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pendingAsk 为每次渲染新算的引用，仅需响应其 id（锚定去重）
   }, [entries, streaming, pendingAsk?.id]);
 
-  /** 最后一个 card 条目的 index（判断"翻下一张"是否该显示） */
-  const lastCardIdx = (() => {
-    for (let i = entries.length - 1; i >= 0; i--) {
-      if (entries[i].kind === "card") return i;
-    }
-    return -1;
-  })();
-
   return (
     <div
       ref={scrollRef}
       onScroll={onScroll}
       className="w-full max-w-2xl flex-1 min-h-[300px] max-h-[62dvh] overflow-y-auto px-1 flex flex-col gap-3"
     >
-      {entries.map((e, i) => {
+      {entries.map((e) => {
         switch (e.kind) {
           case "teller":
             return (
@@ -404,8 +551,16 @@ export default function DialogueFlow({
                   entry={e}
                   onAnswer={onCardAnswer}
                   onToggle={onToggleEntry}
-                  onNext={onNextCard}
-                  isLastCard={i === lastCardIdx}
+                />
+              </div>
+            );
+          case "spread":
+            return (
+              <div key={e.id} data-entry-id={e.id}>
+                <SpreadPanel
+                  cards={e.spread ?? []}
+                  onFlipCard={onFlipCard}
+                  onPreview={onPreviewCard}
                 />
               </div>
             );
@@ -440,27 +595,27 @@ const AskPanel = memo(function AskPanel({ entry, onAnswer }: { entry: FlowEntry;
   const isInvocation = a.kind === "invocation";
   const isCrossroads = a.crossroads;
   const isClosing = a.kind === "closing";
-  const isContinue = a.kind === "continue";
+  const isFlip = a.kind === "flip";
 
-  /* ---- 翻下一张（continue）：轻量条，不打断阅读 ---- */
-  if (isContinue) {
+  /* ---- 翻牌闸门（flip）：提示 + 插话框（主入口是牌阵面板上的牌）----
+   * ⚠️ 这里**不再有「翻下一张」按钮**：翻牌动作由用户点击牌阵面板里的牌完成
+   *    （点牌 = POST /api/answer{answer:"翻牌"} → 后端闸门放行 → 牌面下发）。
+   *    本面板只承担两件事：
+   *      1. 告诉用户"现在该翻哪张了"
+   *      2. 提供插话入口（翻牌间隙说的话会被下一张牌的解读引用）
+   */
+  if (isFlip) {
     return (
       <div className="w-full rounded-2xl border border-purple-500/25 bg-[#0d0819]/60 backdrop-blur-sm px-4 py-3">
         <div className="flex items-center gap-2 mb-2.5">
           <span className="text-base">🕯</span>
-          <span className="text-[10px] tracking-[0.25em] text-purple-300/60">稍作停顿</span>
+          <span className="text-[10px] tracking-[0.25em] text-purple-300/60">轮到你翻牌</span>
         </div>
         <p className="text-sm text-purple-100/85 mb-2.5" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>
           {a.question}
         </p>
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => onAnswer("翻下一张 →")}
-            className="px-4 py-2 rounded-xl bg-gradient-to-r from-purple-700 to-indigo-700 text-white text-sm hover:shadow-[0_0_20px_rgba(139,92,246,0.4)] transition-all"
-            style={{ fontFamily: "'Ma Shan Zheng', serif" }}
-          >
-            翻下一张 →
-          </button>
+          <span className="text-[11px] text-purple-300/50">↓ 点上方发光的牌</span>
           <button
             onClick={() => inputRef.current?.focus()}
             className="px-3.5 py-2 rounded-xl border border-purple-500/30 text-purple-200/80 text-sm hover:bg-purple-900/30 transition-all"

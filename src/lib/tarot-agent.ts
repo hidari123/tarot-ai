@@ -103,7 +103,8 @@ export interface AgentEvent {
     | "card_reading"    // B：该牌的完整解读段落
     | "closing"         // D：收束追问
     | "plan"            // 方向⑤：Plan-Execute 模式的执行计划（步骤清单）
-    | "persona_suggest"; // 方向⑤：情绪驱动的人格切换建议（收束时给出）
+    | "persona_suggest" // 方向⑤：情绪驱动的人格切换建议（收束时给出）
+    | "card_flip_ready"; // 逐张翻牌闸门：第 N 张可以翻了（⚠️ 不含牌面，防剧透）
   sessionId?: string;
   phase?: AgentPhase;
   label?: string;
@@ -146,6 +147,14 @@ export interface AgentEvent {
   };
   /** B：该牌解读段落 */
   cardReading?: { cardIndex: number; text: string };
+  /**
+   * B：翻牌闸门信号 —— "第 N 张可以翻了"
+   *
+   * ⚠️ **刻意不含牌面/牌名/图片**：牌面内容必须等用户亲手点开才下发，
+   * 否则"防剧透"只是视觉障眼法（用户点之前 devtools 里已经能看到）。
+   * 这里只给索引与位置名，前端据此把对应那张牌变成"可点"。
+   */
+  cardFlipReady?: { cardIndex: number; total: number; pos: string };
   /** 方向⑤：Plan-Execute 执行计划步骤 */
   plan?: string[];
   /** 方向⑤：情绪驱动的人格切换建议（收束时给出，前端渲染为下一次入口） */
@@ -165,8 +174,9 @@ export interface AgentEvent {
  * - card_confirm B 逐张解读的确认问题
  * - closing      D 收束追问
  * - crossroads   命运岔路
+ * - flip         逐张翻牌闸门（用户亲手点开牌面；可顺带插话）
  */
-export type AskKind = "clarify" | "contract" | "invocation" | "card_confirm" | "closing" | "crossroads" | "continue";
+export type AskKind = "clarify" | "contract" | "invocation" | "card_confirm" | "closing" | "crossroads" | "flip";
 
 /* ------------------------------------------------------------------ */
 /* 会话存储（globalThis 单例 + SQLite 持久化）                          */
@@ -227,6 +237,8 @@ export interface AgentSession {
     answer?: string;
     /** 结合回答后的完整解读 */
     reading?: string;
+    /** 用户已亲手翻开这张牌（逐张翻牌闸门用） */
+    flipped?: boolean;
   }>;
   /** C：用户在牌与牌之间的插话（补充/修正信息） */
   interjections: string[];
@@ -244,6 +256,11 @@ export interface AgentSession {
   plan?: string[];
   /** 方向⑤：模式来源（plan=Plan-Execute / react=默认 ReAct），落库便于效果对比 */
   agentMode?: "plan" | "react";
+  /**
+   * B：已被用户亲手翻开的牌索引（按翻开顺序）。
+   * 逐张翻牌闸门的状态源 —— reveal_card 只允许翻"下一张未翻的"（= 数组长度处）。
+   */
+  flippedCardIdx?: number[];
 }
 
 const sessions: Map<string, AgentSession> = (() => {
@@ -928,8 +945,10 @@ const TOOLS = [
     function: {
       name: "reveal_card",
       description:
-        "【逐张解读 · 翻牌】翻到牌阵中的下一张牌，先**念牌**：客观描述牌面画面 + 典籍牌意 + 向用户提一个**针对性的确认问题**。\n" +
+        "【逐张解读 · 翻牌】翻到牌阵中的**下一张**牌，先**念牌**：客观描述牌面画面 + 典籍牌意 + 向用户提一个**针对性的确认问题**。\n" +
         "这一步只讲这一张牌，不涉及其他牌。用户回答后再调用 interpret_card 讲透它。\n" +
+        "【必须严格按顺序】一次只翻一张（card_index=0 → 1 → 2），不能跳步——\n" +
+        "用户会亲手点开每一张牌，你必须等这一张被翻开并得到回答后，才能翻下一张。\n" +
         "【确认问题必须可回答】形式是二选一或三选一，选项要贴着用户的原话与情绪，\n" +
         "例如「你在这件事上，更像是『已经麻木了』还是『其实不甘心』？」——不要问空泛的「你觉得呢」。\n" +
         "【牌意必须带引文编号】meaning 引用典籍牌意时用 [n] 标注（对应 rag_search 返回的编号，如「新的开始、冒险 [3]」），\n" +
@@ -1907,6 +1926,12 @@ export async function* runAgent(
       db.failSession(session.id, "llm_error");
       return;
     }
+    // reasoning 会下发给浏览器（过程细节面板）。
+    // ⚠️ 关于"防剧透"的边界（已与需求方确认）：
+    //    本项目保护的是**牌面视觉** —— 牌阵面板里未翻开的牌显示牌背 + ？
+    //    （牌面图片与牌名在 card_reveal 时才补上）。
+    //    模型自己生成的文字（思考链/正文）里出现牌名**不额外拦截**：
+    //    解读本身就是要说"你抽到的是愚者"，拦掉反而破坏内容。
     if (decision.reasoning) yield { type: "reasoning", reasoning: decision.reasoning };
     // 决策消息原样推入历史（保留全部 tool_calls，保证 assistant→tool 配对完整）
     session.messages.push(decision.message);
@@ -2092,7 +2117,7 @@ export async function* runAgent(
         return;
       }
 
-      /* ---- B1：逐张翻牌（念牌 + 确认问题）---- */
+      /* ---- B1：逐张翻牌（翻牌闸门 → 念牌 → 确认问题）---- */
       if (name === "reveal_card") {
         const idx = Math.max(0, Math.min(Number(args.card_index) || 0, session.drawnCards.length - 1));
         const drawn = session.drawnCards[idx];
@@ -2115,6 +2140,29 @@ export async function* runAgent(
           roundToolNames.push("reveal_card(拦截)");
           continue;
         }
+
+        /* ---- 逐张翻牌闸门：必须按顺序、且等用户亲手翻开 ----
+         * 防跳步：模型偶尔会直接 reveal_card(2) 跳过第 2 张
+         * （实测：3 张牌只翻了第 1 张）。已翻牌数 = 当前唯一允许翻的索引。
+         */
+        const flippedOrder = (session.flippedCardIdx ??= []);
+        if (idx !== flippedOrder.length) {
+          const already = flippedOrder.map((i) => session.drawnCards[i]?.card.nameZh).filter(Boolean);
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              error: `第 ${idx + 1} 张还不能翻`,
+              hint:
+                already.length > 0
+                  ? `用户已依次翻开：${already.join("、")}。请先 reveal_card(card_index=${already.length}) —— 用户必须亲手翻开每一张牌。`
+                  : `请先 reveal_card(card_index=0)，让用户亲手翻开第一张牌。`,
+            }),
+          });
+          roundToolNames.push("reveal_card(拦截)");
+          continue;
+        }
+
         const narrative = String(args.narrative || drawn.card.description || "").trim();
         const meaning = String(args.meaning || (drawn.reversed ? drawn.card.reversed : drawn.card.upright)).trim();
         const question = String(args.question || "这张牌对你来说，是什么意思？").trim();
@@ -2126,6 +2174,49 @@ export async function* runAgent(
         const posNames = ["过去", "当下", "未来"];
         const pos = session.drawnCards.length === 1 ? "核心指引" : (posNames[idx] ?? `第${idx + 1}张`);
 
+        /* ---- 闸门 1/2：等用户亲手翻牌 ----
+         * ⚠️ 牌面内容（narrative/meaning/question）此时**不下发**——
+         * 只发 card_flip_ready（索引 + 位置名，无牌面）。
+         * 用户点击后前端 POST /api/answer{answer:"翻牌"} 才继续。
+         */
+        const gateSlot = ensureCardSlot(session, idx);
+        gateSlot.pos = pos;
+        yield {
+          type: "card_flip_ready",
+          cardFlipReady: { cardIndex: idx, total: session.drawnCards.length, pos },
+        };
+        const flipPrompt = idx === 0
+          ? "点开第一张牌"
+          : `「${flippedOrder.map((i) => session.drawnCards[i]?.card.nameZh).filter(Boolean).join("、")}」讲完了。点开「${pos}」这张牌`;
+        yield {
+          type: "ask_user",
+          ask: {
+            question: flipPrompt,
+            options: undefined,
+            allowFree: true,
+            prompt: "翻开这张牌",
+            kind: "flip",
+          },
+        };
+        const flipResult = await waitUserAnswer(session, flipPrompt, undefined, "flip", hitlClock);
+        // 翻开（无论用户是点牌还是插话后点牌，都视为这张牌已被翻开）
+        flippedOrder.push(idx);
+        gateSlot.flipped = true;
+        // 方向③：Speculative 预检索——用户点开这张牌的瞬间，牌名已知，
+        // 提前触发检索（fire-and-forget，结果进 session.ragHits 缓存）。
+        // 下一轮模型调 rag_search 时查重直接命中"已检索过"，省 1-3s 等待。
+        {
+          const preQ = rewriteQueryLocal(drawn.card.nameZh, TAROT_CARDS.map((c) => c.nameZh));
+          void execRagSearch(preQ, 5, session, drawn.card.nameZh).catch(() => { /* 预检索失败不影响主线 */ });
+        }
+        // 插话：用户在翻牌闸门里说的话（不是"翻牌"）→ 记入插话，供后续解读引用
+        const flipText = flipResult.trim();
+        if (flipText && !/^(翻牌|翻开|翻下一张|继续|好的?|嗯|好|翻)/.test(flipText) && !isHitlGone(flipResult)) {
+          session.interjections.push(flipText);
+          pendingUserNotes.push(`（翻牌间隙补充：${flipText}）`);
+        }
+
+        /* ---- 闸门 2/2：牌面此刻才下发 ---- */
         // 落库该张牌的"念牌"内容
         const slot = ensureCardSlot(session, idx);
         slot.reveal = { narrative, meaning, question, options: qOptions };
@@ -2241,44 +2332,25 @@ export async function* runAgent(
         roundToolNames.push(name);
 
         // ---- 节奏交给用户（真实塔罗师讲完一张会停顿等你消化）----
-        // 非最后一张牌：发"继续"型 HITL，前端渲染"翻下一张"按钮。
-        // 用户点击（或插话）才 resume——占卜师不会自动连播。
+        // ⚠️ 旧设计：这里发一个 continue 型 HITL 并 await（阻塞后端），
+        //    用户点「翻下一张」才继续。
+        // 新设计：节奏控制**移交下一张牌的翻牌闸门**（reveal_card 里的
+        //    card_flip_ready + await）——那才是用户真正要做的动作（亲手点开牌）。
+        //    这里**不发 ask_user**：
+        //    - 发而不 await 会留下一个"悬空 ask"（前端渲染了面板，但后端没在等）
+        //      → 用户点它必然 409「当前没有等待回答的问题」（实测复现）
+        //    - 「翻下一张」按钮移除：点牌就是翻牌，两个入口重复
+        //    - 插话能力保留在翻牌闸门里（flip 型 ask 自带输入框，同样写 interjections）
+        // 少一次 LLM 往返：用户点牌时后端已经等在闸门上了。
         const isLast = idx >= session.drawnCards.length - 1;
         if (!isLast) {
           const nextPos = ["过去", "当下", "未来"][idx + 1] ?? `第${idx + 2}张`;
-          yield { type: "phase", phase: "wait_user", label: `这张牌讲完了，等你准备好再翻下一张…` };
-          yield {
-            type: "ask_user",
-            ask: {
-              question: `「${slot.nameZh}」讲完了。准备好了就翻下一张（${nextPos}），或者先说点什么。`,
-              options: ["翻下一张 →", "我有点想法…"],
-              allowFree: true,
-              prompt: "翻下一张",
-              kind: "continue",
-            },
-          };
-          const cont = await waitUserAnswer(session, "继续", ["翻下一张 →"], "continue", hitlClock);
-          // 方向③：Speculative 预检索——用户答"翻下一张"的瞬间，下一张牌名已知，
-          // 提前触发检索（fire-and-forget，结果进 session.ragHits 缓存）。
-          // 下一轮模型调 rag_search 时查重直接命中"已检索过"，省 1-3s 等待。
-          const nextCard = session.drawnCards[idx + 1];
-          if (nextCard) {
-            const nextName = nextCard.card.nameZh;
-            const preQ = rewriteQueryLocal(nextName, TAROT_CARDS.map((c) => c.nameZh));
-            void execRagSearch(preQ, 5, session, nextName).catch(() => { /* 预检索失败不影响主线 */ });
-          }
-          // 超时/断开：视同"翻下一张"继续流程（不让整场占卜挂死）。
-          // ⚠️ 一律走 pendingUserNotes（轮首 flush）：直接 push user 会把
-          // deferred tool 响应与 tool_calls 隔断 → MiniMax 400 协议错位。
-          if (isHitlGone(cont)) {
-            pendingUserNotes.push("（继续翻下一张）");
-          } else if (!/^(翻下一张|继续|好的?|嗯)/.test(cont.trim())) {
-            // 用户在停顿处插话（自由输入）→ 记录为插话，供下一张牌引用
-            session.interjections.push(cont.trim());
-            pendingUserNotes.push(`（翻牌间隙补充：${cont.trim()}）`);
-          } else {
-            pendingUserNotes.push("（继续翻下一张）");
-          }
+          yield { type: "phase", phase: "interpret", label: `「${slot.nameZh}」讲完了 · 点开「${nextPos}」那张牌继续` };
+          // ⚠️ 这里**不 await**：翻牌闸门在下一轮 reveal_card 里等用户。
+          //    预检索也挪到闸门放行时触发（那里才知道用户点了牌）。
+          //    本轮先把"已讲完"的提示写进历史（走 pendingUserNotes：
+          //    直接 push user 会隔断 deferred tool 响应 → MiniMax 400）。
+          pendingUserNotes.push(`（第 ${idx + 1} 张「${slot.nameZh}」已解读完毕，等待用户翻开下一张）`);
         }
         continue;
       }
@@ -2678,9 +2750,19 @@ export async function* runAgent(
               reversed: d.reversed, pos: drawn.length === 1 ? "核心指引" : posNames[i],
             }));
             db.updateSessionCards(session.id, cards);
-            yield { type: "cards", cards };
+            // ⚠️ 防剧透：同上文 —— 只发位置，不发牌名/图片
+            yield {
+              type: "cards",
+              cards: cards.map((c, i) => ({
+                id: `slot-${i}`,
+                nameZh: "",
+                image: "",
+                reversed: false,
+                pos: c.pos,
+              })),
+            };
             session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ answer: "random", note: "用户未回应，已随机代抽" }) });
-            yield { type: "tool", tool: { name, args, resultSummary: `超时随机代抽：${cards.map((c) => c.nameZh).join("、")}`, durationMs: Date.now() - t0 } };
+            yield { type: "tool", tool: { name, args, resultSummary: `超时随机代抽：${cards.map((c) => c.pos).join("、")}（牌面待用户逐一翻开）`, durationMs: Date.now() - t0 } };
             db.logToolCall(session.id, seq, "supervisor", name, args, "选牌超时→随机代抽", Date.now() - t0);
             roundToolNames.push(name);
             continue;
@@ -2727,10 +2809,26 @@ export async function* runAgent(
             reversed: d.reversed, pos: drawn.length === 1 ? "核心指引" : posNames[i],
           }));
           db.updateSessionCards(session.id, cards);
+          // ⚠️ 防剧透：resultSummary 会进 tool 事件（下发给浏览器），
+          //    所以**这里也不能出现牌名** —— 只报位置与犹豫时长。
+          //    真实牌名仍留在 session/draw_cards 结果里，供模型与落库使用。
           resultSummary = userAnswer.trim() === "random"
-            ? `随机代抽：${cards.map((c) => `${c.pos}=${c.nameZh}${c.reversed ? "(逆位)" : ""}`).join("、")}`
-            : `用户亲手选出：${cards.map((c) => `${c.pos}=${c.nameZh}${c.reversed ? "(逆位)" : ""}`).join("、")}；犹豫时长 ${dwell.join("/")}ms`;
-          yield { type: "cards", cards };
+            ? `随机代抽：${cards.map((c) => c.pos).join("、")}（牌面待用户逐一翻开）`
+            : `用户亲手选出：${cards.map((c) => c.pos).join("、")}；犹豫时长 ${dwell.join("/")}ms（牌面待用户逐一翻开）`;
+          // ⚠️ 防剧透：cards 事件**只发位置**，不发牌名/图片/牌 id。
+          //    牌面信息必须等用户亲手翻开（card_reveal）才下发 ——
+          //    否则"牌背 + ？"只是障眼法，用户在 devtools 里就能看到答案。
+          //    （前端只靠 index + pos 渲染牌阵，牌名在 card_reveal 时补上）
+          yield {
+            type: "cards",
+            cards: cards.map((c, i) => ({
+              id: `slot-${i}`,
+              nameZh: "",
+              image: "",
+              reversed: false,
+              pos: c.pos,
+            })),
+          };
         } else if (name === "fate_crossroads") {
           resultSummary = `用户选择走向：${userAnswer.slice(0, 60)}`;
         }
@@ -2860,7 +2958,11 @@ async function* runLocalFallback(session: AgentSession, question: string): Async
   const spread = domainHint === "综合" ? "single" : "three";
   const { summary, cards } = execDrawCards(spread, session);
   yield { type: "phase", phase: "draw", label: `命运之牌已抽出（${spread === "single" ? "单张聚焦" : "三张时间流"}）` };
-  yield { type: "cards", cards };
+  // ⚠️ 防剧透：同上文 —— 本地降级引擎也只发位置，不发牌名/图片
+  yield {
+    type: "cards",
+    cards: cards.map((c, i) => ({ id: `slot-${i}`, nameZh: "", image: "", reversed: false, pos: c.pos })),
+  };
   yield { type: "tool", tool: { name: "draw_cards", args: { spread }, resultSummary: summary, durationMs: 120 } };
 
   // 模拟 RAG

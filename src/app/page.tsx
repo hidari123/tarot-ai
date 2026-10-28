@@ -8,6 +8,7 @@ import KnowledgePanel, { type RagHitView } from "@/components/KnowledgePanel";
 import CitedReading from "@/components/CitedReading";
 import ShareCardButton from "@/components/ShareCard";
 import CardSpread, { type SpreadCard } from "@/components/CardSpread";
+import CardPreviewModal, { type PreviewCard } from "@/components/CardPreviewModal";
 import DialogueFlow, { type FlowEntry } from "@/components/DialogueFlow";
 import CardFan, { type FanCard } from "@/components/CardFan";
 import ReviewCard, { type ReviewData } from "@/components/ReviewCard";
@@ -315,8 +316,10 @@ export default function TarotApp() {
   /** 过程细节区展开态（默认折叠 = 零渲染开销） */
   const [showDetails, setShowDetails] = useState(false);
   /* ---- 真实塔罗仪式流程状态（仅保留仍在使用的部分；仪式对话已并入对话流）---- */
-  /** 逐张解读的牌阵状态 */
+  /** 逐张解读的牌阵状态（顶部时间线与对话流牌阵**共用这一份** → 天然同步） */
   const [spread, setSpread] = useState<SpreadCard[]>([]);
+  /** 放大预览的牌（null = 未打开） */
+  const [previewCard, setPreviewCard] = useState<PreviewCard | null>(null);
   /** 用户插话（方案 C） */
   const [interject, setInterject] = useState("");
   /* ---- 对话流（统一视图）---- */
@@ -399,7 +402,7 @@ export default function TarotApp() {
   /**
    * 回答对话流中的 ask 条目：条目转 settled（用户气泡），并发送 API。
    * card 条目的确认问题走 answerCardConfirm（挂在 card 上）。
-   * continue 型（翻下一张）走 answerNextCard。
+   * flip 型（轮到你翻牌）也走这里 —— 插话内容会被后端记入 interjections。
    */
   const answerFlowAsk = useCallback(async (entryId: string, answer: string) => {
     // 条目固定为用户气泡
@@ -445,32 +448,59 @@ export default function TarotApp() {
   }, [sessionId, updateEntry]);
 
   /**
-   * "翻下一张"：应答后端的 continue 型 HITL。
-   * 找到最近的 kind=continue 且未 settled 的 ask 条目，把它转成气泡再提交。
-   * ⚠️ 用 setEntries 函数式更新读最新状态（不依赖 entries，保持引用稳定供 memo 使用）
+   * 用户亲手翻牌：点牌阵里的"当前该翻的"牌。
+   *
+   * 协议：POST /api/answer { answer: "翻牌" } → 后端翻牌闸门 resolve →
+   * 后端继续 yield card_reveal（含牌面）→ 前端把这张牌置为已翻开。
+   *
+   * ⚠️ 牌面**不是**由这个请求返回的 —— 必须等 card_reveal 事件，
+   *    这样"用户没点就看不到牌面"才是真的（防剧透）。
    */
-  const answerNextCard = useCallback(async () => {
-    setEntries((prev) => {
-      const target = [...prev].reverse().find((e) => e.kind === "ask" && !e.settled && e.ask?.kind === "continue");
-      if (!target) return prev;
-      return prev.map((e) => (e.id === target.id ? { ...e, settled: true, kind: "user", text: "翻下一张 →", ask: undefined } : e));
-    });
+  const flipCard = useCallback(async () => {
     setAsk(null);
     if (!sessionId) return;
     try {
       const res = await fetch("/api/answer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, answer: "翻下一张 →" }),
+        body: JSON.stringify({ sessionId, answer: "翻牌" }),
       });
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "回应失败" }));
-        setError(err.error || "回应发送失败，请重试");
+        const err = await res.json().catch(() => ({ error: "翻牌失败" }));
+        setError(err.error || "翻牌失败，请重试");
       }
     } catch {
-      setError("回应发送失败，请重试");
+      setError("翻牌失败，请重试");
     }
   }, [sessionId]);
+
+  /**
+   * 放大预览已翻开的牌（只是看，不翻回去）。
+   * ⚠️ 牌名/牌面只在此刻可见 —— 未翻开的牌连名字都不给（防剧透）。
+   */
+  const openCardPreview = useCallback((index: number) => {
+    setSpread((prev) => {
+      const c = prev[index];
+      if (!c || !c.flipped) return prev;
+      // 从对话流的牌面条目取牌意（牌阵面板只存了基础信息）
+      setEntries((entriesNow) => {
+        const cardEntry = [...entriesNow].reverse().find((e) => e.kind === "card" && e.card?.cardIndex === index);
+        setPreviewCard({
+          nameZh: c.nameZh,
+          image: c.image,
+          reversed: c.reversed,
+          pos: c.pos,
+          meaning: cardEntry?.card?.meaning,
+          done: c.done,
+        });
+        return entriesNow;
+      });
+      return prev;
+    });
+  }, []);
+
+  /** 关闭放大预览 */
+  const closePreview = useCallback(() => setPreviewCard(null), []);
 
   /** 展开/收起条目 */
   const toggleEntry = useCallback((entryId: string) => {
@@ -553,22 +583,40 @@ export default function TarotApp() {
               setRagHits(p.ragHits ?? []);
               break;
             case "cards":
+              // ⚠️ 防剧透：cards 事件**只含位置**（id/nameZh/image 为空占位），
+              //    牌名与图片要等用户亲手翻开（card_reveal）才补上。
               setCards(p.cards ?? []);
               setFlipped((p.cards ?? []).map(() => false));
-              // 初始化牌阵（逐张解读用）：全部标记为待翻
+              // 初始化牌阵（逐张手动翻牌）：全部牌背，第 0 张为"当前该翻的"
               if (Array.isArray(p.cards) && p.cards.length > 0) {
-                setSpread(
-                  (p.cards as AgentCard[]).map((c, i) => ({
-                    index: i,
+                const initial: SpreadCard[] = (p.cards as AgentCard[]).map((c, i) => ({
+                  index: i,
+                  id: c.id || `slot-${i}`,
+                  nameZh: c.nameZh ?? "",
+                  image: c.image ?? "",
+                  reversed: c.reversed,
+                  pos: c.pos,
+                  done: false,
+                  active: false,
+                  flipped: false,
+                  current: i === 0,
+                }));
+                setSpread(initial);
+                // 牌阵面板插入对话流（常驻条目，后续原地更新状态）
+                pushEntry({
+                  kind: "spread",
+                  spread: initial.map((c) => ({
+                    index: c.index,
                     id: c.id,
                     nameZh: c.nameZh,
                     image: c.image,
                     reversed: c.reversed,
                     pos: c.pos,
-                    done: false,
-                    active: false,
-                  }))
-                );
+                    flipped: c.flipped,
+                    done: c.done,
+                    current: c.current,
+                  })),
+                });
               }
               break;
             case "ask_user":
@@ -627,18 +675,44 @@ export default function TarotApp() {
             case "card_reveal": {
               const r = p.cardReveal;
               if (r) {
-                // 更新牌阵：标记当前牌为 active
+                // 更新牌阵：这张牌已翻开（flipped=true）→ 显示牌面
+                // ⚠️ 牌名/图片此刻才补上（cards 事件只给了位置，防剧透）
                 setSpread((prev) => {
                   const list = prev.length > 0 ? prev : [];
                   const next = list.map((c, i) =>
-                    i === r.cardIndex ? { ...c, done: false, active: true } : { ...c, active: false }
+                    i === r.cardIndex
+                      ? { ...c, flipped: true, active: true, nameZh: r.nameZh, image: r.image, reversed: r.reversed }
+                      : { ...c, active: false }
                   );
                   if (next.length === 0) {
                     // 首次收到：构造完整牌阵（当前牌 + 后续待翻）
-                    return [{ ...r, index: r.cardIndex, done: false, active: true } as SpreadCard];
+                    return [{ ...r, index: r.cardIndex, done: false, active: true, flipped: true, current: false } as SpreadCard];
                   }
                   return next;
                 });
+                // 牌面已下发 → 同步到牌阵面板条目（牌名/牌意此时才可见）
+                setEntries((prev) =>
+                  prev.map((e) =>
+                    e.kind === "spread" && e.spread
+                      ? {
+                          ...e,
+                          spread: e.spread.map((c) =>
+                            c.index === r.cardIndex
+                              ? { ...c, flipped: true, nameZh: r.nameZh, image: r.image, reversed: r.reversed, meaning: r.meaning }
+                              : c
+                          ),
+                        }
+                      : e
+                  )
+                );
+                // 翻牌闸门的提示面板已过期（用户是点牌完成的，不是点面板）→ 收掉它
+                setEntries((prev) =>
+                  prev.map((e) =>
+                    e.kind === "ask" && !e.settled && e.ask?.kind === "flip"
+                      ? { ...e, settled: true, kind: "teller", text: "✦ 你翻开了这张牌", ask: undefined }
+                      : e
+                  )
+                );
                 // ---- 对话流：新建 card 条目（念牌内容直接带上）----
                 const entryId = nextEntryId();
                 pushEntry({
@@ -673,6 +747,14 @@ export default function TarotApp() {
               const cr = p.cardReading;
               if (cr) {
                 setSpread((prev) => prev.map((c, i) => (i === cr.cardIndex ? { ...c, done: true, active: false } : c)));
+                // 牌阵面板同步：这张牌解读完成（金框 + ✓）
+                setEntries((prev) =>
+                  prev.map((e) =>
+                    e.kind === "spread" && e.spread
+                      ? { ...e, spread: e.spread.map((c) => (c.index === cr.cardIndex ? { ...c, done: true } : c)) }
+                      : e
+                  )
+                );
                 // ---- 对话流：标记该牌解读完成（保持展开，让用户读完全文；
                 //      折叠为摘要在下一张翻牌时自动执行 / 或用户手动收起）----
                 setEntries((prev) =>
@@ -682,6 +764,25 @@ export default function TarotApp() {
                   })
                 );
                 deltaTargetRef.current = null;
+              }
+              break;
+            }
+            /* ---- 逐张翻牌闸门：第 N 张可以翻了（⚠️ 事件不含牌面，防剧透）---- */
+            case "card_flip_ready": {
+              const fr = p.cardFlipReady;
+              if (fr) {
+                // 顶部时间线：标记该张为"当前该翻的"，其余取消 current
+                setSpread((prev) =>
+                  prev.map((c, i) => (i === fr.cardIndex ? { ...c, current: true } : { ...c, current: false }))
+                );
+                // 牌阵面板同步（此时牌名仍未下发 —— 未翻开的牌显示 "？"）
+                setEntries((prev) =>
+                  prev.map((e) =>
+                    e.kind === "spread" && e.spread
+                      ? { ...e, spread: e.spread.map((c) => (c.index === fr.cardIndex ? { ...c, current: true } : { ...c, current: false })) }
+                      : e
+                  )
+                );
               }
               break;
             }
@@ -1078,8 +1179,10 @@ export default function TarotApp() {
           transition={{ duration: 0.6 }}
           className="w-full max-w-4xl z-10 flex flex-col items-center"
         >
-          {/* ---------- 牌阵横条（固定顶部，进度可见）---------- */}
-          {spread.length > 0 && <CardSpread cards={spread} />}
+          {/* ---------- 牌阵横条（固定顶部，进度可见；与对话流牌阵同一份状态）---------- */}
+          {spread.length > 0 && (
+            <CardSpread cards={spread} onFlipCard={flipCard} onPreview={openCardPreview} />
+          )}
 
           {/* ---------- Agent 状态条 ---------- */}
           {(phase || streaming) && (
@@ -1113,8 +1216,9 @@ export default function TarotApp() {
             entries={entries}
             onAskAnswer={answerFlowAsk}
             onCardAnswer={answerCardConfirm}
-            onNextCard={answerNextCard}
             onToggleEntry={toggleEntry}
+            onFlipCard={flipCard}
+            onPreviewCard={openCardPreview}
             streaming={streaming}
           />
 
@@ -1313,6 +1417,9 @@ export default function TarotApp() {
       <footer className="mt-auto pt-12 pb-6 text-center text-purple-400/25 text-xs tracking-[0.25em] z-10">
         MYSTIC TAROT · MULTI-AGENT × HYBRID RAG (BM25+VECTOR) × HITL × REFLEXION × SSE
       </footer>
+
+      {/* 牌面放大预览（点击已翻开的牌 → 只是看，不翻回去） */}
+      <CardPreviewModal card={previewCard} onClose={closePreview} />
     </main>
   );
 }

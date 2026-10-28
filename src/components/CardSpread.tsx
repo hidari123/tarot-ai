@@ -3,12 +3,16 @@
 import { motion } from "framer-motion";
 
 /**
- * 逐张解读的牌阵视图 —— 真实塔罗仪式的"牌阵"
+ * 牌阵时间线（顶部固定条）—— 过去 / 当下 / 未来
  *
- * 状态机：
- *   待翻 ○  →  当前翻牌 ◉（放大 + 呼吸光晕）→  已解读 ✓（金色勾）
+ * 状态机（逐张手动翻牌）：
+ *   未翻开 ○  →  当前该翻 ◉（呼吸光 + 可点）→  已翻开 ●（牌面朝上）
+ *                                                  →  已解读 ✓（金框 + 勾）
  *
- * 牌阵从左到右：过去 / 当下 / 未来（与解读顺序一致）
+ * ⚠️ 点击语义（**没有翻转功能**）：
+ *   - 点"当前该翻的"牌 → 通知外层去翻牌（POST /api/answer）
+ *   - 点"已翻开"的牌   → 打开放大预览（modal），只是看，不翻回去
+ * 顶部与对话流里的牌阵共用同一份 state，翻一张两边同步。
  */
 
 export interface SpreadCard {
@@ -18,16 +22,22 @@ export interface SpreadCard {
   image: string;
   reversed: boolean;
   pos: string;
-  /** 已完成解读 */
+  /** 已完成解读（解读结束后 → 金框 + ✓） */
   done: boolean;
-  /** 正在翻这张 */
+  /** 正在翻这张（保留兼容，实际由 flipped 承担） */
   active: boolean;
+  /** 用户已亲手翻开（→ 显示牌面；未翻开 = 牌背 + ？） */
+  flipped: boolean;
+  /** 是"当前该翻的"那张（→ 可点 + 呼吸光提示） */
+  current: boolean;
 }
 
-export default function CardSpread({ cards, onFlip }: {
+export default function CardSpread({ cards, onFlipCard, onPreview }: {
   cards: SpreadCard[];
-  /** 点击已解读的牌可回看该段解读 */
-  onFlip?: (index: number) => void;
+  /** 点击"当前该翻的"牌 → 触发翻牌 */
+  onFlipCard?: (index: number) => void;
+  /** 点击"已翻开"的牌 → 放大预览 */
+  onPreview?: (index: number) => void;
 }) {
   if (cards.length === 0) return null;
   const doneCount = cards.filter((c) => c.done).length;
@@ -42,7 +52,7 @@ export default function CardSpread({ cards, onFlip }: {
             <span
               key={c.id + c.index}
               className={`w-6 h-1 rounded-full transition-all ${
-                c.done ? "bg-amber-400/80" : c.active ? "bg-purple-400/70 animate-pulse" : "bg-purple-800/50"
+                c.done ? "bg-amber-400/80" : c.flipped ? "bg-purple-400/70" : "bg-purple-800/50"
               }`}
             />
           ))}
@@ -65,7 +75,7 @@ export default function CardSpread({ cards, onFlip }: {
             {/* 位置徽章 */}
             <span
               className={`text-[10px] md:text-xs px-2 py-0.5 rounded-full border mb-2 tracking-wider ${
-                c.active
+                c.current
                   ? "border-purple-400/60 text-purple-200 bg-purple-900/40"
                   : c.done
                     ? "border-amber-400/40 text-amber-300/80 bg-amber-900/20"
@@ -75,27 +85,31 @@ export default function CardSpread({ cards, onFlip }: {
               {c.pos}
             </span>
 
-            {/* 牌面：未揭示 = 纯牌背（剧透防护——选完牌不该一眼看到三张是什么）；
-                active（正在翻）或 done（已解读）才显示牌面 */}
+            {/* 牌面：未翻开 = 纯牌背（防剧透）；已翻开 = 牌面（永久朝上，不再翻回） */}
             <motion.button
               type="button"
-              onClick={() => c.done && onFlip?.(c.index)}
-              whileHover={c.done ? { scale: 1.05, y: -3 } : undefined}
+              onClick={() => {
+                if (c.flipped) onPreview?.(c.index);
+                else if (c.current) onFlipCard?.(c.index);
+              }}
+              whileHover={c.flipped || c.current ? { scale: 1.05, y: -3 } : undefined}
               animate={
-                c.active
+                c.current
                   ? { scale: [1, 1.04, 1], boxShadow: ["0 0 0px rgba(168,85,247,0)", "0 0 26px rgba(168,85,247,0.55)", "0 0 0px rgba(168,85,247,0)"] }
                   : { scale: 1 }
               }
-              transition={c.active ? { duration: 2.2, repeat: Infinity } : { duration: 0.2 }}
+              transition={c.current ? { duration: 2.2, repeat: Infinity } : { duration: 0.2 }}
               className={`relative w-full aspect-[2/3] rounded-xl overflow-hidden border transition-all ${
-                c.active
-                  ? "border-purple-400/70 shadow-[0_0_30px_rgba(168,85,247,0.35)]"
+                c.current
+                  ? "border-purple-400/70 shadow-[0_0_30px_rgba(168,85,247,0.35)] cursor-pointer"
                   : c.done
-                    ? "border-amber-400/45 cursor-pointer hover:border-amber-300/70"
-                    : "border-purple-800/40"
+                    ? "border-amber-400/55 cursor-pointer hover:border-amber-300/80"
+                    : c.flipped
+                      ? "border-purple-500/40 cursor-zoom-in hover:border-purple-400/60"
+                      : "border-purple-800/40"
               }`}
             >
-              {c.active || c.done ? (
+              {c.flipped && c.image ? (
                 <motion.div
                   initial={{ rotateY: 180, opacity: 0.6 }}
                   animate={{ rotateY: 0, opacity: 1 }}
@@ -116,6 +130,12 @@ export default function CardSpread({ cards, onFlip }: {
                     <span className="text-xl text-purple-300/70">✦</span>
                   </div>
                   <div className="absolute inset-1.5 rounded-lg border border-purple-500/25" />
+                  {/* 当前该翻的牌：点我提示 */}
+                  {c.current && (
+                    <span className="absolute bottom-1.5 inset-x-0 text-center text-[10px] text-purple-200/80 tracking-wider">
+                      点我翻开
+                    </span>
+                  )}
                 </div>
               )}
               {c.done && (
@@ -125,14 +145,14 @@ export default function CardSpread({ cards, onFlip }: {
               )}
             </motion.button>
 
-            {/* 牌名：同样只在揭示后显示（未揭示显示 ?） */}
+            {/* 牌名：翻开才显示（未翻开显示 ?） */}
             <span
               className={`mt-2 text-xs md:text-sm text-center leading-tight ${
-                c.done ? "text-amber-200/90" : c.active ? "text-purple-100/80" : "text-purple-400/35"
+                c.done ? "text-amber-200/90" : c.flipped ? "text-purple-100/85" : "text-purple-400/35"
               }`}
               style={{ fontFamily: "'Ma Shan Zheng', serif" }}
             >
-              {c.active || c.done ? (
+              {c.flipped ? (
                 <>
                   {c.nameZh}
                   {c.reversed && <span className="text-[9px] block text-purple-300/50">逆位</span>}
