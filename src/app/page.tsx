@@ -935,6 +935,15 @@ export default function TarotApp() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, followup: f }),
       });
+      if (!res.ok && res.status === 410) {
+        // ⚠️ 会话已被 TTL 清理/服务重启丢失：立即清掉本地会话记录，
+        // 让"可追问"面板消失（用户实测报告：过期了还挂在页面上）。
+        // 错误文案由下方 setError 呈现，"重新开始"是唯一出路。
+        try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
+        setSessionId("");
+        setError("这场占卜已过期（超过 30 分钟），请重新开始");
+        return;
+      }
       await consumeStream(res);
     } catch (e) {
       setError(e instanceof Error ? e.message : "追问失败");
@@ -1093,9 +1102,22 @@ export default function TarotApp() {
               开始占卜
             </motion.button>
           </div>
-          {error && <p className="mt-3 text-purple-400/90 text-sm text-center sm:text-left">{error}</p>}
-          {/* 上次会话可继续（刷新后 sessionId 已从 localStorage 恢复） */}
-          {sessionId && !streaming && (
+          {error && (
+            <div className="mt-3 flex items-center gap-2 text-purple-400/90 text-sm text-center sm:text-left">
+              <span>⚠️</span>
+              <p className="flex-1">{error}</p>
+              {/* 过期/出错时给唯一出路：一键重开（清空会话与本地记录） */}
+              <button
+                onClick={restart}
+                className="shrink-0 px-4 py-1.5 rounded-xl border border-purple-400/40 text-purple-200 text-xs hover:bg-purple-900/30 transition-all"
+              >
+                重新开始
+              </button>
+            </div>
+          )}
+          {/* 上次会话可继续（刷新后 sessionId 已从 localStorage 恢复）。
+              ⚠️ !error：追问撞 410 过期后立即隐藏（session 已清，留着必失败） */}
+          {sessionId && !streaming && !error && (
             <div className="mt-4 rounded-2xl border border-purple-500/25 bg-purple-950/20 px-4 py-3 text-center">
               <p className="text-xs text-purple-300/60 mb-2">检测到上次未完结的占卜，可以直接追问（不用重新走仪式）</p>
               <div className="flex gap-2 justify-center">
