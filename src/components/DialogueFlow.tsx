@@ -298,7 +298,7 @@ const CardBlock = memo(function CardBlock({
 /* ---------------- 牌阵面板（对话流里的三张牌） ---------------- */
 
 /**
- * 牌阵面板 —— 用户逐张亲手翻牌的主界面
+ * 牌阵面板 —— 用户逐张亲手翻牌的主界面（sticky 吸底 · 可折叠）
  *
  * 为什么在对话流里而不是只在顶部：
  *   牌是这场占卜的**舞台**，用户与牌的互动必须发生在叙事流里
@@ -308,29 +308,91 @@ const CardBlock = memo(function CardBlock({
  * 点击语义（无翻转功能）：
  *   - 点"当前该翻的"牌 → onFlipCard(index) → 后端闸门放行 → 牌面下发
  *   - 点"已翻开"的牌   → onPreview(index) → 放大预览（只是看）
+ *
+ * ⚠️ 折叠设计（方案 A）：
+ *   牌阵常驻底部会一直占空间，对话区被挤窄。改为：
+ *   - 常态：**细条**（~44px）——「🃏 命运之牌 1/3 ▾」，点它展开
+ *   - 有待翻的牌（current）→ **自动展开**（用户该翻牌时必须看得到）
+ *   - 全部翻完 → 自动收起（不再需要入口）
+ *   这样既满足"翻下一张不用往回翻"，又不长期挤压对话正文。
  */
 const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview }: {
   cards: FlowSpreadCard[];
   onFlipCard: (index: number) => void;
   onPreview: (index: number) => void;
 }) {
-  if (cards.length === 0) return null;
+  /** 手动展开/收起（用户点细条切换） */
+  const [manualOpen, setManualOpen] = useState(false);
+  /** 用户是否手动操作过（手动操作后不再自动收起/展开，尊重用户意图） */
+  const [userTouched, setUserTouched] = useState(false);
+
   const doneCount = cards.filter((c) => c.done).length;
-  const nextCard = cards.find((c) => c.current);
+  const hasCurrent = cards.some((c) => c.current);
+  const allDone = doneCount >= cards.length;
+
+  // 自动展开/收起：**渲染期状态调整**（React 官方推荐模式，替代
+  // useEffect + setState —— 后者会多渲染一轮，且 eslint 明确禁止）。
+  //   有待翻的牌 → 展开（用户该翻牌时必须看得到）
+  //   全部翻完   → 收起（不再需要入口）
+  // ⚠️ 用户手动操作过就不再自动切换（尊重用户意图）
+  if (!userTouched) {
+    const wantOpen = hasCurrent;
+    if (manualOpen !== wantOpen) setManualOpen(wantOpen);
+  }
+
+  if (cards.length === 0) return null;
+  const open = manualOpen;
+
+  /* ---- 折叠态：一条细条 ---- */
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          setUserTouched(true);
+          setManualOpen(true);
+        }}
+        className="w-full flex items-center gap-2 rounded-xl border border-amber-500/20 bg-[#0d0819]/85 backdrop-blur-md px-3 py-2 text-left hover:border-amber-400/40 transition-colors"
+      >
+        <span className="text-sm">🃏</span>
+        <span className="text-[11px] tracking-[0.18em] text-amber-200/70">命运之牌</span>
+        <span className="text-[10px] text-purple-300/40 font-mono">{doneCount}/{cards.length}</span>
+        {/* 已翻开的牌缩略点（一眼看出翻了几张） */}
+        <span className="ml-1 flex gap-1">
+          {cards.map((c) => (
+            <span
+              key={c.id + c.index}
+              className={`w-1.5 h-1.5 rounded-full ${
+                c.done ? "bg-amber-400/90" : c.flipped ? "bg-purple-400/70" : "bg-purple-800/60"
+              }`}
+            />
+          ))}
+        </span>
+        <span className="ml-auto text-[10px] text-purple-300/45">展开 ▴</span>
+      </button>
+    );
+  }
 
   return (
-    /* ⚠️ sticky 吸底版：横向紧凑布局。
-     * 牌阵常驻在对话流底部，必须**少占垂直空间**，
-     * 否则解读正文被挤到只剩一条缝（滚动区 max-h-[62dvh]）。
-     * 布局：标题行（进度）→ 三张牌横排 → 一行提示，高度可控。 */
+    /* 展开态：横向紧凑布局（sticky 吸底，高度可控） */
     <div className="w-full rounded-2xl border border-amber-500/25 bg-gradient-to-b from-amber-950/10 to-[#0d0819]/85 backdrop-blur-md px-3 py-2">
-      {/* 标题 + 进度 */}
+      {/* 标题 + 进度 + 收起 */}
       <div className="flex items-center gap-2 mb-1.5">
         <span className="text-sm">🃏</span>
         <span className="text-[10px] tracking-[0.2em] text-amber-200/70">命运之牌</span>
-        <span className="ml-auto text-[10px] text-purple-300/40 font-mono">
+        <span className="text-[10px] text-purple-300/40 font-mono">
           {doneCount}/{cards.length}
         </span>
+        <button
+          type="button"
+          onClick={() => {
+            setUserTouched(true);
+            setManualOpen(false);
+          }}
+          className="ml-auto text-[10px] text-purple-300/45 hover:text-purple-200/80 transition-colors"
+        >
+          收起 ▾
+        </button>
       </div>
 
       {/* 三张牌（横向紧凑） */}
@@ -437,9 +499,9 @@ const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview }: 
 
       {/* 提示 */}
       <p className="mt-1.5 text-center text-[10px] text-purple-300/50 leading-relaxed">
-        {nextCard
+        {hasCurrent
           ? "点开那张发光的牌，占卜师会为你念牌"
-          : doneCount >= cards.length
+          : allDone
             ? "三张牌都已讲透"
             : "等你亲手翻开下一张"}
       </p>
@@ -503,11 +565,20 @@ export default function DialogueFlow({
   //    滚到该问题（只滚一次；delta 期间不再拽动视图）
   // ② 流式 delta 增长 → 仅当用户在底部时跟随（不拽动阅读位置）
   // ③ 用户上滚后不强制跟随，但新问题到来时恢复（回①）
-  const pendingAsk = entries.find(
-    (e) =>
-      (e.kind === "ask" && !e.settled) ||
-      (e.kind === "card" && e.card && !e.card.answer && e.card.question)
-  );
+  //
+  // ⚠️ 必须**从后往前找**（最新的未回答条目）：
+  //    此前用 entries.find()（从前往后）会拿到**最旧**的那个未 settle 条目 ——
+  //    用户回答完呼召三问、翻完牌后，流里仍残留着早先的未 settle ask，
+  //    find 命中它 → scrollToEntry 把视图拽回对话上方那个陈旧面板，
+  //    用户以为"选完就停住了"（实测报告）。
+  //    同项目 confirmFanSelection 也是 reverse().findIndex() —— 保持一致。
+  const pendingAsk = [...entries]
+    .reverse()
+    .find(
+      (e) =>
+        (e.kind === "ask" && !e.settled) ||
+        (e.kind === "card" && e.card && !e.card.answer && e.card.question)
+    );
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
