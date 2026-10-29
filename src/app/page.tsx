@@ -464,7 +464,27 @@ export default function TarotApp() {
     Promise.resolve().then(() => {
       try {
         const saved = localStorage.getItem("tarot:sessionId");
-        if (saved) setSessionId((cur) => (cur ? cur : saved));
+        if (!saved) return;
+        // ⚠️ 会话存活探测（用户实测报告的 bug）：
+        // 此前只要 localStorage 有 sessionId 就显示"可追问"面板，
+        // 但内存会话有 30min TTL——过期后面板还在，用户追问直接
+        // 撞"会话已过期，请重新开始占卜"。
+        // 现在挂载时用恢复端点探测：404 = 会话已消失 → 清掉本地
+        // 记录并隐藏面板（sessionId 置空）；活着才回填。
+        fetch(`/api/session/${saved}`)
+          .then(async (r) => {
+            if (r.ok) {
+              setSessionId((cur) => (cur ? cur : saved));
+            } else {
+              // 会话已过期/不存在：清本地，别再展示"可追问"入口
+              try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
+              setSessionId("");
+            }
+          })
+          .catch(() => {
+            // 探测失败（网络/服务未就绪）：保守起见不回填（宁可让用户重新开始）
+            try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
+          });
       } catch { /* 隐私模式 */ }
     });
   }, []);
