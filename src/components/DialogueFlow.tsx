@@ -316,10 +316,17 @@ const CardBlock = memo(function CardBlock({
  *   - 全部翻完 → 自动收起（不再需要入口）
  *   这样既满足"翻下一张不用往回翻"，又不长期挤压对话正文。
  */
-const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview }: {
+const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview, waitingUser }: {
   cards: FlowSpreadCard[];
   onFlipCard: (index: number) => void;
   onPreview: (index: number) => void;
+  /**
+   * 是否正在等用户回应（false = 模型正在输出）。
+   * ⚠️ 不能用 streaming 判断：streaming 在整个 SSE 期间都是 true。
+   * 用 phase==="wait_user" 才准：那时模型停了，正文不占地方 → 牌阵可展开；
+   * 模型正在说话时（phase != wait_user）→ 牌阵收起，不挡正文。
+   */
+  waitingUser?: boolean;
 }) {
   /** 手动展开/收起（用户点细条切换） */
   const [manualOpen, setManualOpen] = useState(false);
@@ -332,11 +339,14 @@ const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview }: 
 
   // 自动展开/收起：**渲染期状态调整**（React 官方推荐模式，替代
   // useEffect + setState —— 后者会多渲染一轮，且 eslint 明确禁止）。
-  //   有待翻的牌 → 展开（用户该翻牌时必须看得到）
-  //   全部翻完   → 收起（不再需要入口）
+  //
+  // 展开条件：**该翻牌了（hasCurrent）且模型此刻没在说话（!waitingUser）**
+  //   - card_flip_ready 到达 → hasCurrent=true → 自动展开（用户该翻牌时看得到）
+  //   - card_reveal 到达   → current 被清空 → 自动收起（不挡解读正文）
+  //   - 全部翻完           → 收起（不再需要入口）
   // ⚠️ 用户手动操作过就不再自动切换（尊重用户意图）
   if (!userTouched) {
-    const wantOpen = hasCurrent;
+    const wantOpen = hasCurrent && !waitingUser;
     if (manualOpen !== wantOpen) setManualOpen(wantOpen);
   }
 
@@ -519,6 +529,7 @@ export default function DialogueFlow({
   onFlipCard,
   onPreviewCard,
   streaming,
+  waitingUser,
 }: {
   entries: FlowEntry[];
   /** 回答 ask 条目（问题面板） */
@@ -533,6 +544,8 @@ export default function DialogueFlow({
   onPreviewCard: (index: number) => void;
   /** 是否有流式输出进行中（影响自动滚动） */
   streaming: boolean;
+  /** 是否正在等用户回应（模型停下 = 牌阵可展开；模型在说话 = 牌阵收起） */
+  waitingUser?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   /** 用户是否手动上滚（暂停流式跟随） */
@@ -678,6 +691,7 @@ export default function DialogueFlow({
             cards={spreadEntry.spread ?? []}
             onFlipCard={onFlipCard}
             onPreview={onPreviewCard}
+            waitingUser={waitingUser}
           />
         </div>
       )}
@@ -884,10 +898,17 @@ const ScrollCard = memo(function ScrollCard({ entry, onToggle }: { entry: FlowEn
       </button>
       <AnimatePresence initial={false}>
         {open && entry.text && (
+          /* ⚠️ 不用 height: 0→auto 动画（会截断内容）。
+           * 命运之卷的正文是**流式追加**的（delta 不断往 entry.text 加字），
+           * 而 Framer Motion 的 height:auto 只在挂载时测量一次 ——
+           * 之后内容变长，容器高度不重测，多出的部分被父级 overflow-hidden
+           * 裁掉（用户实测：上半截是黑的，鼠标移过去框选才"刷"出来）。
+           * 改用 opacity + translateY：不影响布局高度，永不截断。 */
           <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.22 }}
             className="px-4 pb-4"
           >
             <p className="text-sm md:text-base text-purple-50/92 leading-relaxed whitespace-pre-wrap" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>

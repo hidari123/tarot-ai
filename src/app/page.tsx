@@ -678,12 +678,17 @@ export default function TarotApp() {
               if (r) {
                 // 更新牌阵：这张牌已翻开（flipped=true）→ 显示牌面
                 // ⚠️ 牌名/图片此刻才补上（cards 事件只给了位置，防剧透）
+                // ⚠️ 同时清掉所有 current：这张已经翻开了，"当前该翻的"
+                //    应该是**下一张**（由随后的 card_flip_ready 置上）。
+                //    不清的话 current 会一直挂在刚翻开的这张上 →
+                //    牌阵面板在"模型正在输出解读"期间也保持展开，挡住正文
+                //    （用户诉求：大模型输出时自动收起翻牌面板）。
                 setSpread((prev) => {
                   const list = prev.length > 0 ? prev : [];
                   const next = list.map((c, i) =>
                     i === r.cardIndex
-                      ? { ...c, flipped: true, active: true, nameZh: r.nameZh, image: r.image, reversed: r.reversed }
-                      : { ...c, active: false }
+                      ? { ...c, flipped: true, active: true, current: false, nameZh: r.nameZh, image: r.image, reversed: r.reversed }
+                      : { ...c, active: false, current: false }
                   );
                   if (next.length === 0) {
                     // 首次收到：构造完整牌阵（当前牌 + 后续待翻）
@@ -692,6 +697,9 @@ export default function TarotApp() {
                   return next;
                 });
                 // 牌面已下发 → 同步到牌阵面板条目（牌名/牌意此时才可见）
+                // ⚠️ 同时清掉 current（与上面 setSpread 一致）：
+                //    翻开的这张不再是"当前该翻的"，牌阵面板据此自动收起，
+                //    等下一张的 card_flip_ready 到达再自动展开。
                 setEntries((prev) =>
                   prev.map((e) =>
                     e.kind === "spread" && e.spread
@@ -699,8 +707,8 @@ export default function TarotApp() {
                           ...e,
                           spread: e.spread.map((c) =>
                             c.index === r.cardIndex
-                              ? { ...c, flipped: true, nameZh: r.nameZh, image: r.image, reversed: r.reversed, meaning: r.meaning }
-                              : c
+                              ? { ...c, flipped: true, current: false, nameZh: r.nameZh, image: r.image, reversed: r.reversed, meaning: r.meaning }
+                              : { ...c, current: false }
                           ),
                         }
                       : e
@@ -1238,6 +1246,7 @@ export default function TarotApp() {
             onFlipCard={flipCard}
             onPreviewCard={openCardPreview}
             streaming={streaming}
+            waitingUser={phase === "wait_user"}
           />
 
           {/* 选牌扇面（cardSelection 是特殊交互，保留在流外） */}

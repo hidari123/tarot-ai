@@ -56,7 +56,18 @@ const agent = read("src/lib/tarot-agent.ts");
 const flipReadyCheck =
   /cardFlipReady:\s*\{\s*cardIndex:\s*idx,\s*total:[^}]*pos\s*\}/s.test(agent);
 console.log(`\n后端 cardFlipReady 只含索引/位置: ${flipReadyCheck ? "✅" : "❌"}`);
-const gateCheck = /card_flip_ready/.test(agent) && /await waitUserAnswer\(session, flipPrompt/.test(agent);
+// ⚠️ 闸门等待必须被 await（否则后端不等用户就往下跑）。
+//    2026-10 改造：为了修"前端抢跑 409"，把
+//      await waitUserAnswer(session, flipPrompt, ...)
+//    改成
+//      const flipWait = waitUserAnswer(session, flipPrompt, ...);  // 同步设 pendingAsk
+//      yield { card_flip_ready };                                   // 再通知前端可点
+//      const flipResult = await flipWait;                          // 仍然是 await
+//    两种写法都要认（语义相同：闸门一定被等待）。
+const gateCheck =
+  /card_flip_ready/.test(agent) &&
+  (/await waitUserAnswer\(session, flipPrompt/.test(agent) ||
+    /const flipWait = waitUserAnswer\(session, flipPrompt[\s\S]*?await flipWait/.test(agent));
 console.log(`后端翻牌闸门 await: ${gateCheck ? "✅" : "❌"}`);
 
 process.exit(pass === checks.length && flipReadyCheck && gateCheck ? 0 : 2);
