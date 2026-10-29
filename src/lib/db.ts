@@ -116,6 +116,12 @@ try {
   if (!cols.some((c) => c.name === "prompt_version")) {
     db.exec(`ALTER TABLE sessions ADD COLUMN prompt_version TEXT NOT NULL DEFAULT ''`);
   }
+  // P1-④：state_json —— 会话**完整状态**快照。
+  // ⚠️ 用途：进程重启后恢复未完结的占卜（内存 Map 会在重启时全丢）。
+  //    没有它，用户刷新/服务重启后必须从头再走一遍仪式。
+  if (!cols.some((c) => c.name === "state_json")) {
+    db.exec(`ALTER TABLE sessions ADD COLUMN state_json TEXT NOT NULL DEFAULT ''`);
+  }
 } catch { /* 迁移失败不阻断 */ }
 
 /* ---------------- 写入 API ---------------- */
@@ -167,6 +173,64 @@ export function finishSession(id: string, review: SessionRow["review"]): void {
 export function failSession(id: string, reason = "unknown"): void {
   db.prepare(`UPDATE sessions SET status = 'error', error_reason = ?, finished_at = ? WHERE id = ?`)
     .run(reason, Date.now(), id);
+}
+
+/* ------------------------------------------------------------------ */
+/* 会话状态快照（P1-④）                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 保存会话的完整状态快照。
+ *
+ * ⚠️ 为什么要落库：
+ *   会话热状态在**进程内存**里（Map）。进程重启（部署/崩溃/OOM）
+ *   全部丢失 —— 用户刷新页面看到的是"会话已过期"，
+ *   十几分钟的仪式流程前功尽弃。
+ *   快照让重启后能恢复，用户体验从"重头再来"变成"接着聊"。
+ *
+ * ⚠️ 写入频率是权衡：每次事件都写太频繁（SQLite 写放大），
+ *   什么都不写又失去意义 —— 用"脏标记 + 定时/关键点落库"折中。
+ */
+export function saveSessionState(id: string, state: unknown): void {
+  try {
+    db.prepare(`UPDATE sessions SET state_json = ? WHERE id = ?`)
+      .run(JSON.stringify(state), id);
+  } catch { /* 快照失败不阻断主线 */ }
+}
+
+/**
+ * 读取会话快照（进程重启后恢复用）。
+ *
+ * @returns 快照对象；不存在/解析失败返回 null
+ */
+export function loadSessionState(id: string): unknown | null {
+  try {
+    const row = db.prepare(`SELECT state_json FROM sessions WHERE id = ?`).get(id) as
+      | { state_json: string }
+      | undefined;
+    if (!row?.state_json) return null;
+    return JSON.parse(row.state_json);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 列出所有有快照的**未完成**会话（启动时批量恢复）。
+ *
+ * ⚠️ 只恢复 status='running' 的 —— 已完成/已失败的会话恢复没有意义
+ *    （用户会看到完整的解读，不需要再跑一遍）。
+ */
+export function listRecoverableSessions(olderThanMs = 0): Array<{ id: string; state_json: string }> {
+  try {
+    const cutoff = Date.now() - olderThanMs;
+    return db.prepare(
+      `SELECT id, state_json FROM sessions
+       WHERE status = 'running' AND state_json != '' AND created_at > ?`
+    ).all(cutoff) as Array<{ id: string; state_json: string }>;
+  } catch {
+    return [];
+  }
 }
 
 /**

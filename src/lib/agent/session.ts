@@ -37,17 +37,83 @@ const SESSION_TTL = 30 * 60 * 1000;
  * 进程重启会让内存会话全部丢失，但 SQLite 里这些会话还停在 running。
  * 启动时把"创建于 30 分钟前且仍是 running"的标记为 error（stale_timeout），
  * 避免 dashboard 出现永远运行中的僵尸数据。
+ *
+ * ⚠️ P1-④ 改进：先尝试**恢复**有快照的会话（恢复成功就不该标 error），
+ *    只对"既没快照、也超时的"才标记僵死。
  */
 function reconcileOnBoot(): void {
   const g = globalThis as unknown as { __tarotReconciled__?: boolean };
   if (g.__tarotReconciled__) return;
   g.__tarotReconciled__ = true;
+
+  // ---- ① 先恢复有快照的会话 ----
+  let restored = 0;
+  try {
+    const rows = db.listRecoverableSessions(0);
+    for (const row of rows) {
+      try {
+        const snap = JSON.parse(row.state_json) as SessionSnapshot;
+        if (!snap?.id) continue;
+        // ⚠️ 只恢复"还在 TTL 内"的会话 —— 超过 30 分钟的恢复出来也没意义
+        if (Date.now() - (snap.lastActive ?? 0) > SESSION_TTL) continue;
+        if (restoreSession(snap)) restored++;
+      } catch { /* 单条恢复失败不影响其他 */ }
+    }
+    if (restored > 0) console.error(`[session-restore] 从快照恢复 ${restored} 个未完结会话`);
+  } catch (e) {
+    console.error("[session-restore] 失败:", e instanceof Error ? e.message : e);
+  }
+
+  // ---- ② 再把真正僵死的标记为 error ----
   try {
     const n = db.reconcileStaleSessions(SESSION_TTL);
     if (n > 0) console.error(`[session-reconcile] 清理 ${n} 个僵死会话（进程重启遗留）`);
   } catch (e) {
     console.error("[session-reconcile] 失败:", e instanceof Error ? e.message : e);
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* 状态快照（P1-④）                                                    */
+/* ------------------------------------------------------------------ */
+
+/** 会话是否需要落快照（脏标记） */
+const dirty = new Set<string>();
+
+/** 标记会话状态已变更（下次 persistAll 时落库） */
+export function markSessionDirty(id: string): void {
+  dirty.add(id);
+}
+
+/**
+ * 把脏会话的快照落库。
+ *
+ * ⚠️ 频率是权衡：
+ *   - 每次事件都写 → SQLite 写放大（一场占卜 ~50 事件）
+ *   - 从不写 → 重启丢状态
+ *   折中：标脏 + 定时（10s）+ 关键点（翻牌/解读完成/收束）触发。
+ */
+export function persistDirtySessions(): number {
+  let n = 0;
+  for (const id of dirty) {
+    const s = sessions.get(id);
+    if (!s) { dirty.delete(id); continue; }
+    try {
+      db.saveSessionState(id, snapshotSession(s));
+      n++;
+    } catch { /* 落库失败不阻断 */ }
+    dirty.delete(id);
+  }
+  return n;
+}
+
+// 定时落盘（10 秒一次）
+const gPersist = globalThis as unknown as { __tarotPersistTimer__?: NodeJS.Timeout };
+if (!gPersist.__tarotPersistTimer__) {
+  gPersist.__tarotPersistTimer__ = setInterval(() => {
+    try { persistDirtySessions(); } catch { /* ignore */ }
+  }, 10_000);
+  gPersist.__tarotPersistTimer__.unref?.(); // 不阻塞进程退出
 }
 
 /** 逐出过期的会话（落库收尾 → 删除内存态） */
@@ -91,6 +157,9 @@ export function createSession(question: string, personaId?: string, userKey?: st
   };
   sessions.set(id, session);
   db.insertSession(id, question, persona.id, []);
+  // 新会话立刻落一次快照（保证进程在第一次事件前崩溃也能恢复）
+  dirty.add(id);
+  try { db.saveSessionState(id, snapshotSession(session)); } catch { /* ignore */ }
   return session;
 }
 
@@ -208,6 +277,8 @@ export function restoreSession(snap: SessionSnapshot): AgentSession | null {
       plan: snap.plan,
       agentMode: snap.agentMode,
       flippedCardIdx: snap.flippedCardIdx,
+      // ⚠️ 标记：恢复的会话没有 pendingAsk（Promise 不可序列化）
+      restoredFromSnapshot: true,
     };
     sessions.set(s.id, s);
     return s;

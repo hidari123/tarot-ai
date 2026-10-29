@@ -38,6 +38,8 @@ export {
   cleanExpired,
   snapshotSession,
   restoreSession,
+  markSessionDirty,
+  persistDirtySessions,
   type SessionSnapshot,
 } from "./session";
 export { waitUserAnswer, isHitlGone } from "./hitl";

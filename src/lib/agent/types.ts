@@ -247,6 +247,13 @@ export interface AgentSession {
   plan?: string[];
   /** 模式来源（plan=Plan-Execute / react=默认 ReAct），落库便于效果对比 */
   agentMode?: "plan" | "react";
+  /**
+   * 是否由快照恢复而来（进程重启后）。
+   * ⚠️ 恢复的会话**没有 pendingAsk**（Promise 不可序列化）——
+   *    前端/接口需要据此给出明确文案（"等待状态无法恢复"），
+   *    而不是笼统的"会话已过期"。
+   */
+  restoredFromSnapshot?: boolean;
   /** 已被用户亲手翻开的牌索引（按翻开顺序） */
   flippedCardIdx?: number[];
 }

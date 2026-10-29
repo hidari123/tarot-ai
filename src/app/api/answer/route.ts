@@ -1,4 +1,4 @@
-import { resolvePendingAsk, getSession } from "@/lib/tarot-agent";
+import { resolvePendingAsk, getSession, markSessionDirty } from "@/lib/tarot-agent";
 
 /**
  * HITL 应答接口：用户回答占卜师的 ask_user 问题
@@ -42,8 +42,21 @@ export async function POST(req: Request) {
 
   const ok = resolvePendingAsk(sessionId, payload);
   if (!ok) {
+    // ⚠️ P1-④：恢复出来的会话**没有 pendingAsk**（Promise 不可序列化）。
+    //    此时前端看到的是"当前没有等待回答的问题"—— 但用户不知道原因。
+    //    给出明确文案：会话已从快照恢复，但等待回答的状态无法恢复，
+    //    请重新开始（而不是让用户以为是自己的操作错了）。
+    if (session.restoredFromSnapshot) {
+      return Response.json(
+        { error: "这场占卜已从快照恢复，但对话的等待状态无法恢复（进程重启所致），请重新开始占卜" },
+        { status: 409 }
+      );
+    }
     return Response.json({ error: "当前没有等待回答的问题" }, { status: 409 });
   }
+
+  // P1-④：用户回答是**关键状态变更** → 立即标脏（下次定时器落库）
+  markSessionDirty(sessionId);
 
   return Response.json({ ok: true });
 }

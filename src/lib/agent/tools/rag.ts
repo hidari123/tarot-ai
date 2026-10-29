@@ -175,8 +175,17 @@ export async function execRagSearch(
 
 /**
  * 投机预检索（翻牌瞬间触发）—— 用户点开这张牌的瞬间，牌名已知，
- * 提前触发检索（fire-and-forget，结果进 session.ragHits 缓存）。
- * 下一轮模型调 rag_search 时查重直接命中"已检索过"，省 1-3s 等待。
+ * 提前触发检索（fire-and-forget），结果进**跨会话缓存**。
+ *
+ * ⚠️ P1-③ 改进点：
+ *   旧实现把结果写进 session.ragHits（会话级），但下一轮模型调
+ *   rag_search 时用的是**改写后的查询**（可能与预检索的查询串不同）→
+ *   查重命中不了 → 预检索白做。
+ *   现在改为写入**归一化后的跨会话缓存**：下一轮无论用什么查询串，
+ *   只要归一化后一致就能命中缓存。
+ *
+ *   同时把 Promise 返回给调用方 —— 调用方可以在"该等"的时机 await
+ *   它（如念牌前），把检索延迟完全藏进模型思考时间里。
  */
 export async function prefetchForCard(
   cardNameZh: string,
@@ -189,6 +198,16 @@ export async function prefetchForCard(
     if (readCache(key)) return; // 已有缓存，不必再算
     const hits = await hybridSearch(rewritten, topK);
     writeCache(key, hits);
+    // ⚠️ 同时把命中写进 session.ragHits —— 保证本场的 [n] 编号连续
+    //    （引文闭环：知识面板的编号必须与正文里的 [n] 一致）。
+    //    去重按 chunkId，与 execRagSearch 的逻辑一致。
+    const seen = new Set(session.ragHits.map((h) => h.chunkId));
+    for (const h of hits) {
+      if (!seen.has(h.chunkId)) {
+        session.ragHits.push(h);
+        seen.add(h.chunkId);
+      }
+    }
   } catch {
     /* 预检索失败不影响主线 */
   }

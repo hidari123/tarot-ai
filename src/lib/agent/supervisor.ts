@@ -27,8 +27,9 @@ import { rewriteQueryLocal } from "../query-rewrite";
 import { buildProviders, pickProvider, type LLMProvider } from "../llm-providers";
 import { callLLM, type CallResult } from "./llm";
 import { waitUserAnswer, isHitlGone } from "./hitl";
+import { markSessionDirty, snapshotSession } from "./session";
 import { TOOLS } from "./tools/definitions";
-import { execRagSearch, RAG_BUDGET } from "./tools/rag";
+import { execRagSearch, prefetchForCard, RAG_BUDGET } from "./tools/rag";
 import { execDrawCards } from "./tools/cards";
 import { runAnalyst, runWriter, runReviewer, type ReviewResult } from "./subagents";
 import { runLocalFallback } from "./fallback";
@@ -169,6 +170,13 @@ export async function* runAgent(
     pendingUserNotes.length = 0;
   };
 
+  /**
+   * P1-③：待完成的投机预检索。
+   * 翻牌瞬间发起（牌名已知），在**下一轮开始时** await ——
+   * 检索耗时被藏进"上一轮工具执行 + 模型思考"的时间里。
+   */
+  let pendingPrefetch: Promise<void> | null = null;
+
   // 看门狗：**活跃处理时间**上限（默认 8 分钟）。
   // ⚠️ 只累计 Agent 实际工作的时间（LLM 调用 + 工具执行），
   // HITL 等用户思考的时间不计——9 次交互每次 1 分钟就超的旧逻辑
@@ -215,6 +223,19 @@ export async function* runAgent(
     const roundToolNames: string[] = [];
     let decision: CallResult;
     try {
+      // ---- P1-③：等待投机预检索完成 ----
+      // 翻牌瞬间发起的预检索（牌名已知）在这里被 await ——
+      // 它的耗时被藏进"模型思考 + 上一轮工具执行"的时间里，
+      // 下一轮 rag_search 直接命中缓存，省掉一次完整检索（~100~400ms + ONNX 推理）。
+      // ⚠️ 不能无脑等：预检索失败/超时不能拖住主线 → 加超时保护。
+      if (pendingPrefetch) {
+        const p = pendingPrefetch;
+        pendingPrefetch = null;
+        await Promise.race([
+          p.catch(() => { /* 预检索失败不影响主线 */ }),
+          new Promise((r) => setTimeout(r, 3000)),
+        ]);
+      }
       // 历史裁剪：压缩早期 tool 观察结果，降低每轮 prompt token
       let trimmed = trimHistory(session.messages);
       // ---- 临期强制收尾（防 max_rounds 死循环撞墙）----
@@ -553,11 +574,13 @@ export async function* runAgent(
         flippedOrder.push(idx);
         gateSlot.flipped = true;
         // 方向③：Speculative 预检索——用户点开这张牌的瞬间，牌名已知，
-        // 提前触发检索（fire-and-forget，结果进 session.ragHits 缓存）。
-        // 下一轮模型调 rag_search 时查重直接命中"已检索过"，省 1-3s 等待。
+        // 提前触发检索，结果进**跨会话缓存**。
+        // ⚠️ P1-③：不再"发后不理"——把 Promise 存起来，下一轮开始时 await
+        //    （耗时藏进模型思考时间），下一轮 rag_search 直接命中缓存。
         {
-          const preQ = rewriteQueryLocal(drawn.card.nameZh, TAROT_CARDS.map((c) => c.nameZh));
-          void execRagSearch(preQ, 5, session, drawn.card.nameZh).catch(() => { /* 预检索失败不影响主线 */ });
+          pendingPrefetch = prefetchForCard(drawn.card.nameZh, session, 5).catch(() => {
+            /* 预检索失败不影响主线 */
+          });
         }
         // 插话：用户在翻牌闸门里说的话（不是"翻牌"）→ 记入插话，供后续解读引用
         const flipText = flipResult.trim();
@@ -1268,6 +1291,8 @@ export async function* runAgent(
         phase: roundToolNames.length ? roundToolNames[roundToolNames.length - 1] : "decide",
       },
     };
+    // P1-④：标脏（每轮结束标一次即可 —— 快照由 10s 定时器统一落库）
+    markSessionDirty(session.id);
   }
 
   yield { type: "error", error: "占卜师陷入沉思无法自拔…（达到最大轮次）" };
@@ -1280,6 +1305,10 @@ export async function* runAgent(
   } finally {
     // runAgent 外层：无论从哪条路径退出（含 localFallback）都释放锁
     session.busy = false;
+    // P1-④：退出前把最终状态落快照（进程重启后可恢复）
+    try {
+      db.saveSessionState(session.id, snapshotSession(session));
+    } catch { /* 快照失败不阻断 */ }
     // 方向①：会话收尾落画像（主题 + 情绪轨迹，90 天衰减在 db 层处理）
     if (session.userKey) {
       persistMemory(session.userKey, session.question, session.emotionTags);
