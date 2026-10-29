@@ -272,6 +272,8 @@ export default function TarotApp() {
   const [entries, setEntries] = useState<FlowEntry[]>([]);
   /** delta 分流目标：当前 card 条目 id（念牌/解读 delta 流向这里） */
   const deltaTargetRef = useRef<{ type: "card" | "scroll" | "teller"; entryId?: string } | null>(null);
+  /** 翻牌请求 pending 标记（防连点：手快连点会发多个 /api/answer） */
+  const flipPendingRef = useRef(false);
   /** 条目 id 计数器 */
   const entryIdRef = useRef(0);
   const nextEntryId = () => `e${++entryIdRef.current}`;
@@ -401,22 +403,56 @@ export default function TarotApp() {
    *
    * ⚠️ 牌面**不是**由这个请求返回的 —— 必须等 card_reveal 事件，
    *    这样"用户没点就看不到牌面"才是真的（防剧透）。
+   *
+   * ⚠️ 409 处理：后端闸门尚未就绪时（极小概率的时序竞争）会返回
+   *    409「当前没有等待回答的问题」。此时**静默重试一次**（300ms 后），
+   *    不弹错误 —— 用户点牌的动作不该因为一次抢跑就失败，更不该
+   *    弹出"对话中断"的错误横幅（实测报告的现象）。
    */
   const flipCard = useCallback(async () => {
     setAsk(null);
     if (!sessionId) return;
+    // 本地 pending：防连点（用户手快连点会发多个请求）
+    if (flipPendingRef.current) return;
+    flipPendingRef.current = true;
+    const post = async (): Promise<number> => {
+      try {
+        const res = await fetch("/api/answer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId, answer: "翻牌" }),
+        });
+        return res.status;
+      } catch {
+        return 0;
+      }
+    };
     try {
-      const res = await fetch("/api/answer", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, answer: "翻牌" }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "翻牌失败" }));
+      let status = await post();
+      if (status === 409) {
+        // 闸门未就绪 → 短暂等待后重试一次（后端 flip_ready 已在闸门就绪后才发，
+        // 正常不会走到这里；这是防御性兜底）
+        await new Promise((r) => setTimeout(r, 300));
+        status = await post();
+      }
+      if (status === 409 || status === 410) {
+        // 仍然失败：会话可能已过期 → 清理本地状态（复用过期处理逻辑）
+        if (status === 410) {
+          try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
+          setSessionId("");
+          setError("这场占卜已过期（超过 30 分钟），请重新开始");
+        }
+        // 409 不弹错：后端 SSE 流还活着，用户再点一次即可
+      } else if (status !== 200) {
+        const err = await fetch("/api/answer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId, answer: "翻牌" }),
+        }).then((r) => r.json().catch(() => ({}))).catch(() => ({}));
         setError(err.error || "翻牌失败，请重试");
       }
-    } catch {
-      setError("翻牌失败，请重试");
+    } finally {
+      flipPendingRef.current = false;
     }
   }, [sessionId]);
 
@@ -720,12 +756,15 @@ export default function TarotApp() {
                       : e
                   )
                 );
-                // ---- 对话流：标记该牌解读完成（保持展开，让用户读完全文；
-                //      折叠为摘要在下一张翻牌时自动执行 / 或用户手动收起）----
+                // ---- 对话流：标记该牌解读完成 ----
+                // ⚠️ **不再覆盖 reading**：正文已由 delta 流式累积到 e.card.reading。
+                //    旧设计用 cr.text 覆盖 → 与 delta 缓冲形成双数据源，
+                //    rAF 分帧竞争时残留 delta 被追加一次 → 整段输出两遍
+                //    （用户实测报告）。这里只置完成标记，正文只由 delta 写。
                 setEntries((prev) =>
                   prev.map((e): FlowEntry => {
                     if (e.kind !== "card" || e.card?.cardIndex !== cr.cardIndex) return e;
-                    return { ...e, card: { ...e.card!, reading: cr.text, readingDone: true }, collapsed: false };
+                    return { ...e, card: { ...e.card!, readingDone: true }, collapsed: false };
                   })
                 );
                 deltaTargetRef.current = null;

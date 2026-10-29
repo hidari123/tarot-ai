@@ -145,8 +145,8 @@ export interface AgentEvent {
     /** 引用来源 */
     source?: string;
   };
-  /** B：该牌解读段落 */
-  cardReading?: { cardIndex: number; text: string };
+  /** B：该牌解读段落（⚠️ 不带正文 —— 正文由 delta 流式给出，避免双数据源） */
+  cardReading?: { cardIndex: number };
   /**
    * B：翻牌闸门信号 —— "第 N 张可以翻了"
    *
@@ -2181,10 +2181,6 @@ export async function* runAgent(
          */
         const gateSlot = ensureCardSlot(session, idx);
         gateSlot.pos = pos;
-        yield {
-          type: "card_flip_ready",
-          cardFlipReady: { cardIndex: idx, total: session.drawnCards.length, pos },
-        };
         const flipPrompt = idx === 0
           ? "点开第一张牌"
           : `「${flippedOrder.map((i) => session.drawnCards[i]?.card.nameZh).filter(Boolean).join("、")}」讲完了。点开「${pos}」这张牌`;
@@ -2198,7 +2194,21 @@ export async function* runAgent(
             kind: "flip",
           },
         };
-        const flipResult = await waitUserAnswer(session, flipPrompt, undefined, "flip", hitlClock);
+        // ⚠️ 翻牌闸门必须**先就绪、再通知前端**：
+        //    waitUserAnswer 是在 await 表达式求值时才设置 session.pendingAsk，
+        //    若先发 flip_ready 再 await，前端收到"可点"信号时后端还没在等
+        //    → 用户抢跑点击 → /api/answer 409「当前没有等待回答的问题」。
+        //    症状：对话流里的牌点很多次没反应（409 被吞），
+        //    而顶部时间线的牌因为用户"看了一会儿才点"反而能翻。
+        //
+        //    做法：先启动等待（拿到 pendingAsk），**再**发 flip_ready ——
+        //    前端的"可点"状态与后端闸门严格对齐，杜绝抢跑。
+        const flipWait = waitUserAnswer(session, flipPrompt, undefined, "flip", hitlClock);
+        yield {
+          type: "card_flip_ready",
+          cardFlipReady: { cardIndex: idx, total: session.drawnCards.length, pos },
+        };
+        const flipResult = await flipWait;
         // 翻开（无论用户是点牌还是插话后点牌，都视为这张牌已被翻开）
         flippedOrder.push(idx);
         gateSlot.flipped = true;
@@ -2325,7 +2335,12 @@ export async function* runAgent(
         // 该牌解读作为正文流出（前端逐段显示）
         for (const evt of chunkDelta(text)) yield evt;
         yield { type: "delta", delta: "\n\n" };
-        yield { type: "card_reading", cardReading: { cardIndex: idx, text } };
+        // ⚠️ card_reading **不带 text**：正文已由上面的 delta 流式给出。
+        //    旧设计这里也带全文，前端用它覆盖 reading —— 于是"覆盖"与
+        //    "delta 累积"两个数据源写同一个字段，只要 delta 缓冲还有残留
+        //    （rAF 分帧竞争），就会把整段文字输出两次（用户实测报告）。
+        //    只带 cardIndex + 完成标记，职责单一，杜绝双写。
+        yield { type: "card_reading", cardReading: { cardIndex: idx } };
         session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ interpreted: slot.nameZh, text }) });
         yield { type: "tool", tool: { name, args, resultSummary: `解读 ${slot.nameZh}：${text.slice(0, 50)}`, durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, `解读 ${slot.nameZh}`, Date.now() - t0);

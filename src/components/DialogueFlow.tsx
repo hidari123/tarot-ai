@@ -319,28 +319,32 @@ const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview }: 
   const nextCard = cards.find((c) => c.current);
 
   return (
-    <div className="w-full rounded-2xl border border-amber-500/25 bg-gradient-to-b from-amber-950/10 to-[#0d0819]/70 backdrop-blur-sm px-4 py-3.5">
+    /* ⚠️ sticky 吸底版：横向紧凑布局。
+     * 牌阵常驻在对话流底部，必须**少占垂直空间**，
+     * 否则解读正文被挤到只剩一条缝（滚动区 max-h-[62dvh]）。
+     * 布局：标题行（进度）→ 三张牌横排 → 一行提示，高度可控。 */
+    <div className="w-full rounded-2xl border border-amber-500/25 bg-gradient-to-b from-amber-950/10 to-[#0d0819]/85 backdrop-blur-md px-3 py-2">
       {/* 标题 + 进度 */}
-      <div className="flex items-center gap-2 mb-3">
-        <span className="text-base">🃏</span>
-        <span className="text-[10px] tracking-[0.25em] text-amber-200/70">你的命运之牌</span>
-        <span className="ml-auto text-[11px] text-purple-300/40 font-mono">
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="text-sm">🃏</span>
+        <span className="text-[10px] tracking-[0.2em] text-amber-200/70">命运之牌</span>
+        <span className="ml-auto text-[10px] text-purple-300/40 font-mono">
           {doneCount}/{cards.length}
         </span>
       </div>
 
-      {/* 三张牌 */}
-      <div className="flex gap-3 md:gap-6 justify-center">
+      {/* 三张牌（横向紧凑） */}
+      <div className="flex gap-2.5 md:gap-4 justify-center">
         {cards.map((c) => (
           <motion.div
             key={c.id + c.index}
             /* 宽度内联兜底：w-[68px]/md:w-[80px] 同样是 Tailwind 任意值类，
                dev 增量缓存不生成时牌列会挤成一条（与 aspect 塌陷是同源问题） */
-            style={{ width: "clamp(56px, 16vw, 80px)" }}
+            style={{ width: "clamp(44px, 11vw, 62px)" }}
             className="flex flex-col items-center"
           >
             <span
-              className={`text-[10px] px-1.5 py-0.5 rounded-full border mb-1.5 tracking-wider ${
+              className={`text-[9px] px-1 py-px rounded-full border mb-1 tracking-wider ${
                 c.current
                   ? "border-purple-400/60 text-purple-200 bg-purple-900/40"
                   : c.done
@@ -399,7 +403,7 @@ const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview }: 
                   </div>
                   <div className="absolute inset-1 rounded-lg border border-purple-500/25" />
                   {c.current && (
-                    <span className="absolute bottom-1 inset-x-0 text-center text-[9px] text-purple-200/85 tracking-wider">
+                    <span className="absolute bottom-0.5 inset-x-0 text-center text-[8px] text-purple-200/85 tracking-wider">
                       点我翻开
                     </span>
                   )}
@@ -413,7 +417,7 @@ const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview }: 
             </motion.button>
 
             <span
-              className={`mt-1.5 text-[11px] text-center leading-tight ${
+              className={`mt-1 text-[10px] text-center leading-tight ${
                 c.done ? "text-amber-200/90" : c.flipped ? "text-purple-100/85" : "text-purple-400/30"
               }`}
               style={{ fontFamily: "'Ma Shan Zheng', serif" }}
@@ -421,7 +425,7 @@ const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview }: 
               {c.flipped ? (
                 <>
                   {c.nameZh}
-                  {c.reversed && <span className="text-[9px] block text-purple-300/50">逆位</span>}
+                  {c.reversed && <span className="text-[8px] block text-purple-300/50">逆位</span>}
                 </>
               ) : (
                 "？"
@@ -432,7 +436,7 @@ const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview }: 
       </div>
 
       {/* 提示 */}
-      <p className="mt-3 text-center text-[11px] text-purple-300/50 leading-relaxed">
+      <p className="mt-1.5 text-center text-[10px] text-purple-300/50 leading-relaxed">
         {nextCard
           ? "点开那张发光的牌，占卜师会为你念牌"
           : doneCount >= cards.length
@@ -524,6 +528,9 @@ export default function DialogueFlow({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pendingAsk 为每次渲染新算的引用，仅需响应其 id（锚定去重）
   }, [entries, streaming, pendingAsk?.id]);
 
+  /** 牌阵条目（sticky 吸底渲染，从流里摘出来） */
+  const spreadEntry = entries.find((e) => e.kind === "spread");
+
   return (
     <div
       ref={scrollRef}
@@ -565,15 +572,9 @@ export default function DialogueFlow({
               </div>
             );
           case "spread":
-            return (
-              <div key={e.id} data-entry-id={e.id}>
-                <SpreadPanel
-                  cards={e.spread ?? []}
-                  onFlipCard={onFlipCard}
-                  onPreview={onPreviewCard}
-                />
-              </div>
-            );
+            // ⚠️ spread 条目不在流里渲染 —— 改由容器底部的 sticky 面板承载
+            //    （见下方 sticky 区块）。这里返回 null 占位保持 switch 完整。
+            return null;
           case "scroll":
             return (
               <div key={e.id} data-entry-id={e.id}>
@@ -587,6 +588,26 @@ export default function DialogueFlow({
       {streaming && entries.length > 0 && (
         <div className="flex justify-start">
           <span className="typing-cursor text-purple-300 px-2">▍</span>
+        </div>
+      )}
+
+      {/* ---------- 牌阵面板：sticky 吸底 ----------
+       * ⚠️ 为什么不在流里（原先作为普通条目）？
+       *   牌阵是**操作入口**，不是叙事内容。翻第 2 张时它若留在流的上方，
+       *   用户得往上翻才能找到下一张牌（用户实测报告："不要让用户往上翻去找第二张牌"）。
+       *   做成 sticky 吸底 → 牌阵永远贴在对话流底部，随时可点。
+       *
+       *   实现：把 spread 条目从渲染列表里摘出来，单独渲染在滚动容器**内**
+       *   的 sticky 底部（position: sticky; bottom: 0）——
+   *   仍在同一个滚动容器里，不脱离对话流的视觉与滚动上下文。
+       */}
+      {spreadEntry && (
+        <div className="sticky bottom-0 z-20 -mx-1 px-1 pt-2 pb-1 bg-gradient-to-t from-[#0b0514] via-[#0b0514]/95 to-transparent">
+          <SpreadPanel
+            cards={spreadEntry.spread ?? []}
+            onFlipCard={onFlipCard}
+            onPreview={onPreviewCard}
+          />
         </div>
       )}
     </div>
