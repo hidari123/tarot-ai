@@ -4,6 +4,7 @@ import {
   runAgent,
   type AgentEvent,
 } from "@/lib/tarot-agent";
+import { validateAgentEvent } from "@/lib/agent/schema";
 import { failSession } from "@/lib/db";
 
 /**
@@ -13,8 +14,13 @@ import { failSession } from "@/lib/db";
  *   首次: { question, persona? }
  *   追问: { sessionId, followup }
  *
- * SSE 事件（12 类）：session / phase / reasoning / tool / rag_hits / cards /
- *                    ask_user / subagent / review / delta / done / error
+ * SSE 事件（20 类）：session / phase / reasoning / tool / rag_hits / cards /
+ *                    ask_user / subagent / review / delta / card_reveal /
+ *                    card_reading / card_flip_ready / contract / invocation /
+ *                    round / plan / persona_suggest / done / error
+ *
+ * ⚠️ 协议校验：事件在**下发前**过一遍 zod schema（开发期）。
+ *    协议写错立刻在服务端暴露，而不是等前端渲染时 undefined 崩溃。
  */
 export async function POST(req: Request) {
   let body: { question?: string; followup?: string; sessionId?: string; persona?: string; userKey?: string };
@@ -66,7 +72,9 @@ export async function POST(req: Request) {
       const send = (evt: AgentEvent) => {
         if (closed || aborted) return;
         try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(evt)}\n\n`));
+          // ⚠️ 开发期协议校验：字段写错立刻在这里暴露（不抛异常，降级不删）
+          const validated = validateAgentEvent(evt);
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(validated)}\n\n`));
         } catch {
           closed = true;
         }

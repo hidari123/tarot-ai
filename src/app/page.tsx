@@ -13,6 +13,7 @@ import DialogueFlow, { type FlowEntry } from "@/components/DialogueFlow";
 import CardFan, { type FanCard } from "@/components/CardFan";
 import ReviewCard, { type ReviewData } from "@/components/ReviewCard";
 import SubAgentPipeline, { type SubAgentEvent } from "@/components/SubAgentPipeline";
+import { parseAgentEvent } from "@/lib/agent/schema";
 
 /* ---------------- 类型 ---------------- */
 
@@ -544,7 +545,11 @@ export default function TarotApp() {
         const line = evt.trim();
         if (!line.startsWith("data:")) continue;
         try {
-          const p = JSON.parse(line.slice(5).trim());
+          // ⚠️ zod schema 解析（前后端单一事实源）：
+          //    协议不匹配时返回 null → 跳过这一条，**不丢弃整场对话**。
+          //    之前这里是 JSON.parse + any，字段写错要到渲染时才炸。
+          const p = parseAgentEvent(line.slice(5).trim());
+          if (!p) continue;
           switch (p.type) {
             case "session":
               setSessionId(p.sessionId);
@@ -552,7 +557,7 @@ export default function TarotApp() {
               try { localStorage.setItem("tarot:sessionId", p.sessionId); } catch { /* 隐私模式 */ }
               break;
             case "phase":
-              setPhase(p.phase);
+              setPhase(p.phase ?? null);
               if (p.label) setPhaseLabel(p.label);
               // 收束阶段：建"命运之卷"条目，后续收束 delta 流向它
               // （含 write_reading 综合正文与 close_reading 收束语）
@@ -574,7 +579,18 @@ export default function TarotApp() {
               setReasoning((prev) => (prev + p.reasoning).slice(-4000));
               break;
             case "tool":
-              setTools((prev) => [...prev, p.tool]);
+              // ⚠️ 组件的 ToolCall 类型比 wire 格式更严（args/resultSummary/durationMs 非可选）。
+              //    这里显式补默认值 —— 让"协议可选"与"视图必需"在边界处对齐，
+              //    而不是把可选性传染给所有消费方。
+              setTools((prev) => [
+                ...prev,
+                {
+                  name: p.tool.name,
+                  args: (p.tool.args ?? {}) as Record<string, unknown>,
+                  resultSummary: p.tool.resultSummary ?? "",
+                  durationMs: p.tool.durationMs ?? 0,
+                },
+              ]);
               // 冗余通道：rag_search 的 tool 事件也内嵌 ragHits，
               // 万一独立 rag_hits 事件丢失，前端仍能渲染知识面板
               if (p.tool?.name === "rag_search" && Array.isArray(p.ragHits)) {
@@ -817,7 +833,15 @@ export default function TarotApp() {
               setRounds((prev) => [...prev, p.round]);
               break;
             case "review":
-              setReview(p.review);
+              // ⚠️ 组件的 ReviewData 要求 comment 非空 —— 协议里是可选的
+              //    （解析失败时 review.comment 仍会给一个说明，但协议层允许缺省）。
+              //    在边界处补默认值，不把可选性传染给消费方。
+              setReview({
+                pass: p.review.pass,
+                scores: p.review.scores,
+                comment: p.review.comment ?? "",
+                rewritten: p.review.rewritten,
+              });
               break;
             case "delta": {
               const d = p.delta ?? "";
