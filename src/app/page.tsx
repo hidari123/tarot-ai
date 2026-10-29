@@ -96,60 +96,6 @@ function MagicCircle() {
   );
 }
 
-/* ---------------- 卡牌组件 ---------------- */
-
-function TarotCardView({ card, index, flipped, onFlip }: { card: AgentCard; index: number; flipped: boolean; onFlip: (i: number) => void }) {
-  return (
-    <motion.div
-      initial={{ y: 60, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      transition={{ delay: index * 0.18, type: "spring", stiffness: 120, damping: 16 }}
-      className="perspective-1200"
-    >
-      <motion.div
-        animate={{ rotateY: flipped ? 180 : 0 }}
-        transition={{ duration: 0.9, ease: [0.4, 0.1, 0.2, 1] }}
-        className="relative w-28 h-44 md:w-40 md:h-64 preserve-3d cursor-pointer group"
-        onClick={() => onFlip(index)}
-        whileHover={{ y: -6 }}
-      >
-        <div className="absolute inset-0 backface-hidden rounded-2xl glow-border overflow-hidden bg-[#160b26]">
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-16 h-16 md:w-20 md:h-20 rounded-full border-2 border-purple-400/60 flex items-center justify-center rune-breathe">
-              <span className="text-3xl md:text-4xl text-purple-300">✦</span>
-            </div>
-          </div>
-          <div className="absolute inset-2 rounded-xl border border-purple-500/25" />
-        </div>
-        <div className="absolute inset-0 backface-hidden rotate-y-180 rounded-2xl overflow-hidden glow-border bg-[#0d0716]">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={card.image}
-            alt={card.nameZh}
-            className="w-full h-full object-cover"
-            style={card.reversed ? { transform: "rotate(180deg)" } : undefined}
-            draggable={false}
-          />
-          {card.reversed && (
-            <div className="absolute top-2 right-2 px-2 py-0.5 rounded-md bg-purple-950/85 border border-purple-400/50 text-[10px] md:text-xs text-purple-200 font-medium">
-              逆位
-            </div>
-          )}
-        </div>
-      </motion.div>
-
-      <div className="mt-3 text-center">
-        <div className="text-sm md:text-base text-amber-200/90 font-serif tracking-widest">{card.pos}</div>
-        {flipped && (
-          <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="text-xs md:text-sm text-purple-300/80 mt-1">
-            {card.nameZh}
-          </motion.div>
-        )}
-      </div>
-    </motion.div>
-  );
-}
-
 /* ---------------- Agent 状态条 ---------------- */
 
 function AgentStatusBar({ phase }: { phase: Phase | null }) {
@@ -291,8 +237,8 @@ export default function TarotApp() {
   const [tools, setTools] = useState<ToolCall[]>([]);
   const [rounds, setRounds] = useState<RoundInfo[]>([]);
   const [ragHits, setRagHits] = useState<RagHitView[]>([]);
-  const [cards, setCards] = useState<AgentCard[]>([]);
-  const [flipped, setFlipped] = useState<boolean[]>([]);
+  /* cards state 已删除：防剧透改造后 cards 事件是匿名槽位（image/nameZh 空），
+     真实牌面状态在 spread 里（对话流牌阵 + 顶部时间线 + 分享卡共用） */
   const [ask, setAsk] = useState<{
     question: string;
     options?: string[];
@@ -585,8 +531,7 @@ export default function TarotApp() {
             case "cards":
               // ⚠️ 防剧透：cards 事件**只含位置**（id/nameZh/image 为空占位），
               //    牌名与图片要等用户亲手翻开（card_reveal）才补上。
-              setCards(p.cards ?? []);
-              setFlipped((p.cards ?? []).map(() => false));
+              //    直接初始化 spread（对话流牌阵 + 顶部时间线 + 分享卡共用）。
               // 初始化牌阵（逐张手动翻牌）：全部牌背，第 0 张为"当前该翻的"
               if (Array.isArray(p.cards) && p.cards.length > 0) {
                 const initial: SpreadCard[] = (p.cards as AgentCard[]).map((c, i) => ({
@@ -857,8 +802,6 @@ export default function TarotApp() {
     setTools([]);
     setRounds([]);
     setRagHits([]);
-    setCards([]);
-    setFlipped([]);
     setAsk(null);
     setFanCards([]);
     setSubagentEvents([]);
@@ -1010,22 +953,11 @@ export default function TarotApp() {
     setListening(true);
   }, []);
 
-  const handleFlip = useCallback((i: number) => {
-    setFlipped((prev) => {
-      if (prev[i]) return prev;
-      const next = [...prev];
-      next[i] = true;
-      return next;
-    });
-  }, []);
-
   const restart = useCallback(() => {
     setStage("input");
     setSessionId("");
     try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
     setQuestion("");
-    setCards([]);
-    setFlipped([]);
     setReading("");
     setReasoning("");
     setTools([]);
@@ -1342,18 +1274,24 @@ export default function TarotApp() {
                 >
                   再问一次
                 </motion.button>
-                {cards.length > 0 && (
-                  <ShareCardButton
-                    data={{
-                      question,
-                      cards: cards.map((c) => ({ nameZh: c.nameZh, image: c.image, reversed: c.reversed, pos: c.pos })),
-                      summary: extractShareSummary(reading),
-                      fullReading: reading,
-                      personaName: persona?.name,
-                      sessionId,
-                    }}
-                  />
-                )}
+                {/* 分享卡：数据源改用 spread（cards 是防剧透空占位，画出来是空白卡）。
+                    守卫：至少翻开了 2 张才可分享（数据不全画出来也是残卡） */}
+                {(() => {
+                  const revealed = spread.filter((c) => c.flipped && c.image);
+                  if (revealed.length < 2) return null;
+                  return (
+                    <ShareCardButton
+                      data={{
+                        question,
+                        cards: revealed.map((c) => ({ nameZh: c.nameZh, image: c.image, reversed: c.reversed, pos: c.pos })),
+                        summary: extractShareSummary(reading),
+                        fullReading: reading,
+                        personaName: persona?.name,
+                        sessionId,
+                      }}
+                    />
+                  );
+                })()}
                 <a
                   href="/dashboard"
                   className="px-8 py-3 rounded-full border border-sky-500/40 text-sky-200 hover:bg-sky-900/30 transition-all tracking-[0.2em] flex items-center"
@@ -1375,17 +1313,13 @@ export default function TarotApp() {
                 onClick={() => setShowDetails(false)}
                 className="w-full text-xs text-purple-300/70 tracking-wider cursor-pointer select-none hover:text-purple-200 transition-colors text-center"
               >
-                ▾ 收起过程细节（子 Agent 流水线 · Trace · RAG 检索 · 审校报告 · 旧版卡牌）
+                ▾ 收起过程细节（子 Agent 流水线 · Trace · RAG 检索 · 审校报告）
               </button>
               <div className="mt-4 flex flex-col items-center gap-4">
-                {/* 卡牌区（3D 翻牌，旧交互保留） */}
-                {cards.length > 0 && (
-                  <div className="flex gap-3 md:gap-8 justify-center flex-wrap">
-                    {cards.map((card, i) => (
-                      <TarotCardView key={`${card.id}-${i}`} card={card} index={i} flipped={flipped[i]} onFlip={handleFlip} />
-                    ))}
-                  </div>
-                )}
+                {/* ⚠️ 旧版卡牌区（TarotCardView）已删除：
+                    逐张翻牌改造后，cards 事件是匿名槽位（防剧透，image/nameZh 为空），
+                    旧组件渲染出三张空图碎卡（用户实测报告的 bug）。
+                    翻牌交互已由对话流 SpreadPanel + 顶部 CardSpread 完全取代。 */}
                 <SubAgentPipeline events={subagentEvents} />
                 <AgentTrace tools={tools} reasoning={reasoning} streaming={streaming && !ask} rounds={rounds} />
                 <KnowledgePanel hits={ragHits} />
@@ -1407,7 +1341,7 @@ export default function TarotApp() {
               onClick={() => setShowDetails(true)}
               className="mt-6 text-xs text-purple-400/50 tracking-wider cursor-pointer select-none hover:text-purple-300/80 transition-colors text-center"
             >
-              ▸ 过程细节（子 Agent 流水线 · Trace · RAG 检索 · 审校报告 · 旧版卡牌）
+              ▸ 过程细节（子 Agent 流水线 · Trace · RAG 检索 · 审校报告）
             </button>
           )}
         </motion.div>
