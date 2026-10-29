@@ -1,4 +1,4 @@
-import { PERSONAS } from "@/lib/tarot-agent";
+import { PERSONAS } from "@/lib/personas";
 
 /**
  * 占卜师人格列表

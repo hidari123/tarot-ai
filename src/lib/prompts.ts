@@ -11,7 +11,7 @@
  *   getPromptVersion("supervisor") → 拿到版本号（写入日志/DB）
  */
 
-import type { Persona } from "./tarot-agent";
+import type { Persona } from "./personas";
 
 /** 版本号：改动 prompt 时递增，历史版本保留在 git 里 */
 export const PROMPT_VERSION = "v2.0" as const;

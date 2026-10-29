@@ -126,7 +126,7 @@ export interface SessionRow {
   persona: string;
   cards: { id: string; nameZh: string; image: string; reversed: boolean; pos: string }[];
   reading: string;
-  review: { pass: boolean; scores: { grounding: number; empathy: number; tone: number }; comment: string; rewritten?: boolean } | null;
+  review: { pass: boolean; scores: { grounding: number; empathy: number; tone: number }; comment?: string; rewritten?: boolean } | null;
   status: "running" | "done" | "error";
   createdAt: number;
   finishedAt?: number;
