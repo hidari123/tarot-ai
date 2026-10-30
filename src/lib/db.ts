@@ -69,6 +69,19 @@ CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_created ON tool_calls(created_at);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage(created_at);
 
+-- P2-⑦：事件日志（轻量 trace）—— 每场占卜的完整事件时间线
+-- ⚠️ 不落 delta（一场占卜几百条），只落结构性事件 —— 够画时间线即可
+CREATE TABLE IF NOT EXISTS event_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,             -- 会话内单调递增序号（断点续传用）
+  type TEXT NOT NULL,               -- 事件类型
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_event_log_session ON event_log(session_id, seq);
+CREATE INDEX IF NOT EXISTS idx_event_log_created ON event_log(created_at);
+
 -- 方向①：用户画像（跨会话记忆）
 CREATE TABLE IF NOT EXISTS user_profiles (
   user_key TEXT PRIMARY KEY,
@@ -102,6 +115,8 @@ if (!gClean.__tarotDbCleanTimer__) {
       db.prepare(`DELETE FROM tool_calls WHERE created_at < ?`).run(cutoff);
       db.prepare(`DELETE FROM llm_usage WHERE created_at < ?`).run(cutoff);
       db.prepare(`DELETE FROM sessions WHERE created_at < ?`).run(cutoff);
+      // P2-⑦：事件日志同样要清理（一场占卜 ~20 条结构性事件，量比 tool_calls 大）
+      db.prepare(`DELETE FROM event_log WHERE created_at < ?`).run(cutoff);
     } catch { /* 清理失败不阻断 */ }
   }, 24 * 60 * 60 * 1000); // 每天一次
   gClean.__tarotDbCleanTimer__.unref?.();
@@ -239,8 +254,7 @@ export function listRecoverableSessions(olderThanMs = 0): Array<{ id: string; st
  * 场景：进程重启 / 客户端断开 / 生成器被 GC —— 这些路径不会执行正常收尾，
  * 导致会话永远停在 running（实测占比高达 45%）。
  * 判据：status='running' 且最后活动时间超过阈值。
- */
-export function reconcileStaleSessions(maxAgeMs = 30 * 60 * 1000): number {
+ */export function reconcileStaleSessions(maxAgeMs = 30 * 60 * 1000): number {
   const cutoff = Date.now() - maxAgeMs;
   const result = db.prepare(`
     UPDATE sessions
@@ -525,4 +539,54 @@ export function getStageAggregates(): Array<{ stage: string; count: number; avgM
     SELECT stage, COUNT(*) count, COALESCE(AVG(duration_ms),0) avgMs, COALESCE(SUM(duration_ms),0) totalMs
     FROM session_timings GROUP BY stage ORDER BY totalMs DESC
   `).all() as Array<{ stage: string; count: number; avgMs: number; totalMs: number }>;
+}
+
+/* ------------------------------------------------------------------ */
+/* 事件日志（P2-⑦ 可观测性）                                           */
+/* ------------------------------------------------------------------ */
+
+const stmtInsertEvent = db.prepare(`
+  INSERT INTO event_log (session_id, seq, type, payload_json, created_at)
+  VALUES (@sessionId, @seq, @type, @payloadJson, @createdAt)
+`);
+
+/**
+ * 记录一个事件（结构性事件，用于画时间线）。
+ *
+ * ⚠️ 失败不阻断 —— 可观测性是"锦上添花"，不能拖垮占卜。
+ */
+export function logEvent(sessionId: string, seq: number, type: string, payloadJson: string, createdAt = Date.now()): void {
+  try {
+    stmtInsertEvent.run({ sessionId, seq, type, payloadJson, createdAt });
+  } catch { /* 落库失败不阻断 */ }
+}
+
+/** 某会话的事件时间线（dashboard 事件流视图） */
+export function getSessionEvents(sessionId: string): Array<{
+  seq: number; type: string; payload: unknown; createdAt: number;
+}> {
+  try {
+    const rows = db.prepare(
+      `SELECT seq, type, payload_json, created_at FROM event_log WHERE session_id = ? ORDER BY seq`
+    ).all(sessionId) as Array<{ seq: number; type: string; payload_json: string; created_at: number }>;
+    return rows.map((r) => ({
+      seq: r.seq,
+      type: r.type,
+      payload: JSON.parse(r.payload_json || "{}"),
+      createdAt: r.created_at,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** 全局事件类型分布（dashboard 用） */
+export function getEventTypeCounts(): Array<{ type: string; count: number }> {
+  try {
+    return db.prepare(
+      `SELECT type, COUNT(*) count FROM event_log GROUP BY type ORDER BY count DESC`
+    ).all() as Array<{ type: string; count: number }>;
+  } catch {
+    return [];
+  }
 }

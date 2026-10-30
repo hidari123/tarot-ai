@@ -1,0 +1,43 @@
+﻿feat: SSE 断点续传 + 事件日志 + eval 扩容 + 402 降级修复
+
+## P1-③D SSE 断点续传（Last-Event-ID + 事件序号补发）
+"流式 AI 应用的真实难点不是推流，是断流。"
+- 后端：每个事件带 SSE 标准 `id: <seq>`（单调递增），
+  存内存 ring buffer（每会话 500 条 / TTL 30min）
+- 前端：fetch 流解析 id 字段记录 lastSeqRef；流中断时用
+  `Last-Event-ID` + `resume: true` 请求后端补发缺失事件
+- resume 请求不推进流程（跳过 busy 互斥检查 —— 会话在跑是正常的）
+- 实测：seq=16 断开 → 补发 seq=17，无缝衔接/无缺口/无重复 ✅
+
+## P2-⑦ 事件日志（轻量 trace）
+- event_log 表（session_id + seq + type + payload + ts）
+- 只落结构性事件（phase/tool/cards/ask_user/card_* 等），
+  delta 不落（一场几百条，冗余且量大）
+- 90 天 TTL 清理（与 tool_calls/llm_usage 同批）
+- 实测：一场占卜 11 条结构事件落库 ✅
+
+## P2-⑥ eval 扩容（3 → 34 条分层）
+- scripts/eval-cases.json：按维度分层（love/work/money/study/life/
+  health/human/decision/emotion × vague/specific/long/time）
+- 原因：3 样本时 98% 置信区间极宽，一条抖动就是 33 个点
+- eval-agent.mjs：并发执行（--concurrency，默认 3）+ 分层统计 +
+  方差报告（均值/标准差）+ --only 调试模式
+
+## fix: 402 余额不足触发降级（实测发现）
+MiniMax 402 时系统直接报"占卜师暂时失联"——三层问题：
+1. isFailoverError 不认 401/402/403 → 不切换 provider
+   （这类错误短期不会自愈：key 无效/余额耗尽，死守只会报错）
+2. 所有 provider 失败时无降级 → supervisor 直接 return
+3. 现修：鉴权/额度类 4xx 触发 failover；全部失败且尚未抽牌时
+   切本地剧本引擎（追问模式/已抽牌不静默降级——会答非所问）
+实测：MiniMax 402 → 本地引擎完整跑完 澄清→抽牌→念牌→解读→收束→done（47s）✅
+
+## 其他
+- scripts/measure-rag-latency.mjs：实测检索 3~4ms（非秒级），
+  证实"RAG 并发"收益仅 3ms —— 用数据否决了原方案的估算
+- scripts/verify-local-fallback.mjs / verify-resume.mjs（新验证脚本）
+
+## 验证
+- 断点续传 5/5（无缝衔接/连续/无重复/结构事件/落库）
+- 本地降级全流程 done ✅ · glm-5.3 主模型恢复 ✅
+- TSC 0 · ESLint 0

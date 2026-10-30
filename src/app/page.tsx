@@ -275,6 +275,8 @@ export default function TarotApp() {
   const deltaTargetRef = useRef<{ type: "card" | "scroll" | "teller"; entryId?: string } | null>(null);
   /** 翻牌请求 pending 标记（防连点：手快连点会发多个 /api/answer） */
   const flipPendingRef = useRef(false);
+  /** 最后收到的 SSE 事件序号（断点续传用，P1-③D） */
+  const lastSeqRef = useRef(0);
   /** 条目 id 计数器 */
   const entryIdRef = useRef(0);
   const nextEntryId = () => `e${++entryIdRef.current}`;
@@ -527,6 +529,18 @@ export default function TarotApp() {
   }, []);
 
   /* SSE 消费 */
+  /**
+   * SSE 消费 —— 支持断点续传（P1-③D）
+   *
+   * ⚠️ 断流恢复：
+   *   后端给每个事件带 SSE 标准 `id: <seq>` 字段。
+   *   这里记录最后收到的 seq；流意外中断时（网络抖动），
+   *   用 `Last-Event-ID` + `resume: true` 请求后端补发缺失事件。
+   *
+   * ⚠️ 为什么不用 EventSource：
+   *   EventSource 只能 GET，不能带自定义 body（POST /api/interpret）。
+   *   所以用 fetch + ReadableStream 手动解析 SSE 帧。
+   */
   const consumeStream = useCallback(async (res: Response) => {
     if (!res.ok || !res.body) {
       const err = await res.json().catch(() => ({ error: "解读失败" }));
@@ -542,13 +556,26 @@ export default function TarotApp() {
       const events = buf.split("\n\n");
       buf = events.pop() ?? "";
       for (const evt of events) {
-        const line = evt.trim();
-        if (!line.startsWith("data:")) continue;
+        // ⚠️ SSE 帧可能含多行：`id: <seq>` + `data: <json>`
+        //    旧实现只认 data: 行 → id 被丢弃，断点续传无从谈起。
+        let seq = 0;
+        let dataLine = "";
+        for (const raw of evt.split("\n")) {
+          const line = raw.trim();
+          if (line.startsWith("id:")) {
+            seq = Number(line.slice(3).trim()) || 0;
+          } else if (line.startsWith("data:")) {
+            dataLine = line.slice(5).trim();
+          }
+        }
+        if (!dataLine) continue;
+        // 记录最后收到的 seq（断点续传用）
+        if (seq > 0) lastSeqRef.current = seq;
         try {
           // ⚠️ zod schema 解析（前后端单一事实源）：
           //    协议不匹配时返回 null → 跳过这一条，**不丢弃整场对话**。
           //    之前这里是 JSON.parse + any，字段写错要到渲染时才炸。
-          const p = parseAgentEvent(line.slice(5).trim());
+          const p = parseAgentEvent(dataLine);
           if (!p) continue;
           switch (p.type) {
             case "session":
@@ -883,6 +910,35 @@ export default function TarotApp() {
     }
   }, [pushEntry, scheduleDeltaFlush]);
 
+  /**
+   * 断点续传（P1-③D）—— 让后端补发缺失的事件。
+   *
+   * ⚠️ 语义：只补发**已经产生过**的事件（后端缓冲区里）。
+   *    后端 agent 若已跑完，补发后用户能看到完整对话；
+   *    若还在跑，会话继续推进（用户可以继续回答 HITL）。
+   *
+   * @returns 是否成功恢复
+   */
+  const resumeStream = useCallback(async (): Promise<boolean> => {
+    if (!sessionId || lastSeqRef.current === 0) return false;
+    try {
+      const res = await fetch("/api/interpret", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          // SSE 标准头：告诉后端客户端最后收到哪个事件
+          "Last-Event-ID": String(lastSeqRef.current),
+        },
+        body: JSON.stringify({ sessionId, resume: true }),
+      });
+      if (!res.ok) return false;
+      await consumeStream(res);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [sessionId, consumeStream]);
+
   /* 开始占卜 */
   const startDivination = useCallback(async () => {
     // ⚠️ 连点防护：流式进行中再触发会并发两个 SSE 流交错写同一批 state
@@ -910,6 +966,7 @@ export default function TarotApp() {
     /* 对话流重置：用户的问题作为第一条气泡 */
     setEntries([{ id: nextEntryId(), kind: "user", text: q } as FlowEntry]);
     deltaTargetRef.current = null;
+    lastSeqRef.current = 0; // 新一场占卜 → 断点续传序号归零
     setStage("drawing");
     setStreaming(true);
     setStreamStart(Date.now());
@@ -922,11 +979,25 @@ export default function TarotApp() {
       });
       await consumeStream(res);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "解读失败，请重试");
+      // ⚠️ 断流恢复（P1-③D）：网络抖动导致流中断时，
+      //    尝试用 Last-Event-ID 让后端补发缺失事件。
+      //    前提：已经收到过至少一个事件（seq>0）且知道 sessionId
+      //    —— 否则是"服务端一开始就没响应"，重连也没用。
+      const msg = e instanceof Error ? e.message : "解读失败";
+      if (sessionId && lastSeqRef.current > 0) {
+        setError("连接中断，正在恢复对话…");
+        const ok = await resumeStream();
+        if (ok) {
+          setError("");
+          setStreaming(false);
+          return;
+        }
+      }
+      setError(`${msg}，请重试`);
     } finally {
       setStreaming(false);
     }
-  }, [question, persona, consumeStream, streaming]);
+  }, [question, persona, consumeStream, streaming, sessionId, resumeStream]);
 
   /* HITL 应答（选牌扇面 / 随机代抽等仍在流外的交互）。
      ⚠️ 提交锁：双击选项/按钮会双发 POST，第二次 409 报错干扰用户 */

@@ -283,6 +283,21 @@ export async function* runAgent(
         yield { type: "phase", phase: "analyze", label: `主模型连接不畅，已切换备用模型（${used.name}）` };
       }
     } catch (e) {
+      // ⚠️ 所有 provider 都失败时降级到本地剧本引擎（降级不删是项目底线）：
+      //    余额耗尽（402）/ 鉴权失败（401/403）/ 全部超时 —— 这些情况
+      //    下死等只会让用户看到报错。本地剧本跑完整场仪式（质量不如
+      //    真模型，但"白屏报错"更不可接受）。
+      //    首答模式才降级；追问模式已经聊了一半，静默降级会答非所问。
+      const isFollowup = opts?.followup !== undefined && session.messages.length > 2;
+      if (!isFollowup && session.drawnCards.length === 0) {
+        yield {
+          type: "phase",
+          phase: "analyze",
+          label: "远端模型不可用，已切换本地引擎（占卜质量可能下降）…",
+        };
+        yield* runLocalFallback(session, question);
+        return;
+      }
       yield { type: "error", error: `占卜师暂时失联：${e instanceof Error ? e.message : "未知错误"}` };
       db.failSession(session.id, "llm_error");
       return;

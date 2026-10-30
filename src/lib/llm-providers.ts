@@ -111,10 +111,17 @@ export function pickProvider(preferred?: LLMProvider): LLMProvider | null {
 export function isFailoverError(e: unknown, httpStatus?: number): boolean {
   if (httpStatus && httpStatus >= 500) return true;
   if (httpStatus === 429) return true;
+  // ⚠️ 鉴权/额度类 4xx（401/402/403）也应触发切换：
+  //    这类错误**短期内不会自愈**（key 无效/余额耗尽），死守这个 provider
+  //    只会让用户看到"占卜师暂时失联"。实测：MiniMax 402 余额不足时，
+  //    主备切换是最正确的出路（备用有自己的 key/额度）。
+  if (httpStatus === 401 || httpStatus === 402 || httpStatus === 403) return true;
   if (e instanceof Error) {
     const msg = e.message;
     if (/timeout|abort|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|fetch failed|network|socket/i.test(msg)) return true;
     if (/LLM 调用失败\(5\d\d\)/.test(msg)) return true;
+    // 余额/鉴权类（错误消息里带 HTTP 状态码的形态）
+    if (/LLM 调用失败\(40[123]\)/.test(msg)) return true;
   }
   return false;
 }

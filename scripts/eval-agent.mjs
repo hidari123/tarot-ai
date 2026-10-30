@@ -6,19 +6,33 @@
  *   - timeout          超时 → 计入"稳定性"指标
  *   - assertion_failed 断言不通过 → 真正的质量问题
  *
+ * P2-⑥ 题集扩容：3 条 → 34 条（scripts/eval-cases.json，分层抽样）
+ *   原因：3 个样本时 98% 的置信区间极宽 —— 一条用例变化就是 33 个点。
+ *   现在按主题/问法分层统计，并支持并发跑（--concurrency N）。
+ *
  * 用法：
- *   node scripts/eval-agent.mjs [baseUrl] [--ci]
+ *   node scripts/eval-agent.mjs [baseUrl] [--ci] [--concurrency N] [--only id1,id2]
  *   --ci 模式：环境阻塞时 exit 0（不阻塞 CI），有真实质量问题才 exit 1
  */
 
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
 const BASE = process.argv.find((a) => a.startsWith("http")) || "http://localhost:3000";
 const CI_MODE = process.argv.includes("--ci");
+/** 并发度（默认 3 —— 再高会撞 LLM 速率限制） */
+const CONCURRENCY = Number(process.argv.find((a) => a.startsWith("--concurrency"))?.split("=")[1]) || 3;
+/** 只跑指定用例（调试用） */
+const ONLY = process.argv.find((a) => a.startsWith("--only"))?.split("=")[1]?.split(",");
 
-const CASES = [
-  { id: "love-vague", question: "我的感情运势怎么样", expectClarify: true },
-  { id: "work-specific", question: "下周的面试能通过吗，我很紧张", expectClarify: false },
-  { id: "money", question: "最近想投资一个朋友推荐的项目，靠谱吗", expectClarify: true },
-];
+/** 题集（分层抽样，见 scripts/eval-cases.json） */
+const ALL_CASES = JSON.parse(
+  readFileSync(join(__dirname, "eval-cases.json"), "utf-8")
+).cases;
+const CASES = ONLY ? ALL_CASES.filter((c) => ONLY.includes(c.id)) : ALL_CASES;
 
 // 逐张解读模式下轮次翻倍（承约+呼召+选牌+检索+3×(翻牌+解读)+综合+收束 ≈14 轮），
 // 加上每轮有用户思考时间，总耗时比旧流程长 —— 超时放宽到 8 分钟
@@ -199,20 +213,36 @@ if (!probe.ok) {
 }
 
 const results = [];
-for (const tc of CASES) {
-  process.stdout.write(`  [${tc.id}] ${tc.question} … `);
-  const r = await runCase(tc);
-  results.push(r);
-  if (r.failType) {
-    console.log(`✗ ${r.failType}: ${r.failReason}`);
-  } else {
-    const total = Object.values(r.scores).reduce((a, b) => a + b, 0);
-    const max = Object.keys(r.scores).length;
-    console.log(
-      `${((total / max) * 100).toFixed(0)}%  (${r.tools.length} tools, ${r.readingLen} chars, ${r.hitlCount} HITL)`
-    );
+/**
+ * 并发执行（P2-⑥）
+ * ⚠️ 为什么并发：34 条用例串行要 ~40 分钟（每条 ~70s），
+ *    没法当"改完代码就跑一下"的日常反馈。
+ *    并发 3 → ~13 分钟。再高会撞 LLM 速率限制。
+ */
+let running = 0;
+let doneCount = 0;
+const queue = [...CASES];
+
+async function worker() {
+  while (queue.length) {
+    const tc = queue.shift();
+    if (!tc) break;
+    const r = await runCase(tc);
+    results.push(r);
+    doneCount++;
+    const pct = ((doneCount / CASES.length) * 100).toFixed(0);
+    if (r.failType) {
+      console.log(`  [${pct}%] [${tc.id}] ✗ ${r.failType}: ${r.failReason}`);
+    } else {
+      const total = Object.values(r.scores).reduce((a, b) => a + b, 0);
+      const max = Object.keys(r.scores).length;
+      console.log(
+        `  [${pct}%] [${tc.id}] ${((total / max) * 100).toFixed(0)}%  (${r.tools.length} tools, ${r.readingLen} chars, ${r.hitlCount} HITL)`
+      );
+    }
   }
 }
+await Promise.all(Array.from({ length: Math.min(CONCURRENCY, CASES.length) }, () => worker()));
 
 /* ---- 汇总 ---- */
 const valid = results.filter((r) => !r.failType || r.failType === FAIL.ASSERT);
@@ -244,6 +274,37 @@ if (valid.length > 0) {
     (valid.length * Object.keys(valid[0].scores).length);
   console.log(`  ─────────────────`);
   console.log(`  总体通过率: ${(overall * 100).toFixed(0)}%`);
+
+  // ---- 分层统计（P2-⑥）：按 dims 分组，看是哪类问题拖后腿 ----
+  const byDim = new Map();
+  for (const r of valid) {
+    for (const d of r.dims ?? ["untagged"]) {
+      if (!byDim.has(d)) byDim.set(d, []);
+      byDim.get(d).push(r);
+    }
+  }
+  if (byDim.size > 1) {
+    console.log(`  ── 分层（按维度）──`);
+    const sorted = [...byDim.entries()].sort((a, b) => b[1].length - a[1].length);
+    for (const [dim, rs] of sorted) {
+      const score =
+        rs.reduce((s, r) => s + Object.values(r.scores).reduce((a, b) => a + b, 0), 0) /
+        (rs.length * Object.keys(rs[0].scores).length);
+      const fails = rs.filter((r) => r.failType).length;
+      const flag = fails > 0 ? ` ⚠️ ${fails} 条未达标` : "";
+      console.log(`  ${dim.padEnd(12)} ${(score * 100).toFixed(0)}%  (${rs.length} 条)${flag}`);
+    }
+  }
+
+  // ---- 方差报告（P2-⑥）：单次结果有抖动，多跑几次看稳定性 ----
+  const perCase = valid.map((r) => {
+    const total = Object.values(r.scores).reduce((a, b) => a + b, 0);
+    return total / Object.keys(r.scores).length;
+  });
+  const mean = perCase.reduce((a, b) => a + b, 0) / perCase.length;
+  const variance = perCase.reduce((s, v) => s + (v - mean) ** 2, 0) / perCase.length;
+  console.log(`  ─────────────────`);
+  console.log(`  单例得分: 均值 ${(mean * 100).toFixed(1)}% · 标准差 ${(Math.sqrt(variance) * 100).toFixed(1)}%`);
 }
 
 if (timedOut.length || disconnected.length) {
