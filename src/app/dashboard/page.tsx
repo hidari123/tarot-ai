@@ -29,9 +29,16 @@ interface Stats {
     id: string; question: string; persona: string; status: string;
     reading: string; cards: { nameZh: string; reversed: boolean; pos: string }[]; createdAt: number;
     errorReason?: string;
+    /** P2-⑧ 单场成本 */
+    cost?: { tokens: number; estCny: number; llmCalls: number };
   }[];
   stageAggregates?: { stage: string; count: number; avgMs: number; totalMs: number }[];
   costEstimate?: { totalTokens: number; estCny: number };
+  /** P2-⑧ 成本闭环：单场成本分布 */
+  costPerSession?: {
+    avgTokens: number; maxTokens: number; minTokens: number;
+    avgCny: number; sessionCount: number;
+  };
 }
 
 const TOOL_LABEL: Record<string, string> = {
@@ -162,6 +169,18 @@ export default function Dashboard() {
                     </span>
                   )}
                 </div>
+
+                {/* P2-⑧ 成本闭环：单场成本分布（毛利模型基础） */}
+                {stats.costPerSession && stats.costPerSession.sessionCount > 0 && (
+                  <div className="mb-4 flex flex-wrap items-center gap-3 text-[11px] text-purple-300/60 font-mono bg-purple-950/30 rounded-xl px-3 py-2">
+                    <span className="text-purple-200/80">📊 单场成本（{stats.costPerSession.sessionCount} 场完成）：</span>
+                    <span>均值 {stats.costPerSession.avgTokens.toLocaleString()} tok / ¥{stats.costPerSession.avgCny}</span>
+                    <span className="text-purple-400/50">|</span>
+                    <span>峰值 {stats.costPerSession.maxTokens.toLocaleString()} tok</span>
+                    <span className="text-purple-400/50">|</span>
+                    <span>最低 {stats.costPerSession.minTokens.toLocaleString()} tok</span>
+                  </div>
+                )}
                 <div className="space-y-2">
                   {stats.stageAggregates.slice(0, 10).map((s) => {
                     const maxMs = Math.max(...stats.stageAggregates!.map((x) => x.avgMs));
@@ -350,6 +369,12 @@ export default function Dashboard() {
                           {c.pos} · {c.nameZh}{c.reversed ? "逆" : ""}
                         </span>
                       ))}
+                      {/* P2-⑧ 单场成本徽章 */}
+                      {s.cost && s.cost.tokens > 0 && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-amber-500/10 border border-amber-400/20 text-amber-200/70" title={`${s.cost.llmCalls} 次 LLM 调用`}>
+                          ¥{s.cost.estCny} · {(s.cost.tokens / 1000).toFixed(1)}k tok
+                        </span>
+                      )}
                     </div>
                     {s.reading && (
                       <p className="mt-2 text-xs text-purple-300/45 line-clamp-2 leading-relaxed">{s.reading.slice(0, 120)}…</p>

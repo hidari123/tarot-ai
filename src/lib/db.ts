@@ -328,11 +328,18 @@ export interface DashboardStats {
   recentSessions: {
     id: string; question: string; persona: string; status: string;
     reading: string; cards: SessionRow["cards"]; createdAt: number; errorReason?: string;
+    /** P2-⑧ 单场成本（token + 估算人民币 + LLM 调用数） */
+    cost?: { tokens: number; estCny: number; llmCalls: number };
   }[];
   /** 方向③：阶段瀑布总览（各阶段平均耗时 + 次数） */
   stageAggregates: { stage: string; count: number; avgMs: number; totalMs: number }[];
   /** 方向③：成本估算（token 总量 → 人民币，混合单价估算） */
   costEstimate: { totalTokens: number; estCny: number };
+  /** P2-⑧ 成本闭环：单场成本分布（毛利模型的基础） */
+  costPerSession: {
+    avgTokens: number; maxTokens: number; minTokens: number;
+    avgCny: number; sessionCount: number;
+  };
 }
 
 /** 面板统计缓存：9 条全表聚合没必要每个 GET 都跑（60s 内存缓存） */
@@ -362,6 +369,37 @@ function computeDashboardStats(): DashboardStats {
     SELECT id, question, persona, status, reading, cards_json, created_at, error_reason
     FROM sessions ORDER BY created_at DESC LIMIT 20
   `).all() as { id: string; question: string; persona: string; status: string; reading: string; cards_json: string; created_at: number; error_reason: string }[];
+  // P2-⑧：单场成本（token 合计 + LLM 调用数 → 估算人民币）
+  const costById = new Map<string, { tokens: number; estCny: number; llmCalls: number }>();
+  for (const r of recent) {
+    try {
+      const u = db.prepare(`
+        SELECT COALESCE(SUM(prompt_tokens + completion_tokens),0) t, COUNT(*) n
+        FROM llm_usage WHERE session_id = ?
+      `).get(r.id) as { t: number; n: number };
+      costById.set(r.id, {
+        tokens: u.t,
+        llmCalls: u.n,
+        estCny: Math.round((u.t / 1_000_000) * 10 * 100) / 100, // 混合单价 ¥10/M
+      });
+    } catch { costById.set(r.id, { tokens: 0, estCny: 0, llmCalls: 0 }); }
+  }
+  // P2-⑧：单场成本分布（全部已完成会话 —— 毛利模型的基础）
+  const perSession = db.prepare(`
+    SELECT s.id,
+           (SELECT COALESCE(SUM(prompt_tokens + completion_tokens),0) FROM llm_usage WHERE session_id = s.id) t
+    FROM sessions s WHERE s.status = 'done'
+  `).all() as Array<{ id: string; t: number }>;
+  const sessionTokens = perSession.map((p) => p.t).filter((t) => t > 0);
+  const costPerSession = sessionTokens.length > 0
+    ? {
+        sessionCount: sessionTokens.length,
+        avgTokens: Math.round(sessionTokens.reduce((a, b) => a + b, 0) / sessionTokens.length),
+        maxTokens: Math.max(...sessionTokens),
+        minTokens: Math.min(...sessionTokens),
+        avgCny: Math.round((sessionTokens.reduce((a, b) => a + b, 0) / sessionTokens.length / 1_000_000) * 10 * 100) / 100,
+      }
+    : { sessionCount: 0, avgTokens: 0, maxTokens: 0, minTokens: 0, avgCny: 0 };
   const errorBreakdown = db.prepare(`
     SELECT CASE WHEN error_reason = '' THEN 'unknown' ELSE error_reason END reason, COUNT(*) count
     FROM sessions WHERE status = 'error' GROUP BY reason ORDER BY count DESC
@@ -408,6 +446,7 @@ function computeDashboardStats(): DashboardStats {
       id: r.id, question: r.question, persona: r.persona, status: r.status,
       reading: r.reading, cards: JSON.parse(r.cards_json), createdAt: r.created_at,
       errorReason: r.error_reason || undefined,
+      cost: costById.get(r.id) ?? { tokens: 0, estCny: 0, llmCalls: 0 },
     })),
     // 方向③：阶段瀑布总览（各阶段平均耗时 + 次数，dashboard 渲染）
     stageAggregates: getStageAggregates().map((s) => ({
@@ -420,6 +459,8 @@ function computeDashboardStats(): DashboardStats {
       // MiniMax-M3 定价参考：输入 ¥4/M tokens，输出 ¥16/M（混合估算 ¥10/M）
       estCny: Math.round((tokens.t / 1_000_000) * 10 * 100) / 100,
     },
+    // P2-⑧ 成本闭环：单场成本分布
+    costPerSession,
   };
 }
 
