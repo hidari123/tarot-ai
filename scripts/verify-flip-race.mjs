@@ -46,9 +46,15 @@ while (true) {
   const parts = buf.split("\n\n");
   buf = parts.pop() ?? "";
   for (const p of parts) {
-    const line = p.trim();
-    if (!line.startsWith("data:")) continue;
-    let evt; try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
+    // ⚠️ SSE 帧可能是多行（`id: <seq>` + `data: <json>`）—— 按行拆找 data: 行。
+    //    P1-③D 加了 id 字段后，单行解析会整帧跳过（收不到任何事件）。
+    let dataLine = "";
+    for (const raw of p.split("\n")) {
+      const l = raw.trim();
+      if (l.startsWith("data:")) { dataLine = l.slice(5).trim(); break; }
+    }
+    if (!dataLine) continue;
+    let evt; try { evt = JSON.parse(dataLine); } catch { continue; }
 
     if (evt.type === "session") sessionId = evt.sessionId;
 

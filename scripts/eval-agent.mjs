@@ -23,8 +23,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const BASE = process.argv.find((a) => a.startsWith("http")) || "http://localhost:3000";
 const CI_MODE = process.argv.includes("--ci");
-/** 并发度（默认 3 —— 再高会撞 LLM 速率限制） */
-const CONCURRENCY = Number(process.argv.find((a) => a.startsWith("--concurrency"))?.split("=")[1]) || 3;
+/**
+ * 并发度
+ * ⚠️ 默认 1（串行）—— 内网 glm 网关限 4 QPS，而每场占卜打 ~14 轮 LLM，
+ *    并发 3 会瞬间超限连锁 429（实测：整批失败）。
+ *    网关配额足够时可显式传 --concurrency=2 加速。
+ */
+const CONCURRENCY = Number(process.argv.find((a) => a.startsWith("--concurrency"))?.split("=")[1]) || 1;
 /** 只跑指定用例（调试用） */
 const ONLY = process.argv.find((a) => a.startsWith("--only"))?.split("=")[1]?.split(",");
 
@@ -35,8 +40,14 @@ const ALL_CASES = JSON.parse(
 const CASES = ONLY ? ALL_CASES.filter((c) => ONLY.includes(c.id)) : ALL_CASES;
 
 // 逐张解读模式下轮次翻倍（承约+呼召+选牌+检索+3×(翻牌+解读)+综合+收束 ≈14 轮），
-// 加上每轮有用户思考时间，总耗时比旧流程长 —— 超时放宽到 8 分钟
-const TIMEOUT_MS = Number(process.env.EVAL_TIMEOUT_MS) || 480000;
+// 加上每轮有用户思考时间，总耗时比旧流程长。
+//
+// ⚠️ 客户端超时应**大于**服务端看门狗（SESSION_DEADLINE_MS，默认 480000 = 8min）：
+//    两者相同时脚本会先 abort → 触发 client_disconnect →
+//    服务端会话被标 error（实测：eval 全部用例报 client_disconnect，
+//    看起来像"代码全坏了"，实际是超时竞争）。
+//    这里给 12min 余量：服务端先超时 → 走正常 error 路径 → 脚本收到 error 事件。
+const TIMEOUT_MS = Number(process.env.EVAL_TIMEOUT_MS) || 720000;
 
 /** 失败类型 */
 const FAIL = {
@@ -69,10 +80,15 @@ async function probeModelAvailable() {
       const parts = buf.split("\n\n");
       buf = parts.pop() ?? "";
       for (const p of parts) {
-        const line = p.trim();
-        if (!line.startsWith("data:")) continue;
+        // ⚠️ SSE 帧可能是多行（`id: <seq>` + `data: <json>`）—— 按行拆找 data: 行。
+        let dataLine = "";
+        for (const raw of p.split("\n")) {
+          const l = raw.trim();
+          if (l.startsWith("data:")) { dataLine = l.slice(5).trim(); break; }
+        }
+        if (!dataLine) continue;
         try {
-          const evt = JSON.parse(line.slice(5).trim());
+          const evt = JSON.parse(dataLine);
           if (evt.type === "session") return { ok: true };
           if (evt.type === "error") return { ok: false, reason: evt.error };
         } catch {}
@@ -116,10 +132,19 @@ async function runCase(tc) {
       const parts = buf.split("\n\n");
       buf = parts.pop() ?? "";
       for (const p of parts) {
-        const line = p.trim();
-        if (!line.startsWith("data:")) continue;
+        /* ⚠️ SSE 帧可能是**多行**：`id: <seq>\ndata: <json>`。
+         *   P1-③D 加了 `id:` 字段（断点续传）后，单行解析
+         *   （`p.trim().startsWith("data:")`）会**整帧跳过** ——
+         *   症状：eval 收不到任何事件 → 一条都不应答 → 全部撞超时。
+         *   必须按行拆开找 data: 行（与前端 page.tsx 的解析一致）。 */
+        let dataLine = "";
+        for (const raw of p.split("\n")) {
+          const l = raw.trim();
+          if (l.startsWith("data:")) { dataLine = l.slice(5).trim(); break; }
+        }
+        if (!dataLine) continue;
         try {
-          const evt = JSON.parse(line.slice(5).trim());
+          const evt = JSON.parse(dataLine);
           events.push(evt);
           if (evt.type === "delta") deltas.push(evt.delta);
           if (evt.type === "session") sessionId = evt.sessionId;
@@ -138,6 +163,11 @@ async function runCase(tc) {
                 sessionId,
                 answers: ["想知道大概什么时候有消息", "打算继续投但只投精准的", "怕又白投一场"],
               };
+            } else if (kind === "flip") {
+              // ⚠️ 翻牌闸门必须回"翻牌"（P1-③D 之后后端按文本判定）。
+              //    旧代码走通用分支 → options 为空 → 回退成"我想更进一步了解"
+              //    → 被后端当成插话，闸门语义错乱（实测：每场占卜都撞 8min 超时）。
+              body = { sessionId, answer: "翻牌" };
             } else {
               body = { sessionId, answer: evt.ask.options?.[0] ?? "我想更进一步了解" };
             }
@@ -165,6 +195,17 @@ async function runCase(tc) {
   const cited = reading.includes("典籍有云") || /\[\d+\]/.test(reading);
   const complete = events.some((e) => e.type === "done") && reading.length > 200;
   const reviewed = events.some((e) => e.type === "review");
+
+  /* ---- 429 限流 → 归为环境问题（不计入质量指标）----
+   * 内网网关限 4 QPS，超限时后端发 error 事件（"LLM 调用失败(429)"）。
+   * 这是**配额问题不是代码问题** —— 混进 assert 会让指标失真
+   * （实测：并发 3 时整批 429，总体通过率被拉到 2%，全是误报）。 */
+  if (errorEvent && /429|Rate limit/i.test(errorEvent)) {
+    return {
+      ...tc, failType: FAIL.ENV, failReason: `rate_limited: ${String(errorEvent).slice(0, 60)}`,
+      events, deltas: reading, errorEvent,
+    };
+  }
 
   /* ---- 仪式流程断言（真实塔罗流程）---- */
   const hasContract = events.some((e) => e.type === "contract");
@@ -215,11 +256,14 @@ if (!probe.ok) {
 const results = [];
 /**
  * 并发执行（P2-⑥）
- * ⚠️ 为什么并发：34 条用例串行要 ~40 分钟（每条 ~70s），
- *    没法当"改完代码就跑一下"的日常反馈。
- *    并发 3 → ~13 分钟。再高会撞 LLM 速率限制。
+ *
+ * ⚠️ 并发度必须匹配 LLM 网关的速率限制：
+ *    内网 glm 网关实测限 **4 QPS**（429 Rate limit exceeded），
+ *    而每场占卜要打 ~14 轮 LLM 往返 —— 并发 3 时瞬间超限，
+ *    导致整批用例连锁 429 失败（看起来像"代码崩了"）。
+ *    默认并发 1（串行）：每场 ~90s，34 条约 50 分钟 —— 慢但可靠。
+ *    想加速请在**网关配额足够**时用 --concurrency=2。
  */
-let running = 0;
 let doneCount = 0;
 const queue = [...CASES];
 

@@ -451,11 +451,14 @@ export async function* runAgent(
           yield { type: "delta", delta: "\n\n" };
         }
         yield { type: "phase", phase: "wait_user", label: "收束——听听你的回响…" };
+        // ⚠️ 闸门先就绪再通知（与下方 ask_user 分支同一原则）：
+        //    否则客户端抢跑应答会撞 409，应答被丢弃 → 等满 5min HITL 超时。
+        const closingWait = waitUserAnswer(session, question, cOptions, "closing", hitlClock);
         yield {
           type: "ask_user",
           ask: { question, options: cOptions, allowFree: true, prompt: question, kind: "closing" },
         };
-        const answer = await waitUserAnswer(session, question, cOptions, "closing", hitlClock);
+        const answer = await closingWait;
         // 超时/断开：以"未回应"收尾落库（不再无限挂起，也不拿哨兵值当用户回答）
         if (isHitlGone(answer)) {
           session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ closing, question, userAnswer: "（用户未回应，已收束）" }) });
@@ -560,6 +563,17 @@ export async function* runAgent(
         const flipPrompt = idx === 0
           ? "点开第一张牌"
           : `「${flippedOrder.map((i) => session.drawnCards[i]?.card.nameZh).filter(Boolean).join("、")}」讲完了。点开「${pos}」这张牌`;
+        // ⚠️ 翻牌闸门必须**先就绪、再通知前端**：
+        //    waitUserAnswer 是在 await 表达式求值时才设置 session.pendingAsk。
+        //    若先发 ask_user(flip) / flip_ready 再 await，前端收到"可点"信号时
+        //    后端还没在等 → 用户抢跑点击 → /api/answer 409
+        //    「当前没有等待回答的问题」。
+        //    症状：对话流里的牌点很多次没反应（409 被吞），
+        //    而顶部时间线的牌因为用户"看了一会儿才点"反而能翻。
+        //
+        //    做法：先启动等待（拿到 pendingAsk），**再**发事件 ——
+        //    前端的"可点"状态与后端闸门严格对齐，杜绝抢跑。
+        const flipWait = waitUserAnswer(session, flipPrompt, undefined, "flip", hitlClock);
         yield {
           type: "ask_user",
           ask: {
@@ -570,16 +584,6 @@ export async function* runAgent(
             kind: "flip",
           },
         };
-        // ⚠️ 翻牌闸门必须**先就绪、再通知前端**：
-        //    waitUserAnswer 是在 await 表达式求值时才设置 session.pendingAsk，
-        //    若先发 flip_ready 再 await，前端收到"可点"信号时后端还没在等
-        //    → 用户抢跑点击 → /api/answer 409「当前没有等待回答的问题」。
-        //    症状：对话流里的牌点很多次没反应（409 被吞），
-        //    而顶部时间线的牌因为用户"看了一会儿才点"反而能翻。
-        //
-        //    做法：先启动等待（拿到 pendingAsk），**再**发 flip_ready ——
-        //    前端的"可点"状态与后端闸门严格对齐，杜绝抢跑。
-        const flipWait = waitUserAnswer(session, flipPrompt, undefined, "flip", hitlClock);
         yield {
           type: "card_flip_ready",
           cardFlipReady: { cardIndex: idx, total: session.drawnCards.length, pos },
@@ -631,11 +635,13 @@ export async function* runAgent(
           label: `翻到「${pos}·${drawn.card.nameZh}」，请占卜师与你说说话`,
         };
         // 提确认问题（这是 HITL：等用户回答）
+        // ⚠️ 闸门先就绪再通知（避免客户端抢跑 409）
+        const confirmWait = waitUserAnswer(session, question, qOptions, "card_confirm", hitlClock);
         yield {
           type: "ask_user",
           ask: { question, options: qOptions, allowFree: true, prompt: question, kind: "card_confirm" },
         };
-        const answer = await waitUserAnswer(session, question, qOptions, "card_confirm", hitlClock);
+        const answer = await confirmWait;
         // 超时/断开：以"用户未回应"记录，流程不中断（占卜师按默认情况讲牌）
         if (isHitlGone(answer)) {
           slot.answer = "（用户未回应）";
@@ -953,6 +959,8 @@ export async function* runAgent(
           phase: "wait_user",
           label: "占卜师复述问题，请你确认…",
         };
+        // ⚠️ 闸门先就绪再通知（避免客户端抢跑 409）
+        const contractWait = waitUserAnswer(session, contractQ, confirmOptions, "contract", hitlClock);
         yield {
           type: "ask_user",
           ask: {
@@ -963,7 +971,7 @@ export async function* runAgent(
             kind: "contract",
           },
         };
-        const answer = await waitUserAnswer(session, contractQ, confirmOptions, "contract", hitlClock);
+        const answer = await contractWait;
         // 超时/断开：以"用户未确认"记录，沿用原始问题继续（不阻塞流程）
         const confirmed = isHitlGone(answer) ? "（用户未回应，按原问题继续）" : answer;
         if (!isHitlGone(answer)) {
@@ -1016,6 +1024,8 @@ export async function* runAgent(
         session.invocation = { questions, answers: [] };
         yield { type: "invocation", invocation: { questions } };
         yield { type: "phase", phase: "wait_user", label: "呼召——请你回答三个问题…" };
+        // ⚠️ 闸门先就绪再通知（避免客户端抢跑 409）
+        const invocationWait = waitUserAnswer(session, questions.join("\n"), undefined, "invocation", hitlClock);
         yield {
           type: "ask_user",
           ask: {
@@ -1026,7 +1036,7 @@ export async function* runAgent(
             kind: "invocation",
           },
         };
-        const answer = await waitUserAnswer(session, questions.join("\n"), undefined, "invocation", hitlClock);
+        const answer = await invocationWait;
         if (isHitlGone(answer)) {
           // 超时/断开：呼召未完成——记录空回答继续（骨架缺失但不挂死）
           session.invocation = { questions, answers: [] };
@@ -1119,9 +1129,17 @@ export async function* runAgent(
         }
 
         yield { type: "phase", phase: "wait_user", label: "占卜师需要你的回应…" };
+        // ⚠️ 闸门必须**先就绪、再通知前端**（与翻牌闸门同一原则）：
+        //    waitUserAnswer 在 await 表达式求值时才设置 session.pendingAsk。
+        //    若先 yield askEvent 再 await，前端/客户端收到事件后立刻应答，
+        //    但后端还没进入等待 → pendingAsk 为空 → /api/answer 返回 409
+        //    「当前没有等待回答的问题」→ 应答被丢弃 → 后端等满 5min
+        //    HITL 超时 → 8min 看门狗中止 → client_disconnect。
+        //    实测症状：每场占卜都撞满 8 分钟超时（eval 全军覆没）。
+        const askWait = waitUserAnswer(session, askPrompt, options, undefined, hitlClock);
         yield askEvent;
 
-        const userAnswer = await waitUserAnswer(session, askPrompt, options, undefined, hitlClock);
+        const userAnswer = await askWait;
 
         // 超时/断开：HITL 通道统一收尾——选牌超时改为随机代抽（保流程），
         // 提问类以"（用户未回应）"记录，流程继续不挂死。

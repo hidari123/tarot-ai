@@ -24,10 +24,15 @@ while (!done) {
   const parts = buf.split("\n\n");
   buf = parts.pop() ?? "";
   for (const p of parts) {
-    const line = p.trim();
-    if (!line.startsWith("data:")) continue;
+    // ⚠️ SSE 帧可能是多行（`id: <seq>` + `data: <json>`）—— 按行拆找 data: 行。
+    let dataLine = "";
+    for (const raw of p.split("\n")) {
+      const l = raw.trim();
+      if (l.startsWith("data:")) { dataLine = l.slice(5).trim(); break; }
+    }
+    if (!dataLine) continue;
     try {
-      const evt = JSON.parse(line.slice(5).trim());
+      const evt = JSON.parse(dataLine);
       const now = Date.now();
       const gap = now - lastEvtTime;
       lastEvtTime = now;
