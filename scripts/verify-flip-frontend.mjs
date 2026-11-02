@@ -52,7 +52,11 @@ for (const [label, ok] of checks) {
 console.log(`\n${pass}/${checks.length} 通过`);
 
 // 3. 后端事件不含牌面
-const agent = read("src/lib/tarot-agent.ts");
+// ⚠️ 拆包后实现从 tarot-agent.ts 移到了 src/lib/agent/supervisor.ts
+//    （tarot-agent.ts 现在是薄壳 re-export）。两处都读，取第一个存在的。
+const readImpl = (p) => { try { return read(p); } catch { return ""; } };
+const agent =
+  readImpl("src/lib/agent/supervisor.ts") || readImpl("src/lib/tarot-agent.ts");
 const flipReadyCheck =
   /cardFlipReady:\s*\{\s*cardIndex:\s*idx,\s*total:[^}]*pos\s*\}/s.test(agent);
 console.log(`\n后端 cardFlipReady 只含索引/位置: ${flipReadyCheck ? "✅" : "❌"}`);
