@@ -49,6 +49,20 @@ const CASES = ONLY ? ALL_CASES.filter((c) => ONLY.includes(c.id)) : ALL_CASES;
 //    这里给 12min 余量：服务端先超时 → 走正常 error 路径 → 脚本收到 error 事件。
 const TIMEOUT_MS = Number(process.env.EVAL_TIMEOUT_MS) || 720000;
 
+/**
+ * 用例间隔节流（--throttle=N 秒）
+ *
+ * ⚠️ 为什么需要：内网 glm 网关的实测配额是 **4 次 / 20 秒窗口**
+ *    （实测：间隔 20s 连续 5 次全过；间隔 3s 则每次都被限流，
+ *    且 resets at 随请求时刻滚动）。
+ *    而单场占卜内部就有 ~14 次 LLM 调用（间隔 1~2s）→ 必然打满窗口。
+ *    结果是每条用例的第一步就 429 → 走降级 → 质量指标全部失真。
+ *
+ *    节流无法解决"单场内部打满"，但能让**相邻用例**不叠加，
+ *    给窗口留出恢复时间。默认 0（不节流），配额受限时用 --throttle=25。
+ */
+const THROTTLE_MS = (Number(process.argv.find((a) => a.startsWith("--throttle"))?.split("=")[1]) || 0) * 1000;
+
 /** 失败类型 */
 const FAIL = {
   ENV: "env_error",
@@ -299,6 +313,10 @@ async function worker() {
       console.log(
         `  [${pct}%] [${tc.id}] ${((total / max) * 100).toFixed(0)}%  (${r.tools.length} tools, ${r.readingLen} chars, ${r.hitlCount} HITL)`
       );
+    }
+    // 节流：给网关配额窗口留恢复时间（见 THROTTLE_MS 说明）
+    if (THROTTLE_MS > 0 && queue.length > 0) {
+      await new Promise((res) => setTimeout(res, THROTTLE_MS));
     }
   }
 }

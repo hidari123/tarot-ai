@@ -5,7 +5,10 @@
  */
 const BASE = process.argv[2] || "http://localhost:3000";
 const ac = new AbortController();
-setTimeout(() => ac.abort(), 300000);
+// ⚠️ 上游网关限流 → 后端主动节流（默认 20s/次）→ 一场完整占卜
+//    14 次 LLM 往返 ≈ 5 分钟（实测 224s 到 write_reading 阶段）。
+//    所以客户端超时要给足余量，否则会误判成"失败"。
+setTimeout(() => ac.abort(), Number(process.env.E2E_TIMEOUT_MS) || 900000);
 
 const res = await fetch(`${BASE}/api/interpret`, {
   method: "POST", headers: { "Content-Type": "application/json" },

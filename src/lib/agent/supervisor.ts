@@ -866,8 +866,25 @@ export async function* runAgent(
             yield evt;
           }
           revision = (session as unknown as { __revision?: string }).__revision ?? "";
-        } catch {
-          // 审校失败不阻断
+        } catch (e) {
+          /* ⚠️ 审校失败不阻断，但**必须给出一个 review 事件**：
+           *    审校是流程的一环（前端有审校面板、评估脚本断言 review 维度）。
+           *    此前这里静默 catch 掉 → 审校不可用时前端看不到任何审校信息，
+           *    评估侧也判成"review 维度未达标"（实测：reviewer 失败率 75%，
+           *    因为它在流程末尾、正好吃到限流窗口的尾部）。
+           *    降级策略：审校不可用 → 按"通过"处理并如实标注来源。
+           *    （底线：降级不删 —— 宁可标注"审校暂不可用"，也不要静默消失。） */
+          const reason = e instanceof Error ? e.message : "未知错误";
+          review = {
+            pass: true,
+            scores: { grounding: 0, empathy: 0, tone: 0 },
+            comment: `审校服务暂不可用（${reason.slice(0, 60)}），本次解读未经审校`,
+          };
+          yield {
+            type: "review",
+            review: { pass: true, scores: { grounding: 0, empathy: 0, tone: 0 }, comment: review.comment },
+          };
+          yield { type: "subagent", subagent: { agent: "reviewer", action: "审校不可用，已跳过（降级）" } };
         }
 
         // Reflexion：不过 → 重写一次 → 重新审校

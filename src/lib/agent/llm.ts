@@ -133,6 +133,44 @@ export function splitThinkTags(raw: string): { content: string; reasoning?: stri
 }
 
 /* ------------------------------------------------------------------ */
+/* Provider 级最小请求间隔（限流保护）                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 同一 provider 的最小请求间隔（毫秒）。
+ *
+ * ⚠️ 为什么需要：上游网关有突发配额（实测内网 glm 网关：
+ *    **约 4 次 / 30~40 秒窗口** —— 间隔 20s 连发 5 次全过、间隔 12s 连发 6 次全过；
+ *    间隔 8s 时第 5 次被限流、间隔 3s 每次都被限流，
+ *    且 "resets at" 随请求时刻滚动）。
+ *    而一场占卜要打 ~14 次 LLM 往返（承约/呼召/选牌/检索/3×(翻牌+解读)/综合/收束），
+ *    间隔仅 1~2 秒 —— **必然打满窗口**，表现为 429 → 降级 → 质量指标失真。
+ *
+ *    熔断器只能"事后"跳过坏掉的 provider（30~60 秒冷却），
+ *    限流是"事前"的节奏问题 —— 需要主动节流。
+ *
+ *    实测安全间隔 **20 秒**（4 次/约 80 秒窗口）：
+ *      间隔 20s 连发 5 次全过、12s 连发 6 次全过、8s 第 5 次被限流、
+ *      3s 每次被限流。
+ *    一场完整占卜 14 次调用 → 约 4.7 分钟（配合 8min 看门狗仍有余量）。
+ *    用环境变量覆盖：LLM_MIN_INTERVAL_MS=0 可关闭（配额充足时）。
+ */
+const MIN_INTERVAL_MS = Number(process.env.LLM_MIN_INTERVAL_MS ?? 20000);
+
+/** 每个 provider 上次请求的时刻 */
+const lastRequestAt = new Map<string, number>();
+
+/** 取号：等到距上次请求满 MIN_INTERVAL_MS 才放行（并发调用会排队） */
+async function acquireSlot(providerName: string): Promise<void> {
+  if (MIN_INTERVAL_MS <= 0) return;
+  const last = lastRequestAt.get(providerName) ?? 0;
+  const wait = last + MIN_INTERVAL_MS - Date.now();
+  // 记录"预定时刻"而不是"实际发出时刻" —— 并发调用时各自排队，不会聚在一起
+  lastRequestAt.set(providerName, Math.max(Date.now(), last + MIN_INTERVAL_MS));
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+}
+
+/* ------------------------------------------------------------------ */
 /* 非流式调用                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -146,6 +184,7 @@ async function rawCall(
 ): Promise<CallResult> {
   const timeoutMs = llmTimeoutFor(agent);
   const attempt = async (): Promise<CallResult> => {
+    await acquireSlot(p.name);
     const t0 = Date.now();
     const res = await fetch(`${p.baseURL}/chat/completions`, {
       method: "POST",
@@ -293,6 +332,7 @@ async function* tryStreamOnce(
   const t0 = Date.now();
   let res: Response;
   try {
+    await acquireSlot(p.name);
     res = await fetch(`${p.baseURL}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${p.apiKey}` },
