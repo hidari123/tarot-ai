@@ -254,7 +254,12 @@ export function restoreSession(snap: SessionSnapshot): AgentSession | null {
     const s: AgentSession = {
       id: snap.id,
       createdAt: snap.createdAt,
-      lastActive: Date.now(),
+      // ⚠️ 必须保留**原始** lastActive，不能填 Date.now()。
+      //    否则恢复一个 3 天前的僵尸会话时，它会"看起来刚刚活跃"，
+      //    随后 persist 又把这个假心跳写回快照 → 永久保鲜 →
+      //    会话永远停在 running，还占着 LLM 网关的并发槽位（限流恢复不了）。
+      //    真实活跃时间由 getSession（心跳）与 markSessionDirty 维护。
+      lastActive: snap.lastActive ?? Date.now(),
       messages: snap.messages ?? [],
       question: snap.question,
       persona,

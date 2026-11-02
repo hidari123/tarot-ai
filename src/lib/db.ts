@@ -253,14 +253,22 @@ export function listRecoverableSessions(olderThanMs = 0): Array<{ id: string; st
  *
  * 场景：进程重启 / 客户端断开 / 生成器被 GC —— 这些路径不会执行正常收尾，
  * 导致会话永远停在 running（实测占比高达 45%）。
- * 判据：status='running' 且最后活动时间超过阈值。
- */export function reconcileStaleSessions(maxAgeMs = 30 * 60 * 1000): number {
+ *
+ * ⚠️ 判据用**快照里的 lastActive**（真实最后活跃时间），不是 created_at：
+ *    created_at 是创建时间 —— 一场跑了几分钟的占卜，created_at 已经很旧，
+ *    但它此刻还活着，用 created_at 会把活会话误杀。
+ *    没有快照的会话（state_json 为空）才退回 created_at。
+ */
+export function reconcileStaleSessions(maxAgeMs = 30 * 60 * 1000): number {
   const cutoff = Date.now() - maxAgeMs;
   const result = db.prepare(`
     UPDATE sessions
     SET status = 'error', error_reason = 'stale_timeout', finished_at = ?
-    WHERE status = 'running' AND created_at < ?
-  `).run(Date.now(), cutoff);
+    WHERE status = 'running' AND (
+      (state_json != '' AND CAST(json_extract(state_json, '$.lastActive') AS INTEGER) < ?)
+      OR (state_json = '' AND created_at < ?)
+    )
+  `).run(Date.now(), cutoff, cutoff);
   return result.changes;
 }
 
