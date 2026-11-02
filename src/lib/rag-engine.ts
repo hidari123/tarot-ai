@@ -307,7 +307,14 @@ export async function hybridSearch(query: string, topK = 5): Promise<RagHit[]> {
   return fuseAndDedup(exactHits, bm25Hits, vecAsRag, topK);
 }
 
-/** RRF 融合 + 每牌去重 + 归一化（三通道通用） */
+/** RRF 融合 + 每牌去重 + 归一化（三通道通用）
+ *
+ * P4-⑪ 实测结论（grid-search-rag.mjs，golden 51 条双口径）：
+ *   字段权重进融合 = 无净收益（裸 +0.3pt / 改写 -0.7pt）——
+ *   FIELD_WEIGHT 已在 BM25 打分内部生效（ragSearch 内 score *= FIELD_WEIGHT），
+ *   融合层再加一遍是**重复计数**。故保持原状，不加。
+ *   检索层下一步的正确方向是 cross-encoder rerank（对 top-20 重排）。
+ */
 function fuseAndDedup(exactHits: RagHit[], bm25Hits: RagHit[], vecHits: RagHit[], topK: number): RagHit[] {
   // 无精确命中时退化为原两路
   if (exactHits.length === 0 && bm25Hits.length === 0 && vecHits.length === 0) return [];
