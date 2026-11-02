@@ -1086,6 +1086,36 @@ export async function* runAgent(
           askPrompt = q;
           askEvent = { type: "ask_user", ask: { question: q, options, allowFree: true, prompt: q } };
         } else if (name === "offer_card_selection") {
+          /* ---- 仪式守卫：承约未完成不得选牌；呼召未完成也不得选牌 ----
+           * （prompt 是软约束，模型会跳过 —— 必须在后端强制） */
+          if (!session.contractQuestion) {
+            session.messages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: JSON.stringify({
+                error: "还不能选牌：承约尚未完成",
+                hint:
+                  "请先调用 establish_contract —— 把用户的问题复述成一个更具体、能被牌回答的问题，" +
+                  "并声明牌阵范围，请用户确认。真实占卜师绝不会跳过这一步。",
+              }),
+            });
+            roundToolNames.push("offer_card_selection(拦截)");
+            continue;
+          }
+          if (!session.invocation || session.invocation.answers.length === 0) {
+            session.messages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: JSON.stringify({
+                error: "还不能选牌：三问呼召尚未完成",
+                hint:
+                  "请先调用 invoke_three_questions —— 请用户回答" +
+                  "「想知道什么 / 打算做什么 / 需要防什么」。这三个回答是后续解读的骨架。",
+              }),
+            });
+            roundToolNames.push("offer_card_selection(拦截)");
+            continue;
+          }
           const count = Math.min(Math.max(Number(args.count) || 3, 1), 5);
           askPrompt = `请凭直觉，从 ${count} 张牌中选出属于你的 ${count} 张命运之牌`;
           // 随机抽 7 张候选牌组成扇面（比全 78 张更聚焦，保留"直觉挑选"仪式感）
@@ -1274,6 +1304,41 @@ export async function* runAgent(
       let toolContent: string | undefined;
 
       if (name === "draw_cards") {
+        /* ---- 仪式守卫：承约未完成不得抽牌 ----
+         * ⚠️ 为什么不靠 prompt：system prompt 里"顺序不可颠倒"是**软约束**，
+         *    实测 glm-5.3 会直接调 draw_cards 跳过承约+呼召+逐张解读
+         *    （32/34 条 eval 用例的 contract/invocation/percard/closing 全缺）。
+         *    仪式是这个产品的核心差异点 —— 缺了它就只是个"随机抽牌 + LLM 解读"。
+         *    所以在**后端强制**：没承约就抽牌 → 打回并要求先承约。
+         */
+        if (!session.contractQuestion) {
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              error: "还不能抽牌：承约尚未完成",
+              hint:
+                "请先调用 establish_contract —— 把用户的问题复述成一个更具体、能被牌回答的问题，" +
+                "并声明牌阵范围，请用户确认。真实占卜师绝不会跳过这一步。",
+            }),
+          });
+          roundToolNames.push("draw_cards(拦截)");
+          continue;
+        }
+        if (!session.invocation || session.invocation.answers.length === 0) {
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              error: "还不能抽牌：三问呼召尚未完成",
+              hint:
+                "请先调用 invoke_three_questions —— 请用户回答" +
+                "「想知道什么 / 打算做什么 / 需要防什么」。这三个回答是后续解读的骨架。",
+            }),
+          });
+          roundToolNames.push("draw_cards(拦截)");
+          continue;
+        }
         const spread = (args.spread as string) || "three";
         const { summary, cards } = execDrawCards(spread, session);
         resultSummary = summary;
