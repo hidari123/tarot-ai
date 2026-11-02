@@ -207,6 +207,22 @@ async function runCase(tc) {
     };
   }
 
+  /* ---- 走了本地降级引擎 → 归为环境问题 ----
+   * ⚠️ 降级路径（runLocalFallback）是"剧本式"的：它**不产生**
+   *    contract / invocation / card_reveal 事件 —— 那是 LLM 路径独有的仪式。
+   *    于是降级会话会被仪式断言全部判失败（实测：32/34 条误报）。
+   *    降级是**环境不可用时的兜底**，不是质量缺陷 → 归 env_error 不计入。
+   *    检测方式：phase 事件 label 含"本地引擎"或"远端模型不可用"。 */
+  const degraded = events.some(
+    (e) => e.type === "phase" && /本地引擎|远端模型不可用/.test(String(e.label ?? ""))
+  );
+  if (degraded) {
+    return {
+      ...tc, failType: FAIL.ENV, failReason: "degraded_local_fallback: 远端模型不可用，走本地降级",
+      events, deltas: reading, errorEvent,
+    };
+  }
+
   /* ---- 仪式流程断言（真实塔罗流程）---- */
   const hasContract = events.some((e) => e.type === "contract");
   const hasInvocation = events.some((e) => e.type === "invocation");
