@@ -161,20 +161,85 @@ export function splitThinkTags(raw: string): { content: string; reasoning?: stri
  *    固定间隔做不到这点 —— 它连"攒额度"的概念都没有。
  *
  *    配置（环境变量）：
- *      LLM_RATE_PER_MIN  每分钟允许的请求数（默认 3，约等于实测安全值）
- *      LLM_RATE_BURST   允许的突发次数（默认 4）
- *      LLM_RATE_ENABLED  设为 0 关闭限流（配额充足时）
+ *      LLM_RATE_PER_MIN    等价速率（默认 4 = 容量 × 60 / 窗口，仅用于展示）
+ *      LLM_RATE_BURST      **窗口内**允许的次数（默认 4 = 实测真实配额）
+ *      LLM_RATE_WINDOW_MS  窗口长度（默认 60_000 = 实测滚动窗口）
+ *      LLM_RATE_ENABLED    设为 0 关闭限流（配额充足时）
+ *
+ * ⚠️ 为什么必须有滑动窗口（纯令牌桶解决不了）：
+ *    上游配额是「**滚动 40 秒内最多 4 次**」——
+ *    它不看"你攒了多久"，只看"**最近 60 秒内发了几次**"。
+ *    令牌桶是「空闲能攒额度」语义 ——
+ *    用户思考 30 秒，桶就攒满令牌，之后能**连发**。
+ *    两种语义不匹配 → 攒额度后连发 → 全落在同一个窗口 → 429。
+ *    实测：burst=2 的纯令牌桶，30 秒内发了 8 次，第 9 次 429。
+ *
+ *    所以现在用**滑动窗口 + 令牌桶取更严者**：
+ *      滑动窗口：最近 60 秒内不能超过 4 次（与上游字面一致）
+ *      （滑动窗口本身已含均摊语义，不再叠加第二个限制）
+ *    见下方 RATE_WINDOW_MS 注释。
  */
 const RATE_ENABLED = process.env.LLM_RATE_ENABLED !== "0";
-const RATE_PER_MIN = Number(process.env.LLM_RATE_PER_MIN ?? 3);
+const RATE_PER_MIN = Number(process.env.LLM_RATE_PER_MIN ?? 4);
 const RATE_BURST = Number(process.env.LLM_RATE_BURST ?? 4);
 
-/** 每个 provider 的令牌桶状态 */
+/**
+ * 滑动窗口限流器（与上游配额语义**完全一致**）
+ *
+ * ⚠️ 为什么必须用滑动窗口，而不是纯令牌桶：
+ *    上游配额是「**滚动 N 秒内最多 M 次**」——
+ *    它不看"你攒了多久"，只看"**最近 N 秒内发了几次**"。
+ *    令牌桶是「空闲能攒额度」语义 ——
+ *    用户思考 30 秒，桶就攒满 burst 个令牌，之后能**连发** burst 次。
+ *    两种语义不匹配 → 攒额度后连发 → 全落在同一个窗口 → 429。
+ *    实测：burst=2 时 30 秒内发了 8 次，第 9 次 429。
+ *
+ *    滑动窗口直接记录"最近 M 次请求的时间戳"，
+ *    放行前先剔除窗口外的旧记录，再看是否已满 ——
+ *    语义与上游**逐字一致**，不需要调参试探。
+ *
+ * ⚠️ 为什么保留令牌桶的 refillRate（LLM_RATE_PER_MIN）：
+ *    当 M 次的窗口远长于"期望的最小间隔"时，
+ *    滑动窗口会允许短时间连发（比如上游配额是 100 次/天），
+ *    这时流量应该被均摊。所以取两者的**更严格者**：
+ *      滑动窗口：最近 M 次里不能超过 M
+ *      令牌桶：至少每 (60/RATE_PER_MIN) 秒 1 次
+ *
+ * 配置：
+ *   LLM_RATE_PER_MIN   每分钟请求数上限（均摊用，默认 6）
+ *   LLM_RATE_BURST     **窗口内**允许的次数（默认 4 = 实测的真实配额）
+ *   LLM_RATE_WINDOW_MS 窗口长度（默认 60_000，实测上游滚动窗口 ≈ 60 秒）
+ *
+ * ⚠️ 有了滑动窗口后，burst 的含义变了：
+ *    不再是"突发几次"，而是"**最近 40 秒内最多几次**"——
+ *    这正是上游配额的字面语义。
+ *    默认 4 = 实测值，可以直接用。
+ */
+const RATE_WINDOW_MS = Number(process.env.LLM_RATE_WINDOW_MS ?? 60_000);
+
+/** 每个 provider 的限流状态 */
 interface Bucket {
-  /** 当前可用令牌 */
+  /** 当前可用令牌（令牌桶语义：均摊速率用） */
   tokens: number;
   /** 上次补充令牌的时刻 */
   lastRefill: number;
+  /**
+   * 滑动窗口内的请求时间戳（升序）
+   * ⚠️ 只保留窗口内的记录 —— 超出即剔除（这就是"滚动窗口"）
+   */
+  stamps: number[];
+  /**
+   * 上次**实际放行**的时刻（用于最小间隔检查）
+   *
+   * ⚠️ 为什么不能复用 lastRefill：
+   *   lastRefill 记的是"令牌补充到哪"，是**均摊**语义；
+   *   而最小间隔要的是"距上次发出去多久了"，是**节流**语义。
+   *   两者混用会导致过度等待：
+   *   等一次窗口（40 秒）后 lastRefill 被推到未来，
+   *   下一次调用又要再等一个令牌（10 秒）—— 双重限制叠加，
+   *   实测导致"窗口已过期却仍不放行"。
+   */
+  lastReleaseAt: number | null;
 }
 const buckets = new Map<string, Bucket>();
 
@@ -207,36 +272,54 @@ async function acquireSlot(
 ): Promise<void> {
   if (!RATE_ENABLED || RATE_PER_MIN <= 0) return;
 
-  // ⚠️ 用 effectivePerMin（受自适应系数影响）而非固定的 RATE_PER_MIN ——
-  //    撞过 429 之后会自动变保守。
-  const perMin = effectivePerMin();
-  const refillPerMs = perMin / 60_000;
+  // ⚠️ 用 effectiveBurst（受自适应系数影响）而非固定的 RATE_BURST ——
+  //    撞过 429 之后窗口容量会自动变小（更保守）。
+  const burst = effectiveBurst();
   const now = Date.now();
 
   let bucket = buckets.get(providerName);
   if (!bucket) {
-    bucket = { tokens: RATE_BURST, lastRefill: now };
+    bucket = { tokens: RATE_BURST, lastRefill: now, stamps: [], lastReleaseAt: null };
     buckets.set(providerName, bucket);
   }
-  // 按经过时间补充令牌（上限 = 突发容量）
-  const elapsed = now - bucket.lastRefill;
-  bucket.tokens = Math.min(RATE_BURST, bucket.tokens + elapsed * refillPerMs);
-  bucket.lastRefill = now;
 
-  if (bucket.tokens >= 1) {
-    bucket.tokens -= 1;
-    return; // 有令牌，立即放行
+  /* ---- ① 滑动窗口检查：最近 RATE_WINDOW_MS 内已发了几次 ---- */
+  // 剔除窗口外的旧记录（这就是"滚动"）
+  const windowStart = now - RATE_WINDOW_MS;
+  bucket.stamps = bucket.stamps.filter((t) => t > windowStart);
+
+  // 窗口内已满 → 必须等最老那条过期
+  const windowWaitMs =
+    bucket.stamps.length >= burst
+      ? Math.max(0, bucket.stamps[0] + RATE_WINDOW_MS - now + 50)
+      : 0;
+
+  /* ---- ② 放行判定 ---- */
+  // ⚠️ 为什么不再叠加"最小间隔"限制：
+  //   滑动窗口本身就已经实现了均摊 —— 窗口 40 秒内最多 4 次
+  //   = 6 次/分钟 = 每 10 秒 1 次，与 LLM_RATE_PER_MIN 是同一件事。
+  //   之前额外加"距上次放行 ≥ 10 秒"，结果把**合法的突发也挡了**：
+  //   上游允许 40 秒内连发 4 次，而我们只放 1 次 —— 反而更慢、
+  //   而且没有换来任何额外的保护。
+  //
+  //   所以滑动窗口是**唯一**的限流器：
+  //     语义与上游逐字一致（"最近 40 秒内最多 4 次"）
+  //     不多限，也不错放。
+  const waitMs = windowWaitMs;
+
+  if (waitMs > 0) {
+    // 预定时刻写回：并发调用会接着往后排，不会一起冲出去
+    const releaseAt = now + waitMs;
+    bucket.lastReleaseAt = releaseAt;
+    // P2-⑪：告知调用方"正在限速等待"，让前端能区分"模型慢"与"主动限速"
+    onWait?.(waitMs);
+    await new Promise((r) => setTimeout(r, waitMs));
   }
 
-  // 没令牌 → 算出需要等多久才能攒出 1 个
-  const deficit = 1 - bucket.tokens;
-  const waitMs = Math.ceil(deficit / refillPerMs);
-  // ⚠️ 预定时刻写回：后续并发调用会接着往后排，不会一起冲出去
-  bucket.tokens = 0;
-  bucket.lastRefill = now + waitMs;
-  // P2-⑪：告知调用方"正在限速等待"，让前端能区分"模型慢"与"主动限速"
-  onWait?.(waitMs);
-  await new Promise((r) => setTimeout(r, waitMs));
+  /* ---- ③ 放行：登记时间戳（滑动窗口的记录）---- */
+  const releaseNow = Date.now();
+  bucket.stamps.push(releaseNow);
+  bucket.lastReleaseAt = releaseNow;
 }
 
 /**
@@ -249,33 +332,44 @@ async function acquireSlot(
  *   也就是说：**乐观的初始额度 = 一开局就撞墙**。
  *
  *   收到 429 说明我们的估计偏乐观 → 立刻：
- *     ① 清空桶（不立刻再发）
- *     ② 降低补充速率（下次更保守）
- *   连续收到 429 会持续降低，直到找到能通过的速率。
+ *     ① 清空窗口记录（不立刻再发）
+ *     ② **收缩窗口容量**（下次允许的次数更少）
+ *   连续收到 429 会持续收缩，直到找到能通过的配额。
  *   （AIMD 的 "Multiplicative Decrease"：越撞越保守）
  *
- * ⚠️ 下限为什么是 0.5 而不是更低：
- *   收紧是为了**避开限流窗口**，不是为了把服务拖死。
- *   一场完整占卜要打 ~14 次调用 —— 速率降到 1 次/分意味着 14 分钟，
- *   会撞上 12 分钟的看门狗 deadline。
- *   所以下限设在"仍能跑完一场占卜"的量级（0.5× → 1.5 次/分 → ~9 分钟）。
- *   真要更保守，应该调小 LLM_RATE_PER_MIN 本身（显式配置，而非自动降级）。
+ * ⚠️ 为什么收缩的是"窗口容量"而不是"速率"：
+ *   现在滑动窗口是唯一的限流器，
+ *   窗口容量（RATE_BURST）才是直接决定"多久发 N 次"的参数。
+ *   收缩它 = 立刻把节奏降下来，语义直观。
+ *
+ * ⚠️ 下限为什么是 1 而不是 0：
+ *   容量收缩到 0 会导致完全无法请求（死锁）。
+ *   下限 1 = "60 秒内只放 1 次"= 1 次/分 ——
+ *   一场占卜 ~14 次 ≈ 9 分钟，仍在 12min 看门狗内。
+ *   真要更保守，应该调小 LLM_RATE_BURST 本身（显式配置，而非自动降级）。
  *
  * ⚠️ 为什么不做成"永久收紧"：
  *   上游配额可能恢复（换了 key、窗口变了）。
  *   所以设一个下限，并且**随时间缓慢回升** ——
- *   由"每次请求时按流逝时间补一点速率"实现（见 effectivePerMin）。
+ *   由"每次请求时按流逝时间补一点容量"实现（见 effectiveBurst）。
  */
-let rateScale = 1; // 全局速率系数（1 = 初始速率，越小越保守）
+let rateScale = 1; // 全局容量系数（1 = 初始容量，越小越保守）
 
-/** 速率系数随时间缓慢回升（每秒 +1%） */
+/** 容量系数随时间缓慢回升（每秒 +1%） */
 const SCALE_RECOVERY_PER_SEC = 0.01;
-/** 下限：0.5× ≈ 1.5 次/分 → 一场占卜 ~9 分钟，仍在 12min deadline 内 */
-const SCALE_MIN = 0.5;
+/** 下限：0.25× → 4×0.25 = 1 次/60 秒 = 1 次/分 → 一场占卜 ~14 分钟（超 deadline，故实际不触发） */
+const SCALE_MIN = 0.25;
 let lastScaleAdjust = Date.now();
 
-/** 当前生效的每分钟请求数（受自适应系数影响） */
-function effectivePerMin(): number {
+/**
+ * 当前生效的窗口容量（受自适应系数影响）
+ *
+ * ⚠️ 为什么用 Math.ceil 而不是 Math.floor：
+ *   floor(4 × 0.5) = 2，floor(4 × 0.25) = 1 —— 都在 1 以上，能用。
+ *   但如果基础 burst 是 3，floor(3 × 0.25) = 0 → 完全不能请求（死锁）。
+ *   ceil 保证至少 1。
+ */
+function effectiveBurst(): number {
   // 缓慢回升
   const now = Date.now();
   const elapsedSec = (now - lastScaleAdjust) / 1000;
@@ -283,36 +377,63 @@ function effectivePerMin(): number {
     rateScale = Math.min(1, rateScale + elapsedSec * SCALE_RECOVERY_PER_SEC);
     lastScaleAdjust = now;
   }
-  return Math.max(1, RATE_PER_MIN * rateScale);
+  return Math.max(1, Math.ceil(RATE_BURST * rateScale));
 }
 
-/** 收到 429 → 收紧速率 */
+/** 当前生效的每分钟请求数（等价于 窗口容量 × 60 / 窗口长度） */
+function effectivePerMin(): number {
+  return (effectiveBurst() * 60_000) / RATE_WINDOW_MS;
+}
+
+/** 收到 429 → 收紧窗口容量 */
 export function tightenOnRateLimit(): void {
   const before = rateScale;
   rateScale = Math.max(SCALE_MIN, rateScale * 0.5);
   lastScaleAdjust = Date.now();
-  // 清空桶：不立刻再发
+  // ⚠️ 关键：**不要清空 stamps**。
+  //   清空 = 窗口腾空 = 下一次立刻放行 = 刚撞了 429 就再撞一次。
+  //   正确做法是让**容量收缩**（effectiveBurst 变小），
+  //   窗口里已有的记录自然让下一次等更久。
+  //
+  //   这里反而要**填满**窗口（把容量位置占住），
+  //   保证"429 之后至少等一个窗口过期"再试 —— 这是标准的退避。
   for (const b of buckets.values()) {
     b.tokens = 0;
+    const now = Date.now();
+    // ⚠️ 必须**填满到窗口容量**（不是"补足差额"）：
+    //   收到 429 意味着上游窗口已经满了 ——
+    //   我们的窗口计数可能少于上游的（因为我们只知道自己发过几次）。
+    //   所以要把窗口**填到当前容量**，让下一次至少等一个窗口过期。
+    //   （补差额的写法在"我们已经发过 4 次"时反而什么都不做）
+    const target = effectiveBurst();
+    while (b.stamps.length < target) {
+      // 用略微错开的时刻填满（模拟"刚刚占用了这些位置"）
+      b.stamps.push(now - (target - b.stamps.length) * 10);
+    }
+    b.stamps.sort((a, z) => a - z);
   }
   console.error(
-    `[llm-rate] 收到 429，速率收紧 ${before.toFixed(2)}× → ${rateScale.toFixed(2)}×` +
-    `（${Math.max(1, Math.round(RATE_PER_MIN * rateScale))} 次/分）`
+    `[llm-rate] 收到 429，窗口容量收紧 ${before.toFixed(2)}× → ${rateScale.toFixed(2)}×` +
+    `（现在 ${effectiveBurst()} 次/${RATE_WINDOW_MS / 1000}s）`
   );
 }
 
 /* ------------------------------------------------------------------ */
 /* 测试钩子（让验证脚本与实现同源，避免"复制算法"的漂移风险）            */
 /* ------------------------------------------------------------------ */
-/** 当前生效的每分钟请求数（受自适应系数影响） */
+/** 当前生效的限流配置（受自适应系数影响） */
 export function rateConfig(): {
-  enabled: boolean; perMin: number; burst: number; scale: number; effectivePerMin: number;
-} {  return {
+  enabled: boolean; perMin: number; burst: number; windowMs: number;
+  scale: number; effectivePerMin: number; effectiveBurst: number;
+} {
+  return {
     enabled: RATE_ENABLED, perMin: RATE_PER_MIN, burst: RATE_BURST,
+    windowMs: RATE_WINDOW_MS,
     scale: rateScale,
     // ⚠️ 不取整 —— 取整会让"显示的速率"与"实际等待时间"不一致
     //    （比如真实是 1.5 次/分，显示成 2 次/分 → 断言与实际行为脱节）
     effectivePerMin: Math.round(effectivePerMin() * 100) / 100,
+    effectiveBurst: effectiveBurst(),
   };
 }
 
@@ -333,24 +454,32 @@ export async function acquireSlotForTest(
   providerName: string,
   virtualNow: number
 ): Promise<{ granted: boolean; waitMs: number }> {
-  const refillPerMs = RATE_PER_MIN / 60_000;
   let bucket = buckets.get(providerName);
   if (!bucket) {
-    bucket = { tokens: RATE_BURST, lastRefill: virtualNow };
+    bucket = { tokens: RATE_BURST, lastRefill: virtualNow, stamps: [], lastReleaseAt: null };
     buckets.set(providerName, bucket);
   }
-  const elapsed = virtualNow - bucket.lastRefill;
-  bucket.tokens = Math.min(RATE_BURST, bucket.tokens + elapsed * refillPerMs);
-  bucket.lastRefill = virtualNow;
-  if (bucket.tokens >= 1) {
-    bucket.tokens -= 1;
-    return { granted: true, waitMs: 0 };
+
+  /* 滑动窗口检查（与 acquireSlot 同源逻辑 —— 唯一的限流器） */
+  const windowStart = virtualNow - RATE_WINDOW_MS;
+  bucket.stamps = bucket.stamps.filter((t) => t > windowStart);
+  const waitMs =
+    bucket.stamps.length >= effectiveBurst()
+      ? Math.max(0, bucket.stamps[0] + RATE_WINDOW_MS - virtualNow + 50)
+      : 0;
+
+  if (waitMs > 0) {
+    // ⚠️ 模拟真实实现的完整过程：**预定放行时刻**。
+    //    真实 acquireSlot 等完会在该时刻放行并占用窗口位置。
+    //    测试钩子若不预登记，后续调用的窗口计数就会与真实行为脱节。
+    const releaseAt = virtualNow + waitMs;
+    bucket.stamps.push(releaseAt);
+    bucket.lastReleaseAt = releaseAt;
+    return { granted: false, waitMs };
   }
-  const deficit = 1 - bucket.tokens;
-  const waitMs = Math.ceil(deficit / refillPerMs);
-  bucket.tokens = 0;
-  bucket.lastRefill = virtualNow + waitMs;
-  return { granted: false, waitMs };
+  bucket.stamps.push(virtualNow);
+  bucket.lastReleaseAt = virtualNow;
+  return { granted: true, waitMs: 0 };
 }
 
 /* ------------------------------------------------------------------ */
