@@ -279,6 +279,43 @@ export default function ShareCardButton({ data }: { data: ShareCardData }) {
     };
   }, []);
 
+  /**
+   * 复制分享链接（P2-⑭）
+   *
+   * ⚠️ 为什么要有这个（Canvas 图片之外的第二种分享方式）：
+   *   Canvas 生成的是 PNG —— 用户得"下载 → 找到文件 → 手动发给朋友"，三步。
+   *   一个 URL 则是"复制 → 粘贴"，一步到位。
+   *   而且链接能带上**完整解读**（PNG 只有摘要）——
+   *   朋友点开看到的是整场占卜，不是几句结论。
+   *
+   * ⚠️ 剪贴板 API 需要安全上下文（HTTPS 或 localhost）——
+   *    降级用 execCommand（老 API 但兼容性好）。
+   */
+  const [copied, setCopied] = useState(false);
+  const handleCopyLink = useCallback(async () => {
+    if (!data.sessionId) return;
+    const url = `${window.location.origin}/api/share?id=${encodeURIComponent(data.sessionId)}`;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+      } else {
+        // 降级：老 API
+        const ta = document.createElement("textarea");
+        ta.value = url;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      setError("复制失败 —— 可手动访问 /api/share?id=" + data.sessionId);
+    }
+  }, [data.sessionId]);
+
   return (
     <>
       <motion.button
@@ -291,6 +328,19 @@ export default function ShareCardButton({ data }: { data: ShareCardData }) {
       >
         {summarizing ? "正在提炼文案…" : busy ? "绘制中…" : "生成分享卡"}
       </motion.button>
+
+      {/* 复制链接：与"生成分享卡"并列的第二种分享方式 */}
+      {data.sessionId && (
+        <motion.button
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={handleCopyLink}
+          className="px-6 py-3 rounded-full border border-purple-500/30 text-purple-200/80 hover:bg-purple-900/25 transition-all tracking-[0.15em] text-sm"
+          title="复制一个可分享的链接（对方能看到完整解读）"
+        >
+          {copied ? "链接已复制 ✓" : "复制分享链接"}
+        </motion.button>
+      )}
       {error && <p className="w-full text-center text-xs text-red-300/80 mt-1">{error}</p>}
 
       {/* 分享卡预览弹窗 */}
