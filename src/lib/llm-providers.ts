@@ -127,6 +127,111 @@ export function isFailoverError(e: unknown, httpStatus?: number): boolean {
 }
 
 /* ------------------------------------------------------------------ */
+/* 并行择优（Hedged Request）                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 并行择优：同时向多个 provider 发请求，谁**先成功**用谁。
+ *
+ * ⚠️ 为什么需要（串行 failover 的真实代价）：
+ *    串行策略是「主用失败 → 切备用」，但**失败本身要花时间**：
+ *      - 内网地址不可达：Windows TCP 连接要 20~80 秒才报错
+ *      - 主用模型 402 余额不足：要等完整响应回来才知道
+ *      - 上游 5xx / 超时：直接等满 LLM_TIMEOUT_MS（45s）
+ *    也就是说主用挂掉时，用户的**第一个 token 要等 45~80 秒**。
+ *    并行择优把这段等待压缩到「最快那个 provider 的响应时间」——
+ *    实测内网 glm 与公网 MiniMax 并发时，体感延迟取二者较小值。
+ *
+ * ⚠️ 成本权衡（为什么默认不开启）：
+ *    并行 = 消耗**双倍配额**（输的那次请求也算数）。
+ *    对计费模型是实打实的浪费，所以：
+ *      - 默认关闭（LLM_HEDGED_ENABLED 未开时不走这条路）
+ *      - 开启时只在「主用近期失败过/探活不可用」时触发 —— 也就是
+ *        **只在已知主用可能有问题时才多花一份配额**
+ *      - 输的那一路要**主动 abort**，尽量少烧 token
+ *
+ * ⚠️ 与节流（acquireSlot）的配合：
+ *    两个 provider 各有独立的节流槽位，互不阻塞 ——
+ *    这正是并行择优能生效的前提。
+ */
+
+/** 竞速结果 */
+export interface RaceResult<T> {
+  winner: T;
+  /** 用了哪个 provider */
+  providerName: string;
+  /** 落败的 provider（已 abort） */
+  losers: string[];
+  /** 竞速总耗时 */
+  elapsedMs: number;
+}
+
+/**
+ * 让多个任务竞速，返回最先成功的一个。
+ *
+ * @param tasks 每个任务返回 { providerName, value }，或抛错（视为失败）
+ * @param aborters 竞速结束后调用，用于取消落败任务
+ */
+export async function raceWithAbort<T>(
+  tasks: Array<{ providerName: string; run: (signal: AbortSignal) => Promise<T> }>,
+  aborters: Array<() => void>
+): Promise<RaceResult<T>> {
+  const t0 = Date.now();
+  const controller = new AbortController();
+
+  /** 已有人成功 → 标记，后续任务的结果一律忽略 */
+  let settled = false;
+  const losers: string[] = [];
+
+  const promises = tasks.map(async (task) => {
+    try {
+      const value = await task.run(controller.signal);
+      if (settled) {
+        // 竞速已结束：这路的 token 白花了（记录下来便于观测）
+        losers.push(task.providerName);
+        return null;
+      }
+      settled = true;
+      // 取消其余任务（尽量少烧 token）
+      for (const abort of aborters) {
+        try { abort(); } catch { /* 忽略取消失败 */ }
+      }
+      return { providerName: task.providerName, value };
+    } catch {
+      // 失败不抛出去（等其他的竞速者）；失败原因由调用方的日志体现
+      if (!settled) {
+        // 记录失败但继续等其他的
+        losers.push(task.providerName);
+      }
+      return null;
+    }
+  });
+
+  // 等待第一个成功（或全部失败）
+  const results = await Promise.all(promises);
+  const winner = results.find((r) => r !== null);
+
+  if (!winner) {
+    // 全部失败 → 抛最后一个错误，交给调用方走既有 failover 逻辑
+    const err = new Error("所有 provider 均失败（并行择优）");
+    (err as Error & { losers?: string[] }).losers = losers;
+    throw err;
+  }
+
+  return {
+    winner: winner.value,
+    providerName: winner.providerName,
+    losers: losers.filter((n) => n !== winner.providerName),
+    elapsedMs: Date.now() - t0,
+  };
+}
+
+/** 是否启用并行择优（默认关闭 —— 见上方成本权衡说明） */
+export function isHedgedEnabled(): boolean {
+  return process.env.LLM_HEDGED_ENABLED === "1" || process.env.LLM_HEDGED_ENABLED === "true";
+}
+
+/** ------------------------------------------------------------------ */
 /* 启动主动探测                                                        */
 /* ------------------------------------------------------------------ */
 

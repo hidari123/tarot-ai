@@ -16,6 +16,7 @@
 import * as db from "../db";
 import {
   buildProviders, pickProvider, markHealthy, markFailed, isFailoverError,
+  isRecentlyFailed, isHedgedEnabled, raceWithAbort,
   type LLMProvider,
 } from "../llm-providers";
 import type { SessionMessage, SubAgent } from "./types";
@@ -133,41 +134,129 @@ export function splitThinkTags(raw: string): { content: string; reasoning?: stri
 }
 
 /* ------------------------------------------------------------------ */
-/* Provider 级最小请求间隔（限流保护）                                  */
+/* Provider 级速率限制（令牌桶）                                        */
 /* ------------------------------------------------------------------ */
 
 /**
- * 同一 provider 的最小请求间隔（毫秒）。
+ * 速率限制配置 —— 用「每分钟 N 次」描述（贴近上游网关配额的语义）。
  *
  * ⚠️ 为什么需要：上游网关有突发配额（实测内网 glm 网关：
  *    **约 4 次 / 30~40 秒窗口** —— 间隔 20s 连发 5 次全过、间隔 12s 连发 6 次全过；
  *    间隔 8s 时第 5 次被限流、间隔 3s 每次都被限流，
  *    且 "resets at" 随请求时刻滚动）。
- *    而一场占卜要打 ~14 次 LLM 往返（承约/呼召/选牌/检索/3×(翻牌+解读)/综合/收束），
+ *    而一场占卜要打 ~14 次 LLM 往返（承约/呼召/选牌/检索/3×(翻牌+解读)/综合+收束），
  *    间隔仅 1~2 秒 —— **必然打满窗口**，表现为 429 → 降级 → 质量指标失真。
  *
  *    熔断器只能"事后"跳过坏掉的 provider（30~60 秒冷却），
  *    限流是"事前"的节奏问题 —— 需要主动节流。
  *
- *    实测安全间隔 **20 秒**（4 次/约 80 秒窗口）：
- *      间隔 20s 连发 5 次全过、12s 连发 6 次全过、8s 第 5 次被限流、
- *      3s 每次被限流。
- *    一场完整占卜 14 次调用 → 约 4.7 分钟（配合 8min 看门狗仍有余量）。
- *    用环境变量覆盖：LLM_MIN_INTERVAL_MS=0 可关闭（配额充足时）。
+ * ⚠️ 为什么用令牌桶而不是"固定最小间隔"：
+ *    固定间隔（如 20 秒）只能表达"稳态速率"，无法表达"突发额度"——
+ *    而网关配额恰恰是「窗口内 N 次」的突发语义。
+ *    令牌桶可以同时表达两者：
+ *      capacity = 窗口内允许的突发次数（如 4）
+ *      refillRate = 每秒补充的令牌数（如 3/60）
+ *    效果：空闲一段时间后能攒下额度（短时突发不排队），
+ *    持续高频调用则被均摊到 refillRate（长期速率受控）。
+ *    固定间隔做不到这点 —— 它连"攒额度"的概念都没有。
+ *
+ *    配置（环境变量）：
+ *      LLM_RATE_PER_MIN  每分钟允许的请求数（默认 3，约等于实测安全值）
+ *      LLM_RATE_BURST   允许的突发次数（默认 4）
+ *      LLM_RATE_ENABLED  设为 0 关闭限流（配额充足时）
  */
-const MIN_INTERVAL_MS = Number(process.env.LLM_MIN_INTERVAL_MS ?? 20000);
+const RATE_ENABLED = process.env.LLM_RATE_ENABLED !== "0";
+const RATE_PER_MIN = Number(process.env.LLM_RATE_PER_MIN ?? 3);
+const RATE_BURST = Number(process.env.LLM_RATE_BURST ?? 4);
 
-/** 每个 provider 上次请求的时刻 */
-const lastRequestAt = new Map<string, number>();
+/** 每个 provider 的令牌桶状态 */
+interface Bucket {
+  /** 当前可用令牌 */
+  tokens: number;
+  /** 上次补充令牌的时刻 */
+  lastRefill: number;
+}
+const buckets = new Map<string, Bucket>();
 
-/** 取号：等到距上次请求满 MIN_INTERVAL_MS 才放行（并发调用会排队） */
+/**
+ * 取号：等到有可用令牌才放行（并发调用会各自排队，不会聚在一起）。
+ *
+ * ⚠️ 关键实现细节：预定时刻（而不是实际发出时刻）写回桶里 ——
+ *    否则多个并发调用会同时看到"有令牌"、同时放行，
+ *    瞬间打满上游窗口（这正是我们要避免的）。
+ */
 async function acquireSlot(providerName: string): Promise<void> {
-  if (MIN_INTERVAL_MS <= 0) return;
-  const last = lastRequestAt.get(providerName) ?? 0;
-  const wait = last + MIN_INTERVAL_MS - Date.now();
-  // 记录"预定时刻"而不是"实际发出时刻" —— 并发调用时各自排队，不会聚在一起
-  lastRequestAt.set(providerName, Math.max(Date.now(), last + MIN_INTERVAL_MS));
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  if (!RATE_ENABLED || RATE_PER_MIN <= 0) return;
+
+  const refillPerMs = RATE_PER_MIN / 60_000;
+  const now = Date.now();
+
+  let bucket = buckets.get(providerName);
+  if (!bucket) {
+    bucket = { tokens: RATE_BURST, lastRefill: now };
+    buckets.set(providerName, bucket);
+  }
+  // 按经过时间补充令牌（上限 = 突发容量）
+  const elapsed = now - bucket.lastRefill;
+  bucket.tokens = Math.min(RATE_BURST, bucket.tokens + elapsed * refillPerMs);
+  bucket.lastRefill = now;
+
+  if (bucket.tokens >= 1) {
+    bucket.tokens -= 1;
+    return; // 有令牌，立即放行
+  }
+
+  // 没令牌 → 算出需要等多久才能攒出 1 个
+  const deficit = 1 - bucket.tokens;
+  const waitMs = Math.ceil(deficit / refillPerMs);
+  // ⚠️ 预定时刻写回：后续并发调用会接着往后排，不会一起冲出去
+  bucket.tokens = 0;
+  bucket.lastRefill = now + waitMs;
+  await new Promise((r) => setTimeout(r, waitMs));
+}
+
+/* ------------------------------------------------------------------ */
+/* 测试钩子（让验证脚本与实现同源，避免"复制算法"的漂移风险）            */
+/* ------------------------------------------------------------------ */
+
+/** 当前速率限制配置（只读快照） */
+export function rateConfig(): { enabled: boolean; perMin: number; burst: number } {
+  return { enabled: RATE_ENABLED, perMin: RATE_PER_MIN, burst: RATE_BURST };
+}
+
+/** 清空所有令牌桶（测试隔离用） */
+export function resetBucketsForTest(): void {
+  buckets.clear();
+}
+
+/**
+ * 测试用的取号入口 —— **不真的等待**，只返回"本该等多久"。
+ *
+ * ⚠️ 为什么这样设计：令牌桶的等待时长是它的**可观测输出**，
+ *    单测要断言的正是这个数字。真等 20 秒会让测试无法运行。
+ */
+export async function acquireSlotForTest(
+  providerName: string,
+  virtualNow: number
+): Promise<{ granted: boolean; waitMs: number }> {
+  const refillPerMs = RATE_PER_MIN / 60_000;
+  let bucket = buckets.get(providerName);
+  if (!bucket) {
+    bucket = { tokens: RATE_BURST, lastRefill: virtualNow };
+    buckets.set(providerName, bucket);
+  }
+  const elapsed = virtualNow - bucket.lastRefill;
+  bucket.tokens = Math.min(RATE_BURST, bucket.tokens + elapsed * refillPerMs);
+  bucket.lastRefill = virtualNow;
+  if (bucket.tokens >= 1) {
+    bucket.tokens -= 1;
+    return { granted: true, waitMs: 0 };
+  }
+  const deficit = 1 - bucket.tokens;
+  const waitMs = Math.ceil(deficit / refillPerMs);
+  bucket.tokens = 0;
+  bucket.lastRefill = virtualNow + waitMs;
+  return { granted: false, waitMs };
 }
 
 /* ------------------------------------------------------------------ */
@@ -180,12 +269,23 @@ async function rawCall(
   messages: SessionMessage[],
   tools: unknown[] | undefined,
   sessionId: string | undefined,
-  agent: SubAgent
+  agent: SubAgent,
+  /**
+   * 外部取消信号（并行择优用）
+   * ⚠️ 为什么需要：竞速时落败的那一路必须能**主动 abort**，
+   *    否则它会继续跑完（继续烧 token + 占节流槽位）。
+   *    AbortSignal.timeout 无法被外部取消，所以这里把两个信号合流。
+   */
+  externalSignal?: AbortSignal
 ): Promise<CallResult> {
   const timeoutMs = llmTimeoutFor(agent);
   const attempt = async (): Promise<CallResult> => {
     await acquireSlot(p.name);
     const t0 = Date.now();
+    // 合并"超时"与"外部取消"两个信号：
+    //   AbortSignal.any 在 Node 20+ 可用（两个信号任一触发就 abort）
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const signal = externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
     const res = await fetch(`${p.baseURL}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${p.apiKey}` },
@@ -201,7 +301,7 @@ async function rawCall(
         // - analyst/reviewer 是结构化任务，关掉提速
         ...(agent === "supervisor" ? {} : { thinking: { type: "disabled" } }),
       }),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal,
     });
     if (!res.ok) {
       const errText = await res.text().catch(() => res.statusText);
@@ -252,6 +352,11 @@ async function rawCall(
  * 非流式调用（决策/分析/审校）——失败自动切换备用 provider
  *
  * ⚠️ 熔断器接入点：在**尝试顺序**里跳过熔断中的 provider。
+ *
+ * ⚠️ 并行择优（hedged request）的触发条件（见 llm-providers.ts 的详细说明）：
+ *    只有在「**已知主用可能有问题**」时才开双路 —— 否则白白多烧一份配额。
+ *    判定：主用 provider 近期失败过（isRecentlyFailed），
+ *    或探活时不可用。此时让备用与主用**同时**发请求，谁先回用谁。
  */
 export async function callLLM(
   config: LLMProvider | null,
@@ -266,6 +371,40 @@ export async function callLLM(
   // 尝试顺序：首选（会话粘住的/健康的）→ 其余未失败的
   const preferred = pickProvider(config ?? undefined) ?? all[0];
   const order = [preferred, ...all.filter((p) => p !== preferred)];
+
+  /* ---- 并行择优：仅在「主用疑似有问题」且有备用时才启用 ---- */
+  if (isHedgedEnabled() && order.length >= 2 && isRecentlyFailed(preferred)) {
+    const hedgeOrder = order.slice(0, 2); // 只竞速前两个（更多就失去意义了）
+    const aborters: Array<() => void> = [];
+    const controllers = hedgeOrder.map(() => new AbortController());
+    hedgeOrder.forEach((_, i) => {
+      aborters.push(() => controllers[i].abort());
+    });
+    try {
+      const race = await raceWithAbort(
+        hedgeOrder.map((p) => ({
+          providerName: p.name,
+          run: (signal: AbortSignal) => rawCall(p, messages, tools, sessionId, agent, signal),
+        })),
+        aborters
+      );
+      // 赢家要标记健康；输家若是因为限流/故障失败，也要标记失败
+      const winner = hedgeOrder.find((p) => p.name === race.providerName);
+      if (winner) markHealthy(winner);
+      for (const loserName of race.losers) {
+        const loser = hedgeOrder.find((p) => p.name === loserName);
+        if (loser) markFailed(loser);
+      }
+      console.error(
+        `[llm-hedge] 并行择优: ${race.providerName} 胜出（${race.elapsedMs}ms）` +
+        (race.losers.length ? ` · 落败: ${race.losers.join(", ")}` : "")
+      );
+      return race.winner;
+    } catch (e) {
+      // 并行择优整体失败 → 落回串行 failover（下方的循环）
+      console.error(`[llm-hedge] 并行择优失败，回退串行:`, e instanceof Error ? e.message : e);
+    }
+  }
 
   let lastErr: unknown = null;
   for (const p of order) {
