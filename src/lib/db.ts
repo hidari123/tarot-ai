@@ -199,11 +199,17 @@ export function finishSession(id: string, review: SessionRow["review"]): void {
   db.prepare(`UPDATE sessions SET review_json = ?, status = 'done', finished_at = ? WHERE id = ?`).run(
     JSON.stringify(review ?? null), Date.now(), id
   );
+  // ⚠️ P2-⑯：会话结束时**立即**落盘遥测
+  //   否则这一场的 usage/tool_call/timing 还要等最多 500ms 才可见
+  //   （dashboard 与分析脚本会看到"刚结束的那场数据缺失"）。
+  flushTelemetry();
 }
 
 export function failSession(id: string, reason = "unknown"): void {
   db.prepare(`UPDATE sessions SET status = 'error', error_reason = ?, finished_at = ? WHERE id = ?`)
     .run(reason, Date.now(), id);
+  // ⚠️ 同上：失败会话的遥测也立即落盘（错误归因统计依赖它）
+  flushTelemetry();
 }
 
 /* ------------------------------------------------------------------ */
@@ -411,24 +417,133 @@ export function listStaleSessions(maxAgeMs = 10 * 60 * 1000): {
   });
 }
 
+/* ------------------------------------------------------------------ */
+/* 遥测写缓冲（P2-⑯：同步写阻塞事件循环）                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 为什么要缓冲（P2-⑯）：
+ *   better-sqlite3 是**同步** API —— 每次 `.run()` 都要等磁盘写完成。
+ *   而这三类写入是**高频**的：
+ *     · logToolCall  —— 14 个调用点，一场占卜 ~13 次
+ *     · logLLMUsage  —— 5 个调用点，一场占卜 ~14 次
+ *     · logTiming    —— 6 个调用点，一场占卜 ~14 次
+ *   一场占卜 ~40 次**同步写**。WAL 模式下单次很快（微秒级），
+ *   但并发多个占卜时，每次写都要排队等 fsync → **阻塞整个事件循环**
+ *   → 所有并发的 SSE 流都会卡顿（不只是这一个占卜）。
+ *
+ * ⚠️ 为什么只缓冲这三类，不缓冲 session 的关键数据：
+ *   · sessions 的 reading/cards/review —— **关键数据**，进程崩溃会丢用户成果 → 必须同步写
+ *   · tool_calls / llm_usage / session_timings —— **遥测**，
+ *     丢几百毫秒的尾巴无伤大雅（最坏情况是进程被 kill 时丢最后一秒的遥测）
+ *   这个划分是刻意的：**用"可丢"的数据换"不阻塞"**。
+ *
+ * ⚠️ 批量提交用**事务**（db.transaction）—— 一次 fsync 写多条，
+ *   比 N 次单条写快一个数量级。
+ */
+
+/** 待写入的遥测（内存队列） */
+interface TelemetryBuffer {
+  toolCalls: Array<[string, number, string, string, string, string, number, number]>;
+  llmUsage: Array<[string | null, string, string, number, number, number, number, number]>;
+  timings: Array<[string, string, number, string, number]>;
+}
+
+const telemetry = runtimeState<TelemetryBuffer>("db.telemetry", () => ({
+  toolCalls: [],
+  llmUsage: [],
+  timings: [],
+}));
+
+/** 队列长度上限（防止进程长期不 flush 时内存无限增长） */
+const TELEMETRY_MAX_QUEUE = 5000;
+
+/** 落库间隔（毫秒）—— 兼顾"及时可见"与"减少写次数" */
+const TELEMETRY_FLUSH_MS = 500;
+
+/** 把队列里的遥测批量写入数据库 */
+export function flushTelemetry(): number {
+  const n = telemetry.toolCalls.length + telemetry.llmUsage.length + telemetry.timings.length;
+  if (n === 0) return 0;
+  // ⚠️ 先把队列取走再写（避免写库期间新来的数据被一起清掉）
+  const toolCalls = telemetry.toolCalls.splice(0, telemetry.toolCalls.length);
+  const llmUsage = telemetry.llmUsage.splice(0, telemetry.llmUsage.length);
+  const timings = telemetry.timings.splice(0, telemetry.timings.length);
+  try {
+    const tx = db.transaction(() => {
+      const insTool = db.prepare(`
+        INSERT INTO tool_calls (session_id, seq, agent, tool, args_json, result_summary, duration_ms, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const r of toolCalls) insTool.run(...r);
+      const insUsage = db.prepare(`
+        INSERT INTO llm_usage (session_id, agent, model, prompt_tokens, completion_tokens, duration_ms, ok, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const r of llmUsage) insUsage.run(...r);
+      const insTiming = db.prepare(`
+        INSERT INTO session_timings (session_id, stage, duration_ms, detail, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      for (const r of timings) insTiming.run(...r);
+    });
+    tx();
+  } catch (e) {
+    // ⚠️ 遥测写失败**不影响主流程**（降级不删），但要留痕
+    console.error("[db] 遥测批量落库失败:", e);
+  }
+  return n;
+}
+
+/** 启动定时 flush（幂等 —— HMR 重载不会重复起） */
+function ensureFlushTimer(): void {
+  const g = globalThis as unknown as { __tarotTelemetryTimer__?: NodeJS.Timeout };
+  if (g.__tarotTelemetryTimer__) return;
+  g.__tarotTelemetryTimer__ = setInterval(() => {
+    try { flushTelemetry(); } catch { /* ignore */ }
+  }, TELEMETRY_FLUSH_MS);
+  g.__tarotTelemetryTimer__.unref?.(); // 不阻塞进程退出
+}
+
+/**
+ * 进程退出前强制 flush
+ *
+ * ⚠️ 为什么必须做：进程被 kill / 容器重启时，
+ *   队列里最后几百毫秒的遥测会丢 —— 但更糟的是**丢一半**（数据不一致）。
+ *   exit 处理器里不能做异步，但 better-sqlite3 是同步的 → 正好合适。
+ */
+const gExit = globalThis as unknown as { __tarotTelemetryExitHook__?: boolean };
+if (!gExit.__tarotTelemetryExitHook__) {
+  gExit.__tarotTelemetryExitHook__ = true;
+  process.on("exit", () => {
+    try { flushTelemetry(); } catch { /* ignore */ }
+  });
+}
+
 export function logToolCall(
   sessionId: string, seq: number, agent: string, tool: string,
   args: Record<string, unknown>, resultSummary: string, durationMs: number
 ): void {
-  db.prepare(`
-    INSERT INTO tool_calls (session_id, seq, agent, tool, args_json, result_summary, duration_ms, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(sessionId, seq, agent, tool, JSON.stringify(args ?? {}), resultSummary ?? "", durationMs ?? 0, Date.now());
+  // ⚠️ P2-⑯：入队而不是同步写（见上方"遥测写缓冲"的说明）
+  telemetry.toolCalls.push([
+    sessionId, seq, agent, tool,
+    JSON.stringify(args ?? {}), resultSummary ?? "", durationMs ?? 0, Date.now(),
+  ]);
+  // ⚠️ 队列过长 → 立刻 flush（防止内存无限增长）
+  if (telemetry.toolCalls.length >= TELEMETRY_MAX_QUEUE) flushTelemetry();
+  else ensureFlushTimer();
 }
 
 export function logLLMUsage(
   sessionId: string | null, agent: string, model: string,
   promptTokens: number, completionTokens: number, durationMs: number, ok: boolean
 ): void {
-  db.prepare(`
-    INSERT INTO llm_usage (session_id, agent, model, prompt_tokens, completion_tokens, duration_ms, ok, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(sessionId, agent, model, promptTokens, completionTokens, durationMs, ok ? 1 : 0, Date.now());
+  // ⚠️ P2-⑯：入队而不是同步写
+  telemetry.llmUsage.push([
+    sessionId, agent, model, promptTokens, completionTokens, durationMs, ok ? 1 : 0, Date.now(),
+  ]);
+  if (telemetry.llmUsage.length >= TELEMETRY_MAX_QUEUE) flushTelemetry();
+  else ensureFlushTimer();
 }
 
 /* ---------------- 读取 API ---------------- */
@@ -710,16 +825,18 @@ export function updateUserProfile(
 
 /* ---------------- 阶段耗时瀑布（方向③：延迟分解） ---------------- */
 
-const stmtInsertTiming = db.prepare(`
-  INSERT INTO session_timings (session_id, stage, detail, duration_ms, created_at)
-  VALUES (@sessionId, @stage, @detail, @durationMs, @createdAt)
-`);
-
-/** 记录一个阶段耗时（hitl_wait / llm_<agent> / tool_<name> / stream） */
+/**
+ * 记录一个阶段耗时（hitl_wait / llm_<agent> / tool_<name> / stream）
+ *
+ * ⚠️ P2-⑯：入队（见"遥测写缓冲"的说明），不是同步写。
+ *    延迟瀑布的数据源 —— 晚几百毫秒落库完全无影响。
+ */
 export function logTiming(sessionId: string, stage: string, durationMs: number, detail = ""): void {
-  try {
-    stmtInsertTiming.run({ sessionId, stage, detail: detail.slice(0, 120), durationMs, createdAt: Date.now() });
-  } catch { /* 计时失败不阻断 */ }
+  telemetry.timings.push([
+    sessionId, stage, durationMs, detail.slice(0, 120), Date.now(),
+  ]);
+  if (telemetry.timings.length >= TELEMETRY_MAX_QUEUE) flushTelemetry();
+  else ensureFlushTimer();
 }
 
 /** 某会话的瀑布数据（按时间序） */

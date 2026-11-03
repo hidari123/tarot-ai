@@ -79,6 +79,7 @@ jobs:
           npx tsx scripts/verify-fallback-parity.mjs
           npx tsx scripts/verify-phase-guard.mjs
           npx tsx scripts/verify-runtime-state.mjs
+          npx tsx scripts/verify-telemetry-buffer.mjs
           npx tsx scripts/verify-sse-cancel.mjs
           npx tsx scripts/verify-resume-trigger.mjs
 

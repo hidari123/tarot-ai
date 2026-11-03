@@ -55,7 +55,8 @@ Supervisor（占卜师编排者，工具调用循环）
 
 ### 🛠️ 工程成熟度
 
-- **SQLite 持久层**（better-sqlite3）：sessions / tool_calls / llm_usage / user_profiles / session_timings 五张表，WAL 模式；`error_reason` 全量记录 + `prompt_version` 版本化
+- **SQLite 持久层**（better-sqlite3）：sessions / tool_calls / llm_usage / user_profiles / session_timings / event_log 六张表，WAL 模式；`error_reason` 全量记录 + `prompt_version` 版本化 + `share_token` 分享凭证
+- **遥测写缓冲**：better-sqlite3 是**同步** API，高频写（一场占卜 ~40 次）会阻塞事件循环 → tool_calls / llm_usage / session_timings 改为**入队 + 事务批量提交**（500ms）；**关键数据（解读正文/审校结果）仍同步写** —— 用"可丢的数据"换"不阻塞"
 - **观测面板** `/dashboard`：会话统计、**延迟瀑布**（逐阶段耗时条形图）、**成本估算**（¥ + token）、工具调用频次、卡死会话、异常原因分布、各 Agent 性能明细、Prompt 版本效果对比
 - **错误自动归因** `scripts/classify-errors.mjs`：error 会话规则聚类（client_disconnect / stale_timeout / max_rounds / ttl_expired / llm_error / analyst_empty）+ 占比 + 优先处理建议——从"出错了"到"该修哪里"
 - **混沌测试** `scripts/chaos-test.mjs`：故障注入断言（无效会话 409/410 / 畸形 body 400 / 空问题 400 / 并发互斥 409 / 恢复端点 404）
