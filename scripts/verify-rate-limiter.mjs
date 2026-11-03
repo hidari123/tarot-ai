@@ -25,7 +25,7 @@ import {
   acquireSlotForTest, resetBucketsForTest, rateConfig, tightenOnRateLimit,
 } from "../src/lib/agent/llm.ts";
 
-const cfg = rateConfig();
+const cfg = rateConfig("p1");
 console.log("=== 令牌桶速率限制器验证 ===\n");
 console.log(`配置: 每分钟 ${cfg.perMin} 次 · 窗口内 ${cfg.burst} 次 · 启用=${cfg.enabled}`);
 console.log(`  → 稳态间隔 = ${(60_000 / cfg.perMin).toFixed(0)}ms`);
@@ -197,7 +197,7 @@ const check = (label, ok, detail = "") => {
 /* ---- ⑦ 自适应收紧（收到 429 后）---- */
 {
   resetBucketsForTest();
-  const before = rateConfig();
+  const before = rateConfig("p1");
 
   // 先用掉额度
   // ⚠️ 用**真实时间基准**（Date.now()）——
@@ -207,8 +207,8 @@ const check = (label, ok, detail = "") => {
   for (let i = 0; i < before.burst; i++) await acquireSlotForTest("p1", t0 + i);
 
   // 收到 429 → 收紧
-  tightenOnRateLimit();
-  const after = rateConfig();
+  tightenOnRateLimit("p1");
+  const after = rateConfig("p1");
 
   check(
     "429 后速率系数下降（乘性减）",
@@ -235,8 +235,8 @@ const check = (label, ok, detail = "") => {
   );
 
   // 连续 429 → 继续收紧，但有下限
-  for (let i = 0; i < 10; i++) tightenOnRateLimit();
-  const floor = rateConfig();
+  for (let i = 0; i < 10; i++) tightenOnRateLimit("p1");
+  const floor = rateConfig("p1");
   check(
     "连续 429 不会降到下限以下",
     floor.scale >= 0.25,
@@ -257,8 +257,8 @@ const check = (label, ok, detail = "") => {
   resetBucketsForTest();
   check(
     "reset 后回到初始速率",
-    rateConfig().scale === 1,
-    `scale=${rateConfig().scale}`
+    rateConfig("p1").scale === 1,
+    `scale=${rateConfig("p1").scale}`
   );
 }
 

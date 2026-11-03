@@ -219,25 +219,27 @@ const RATE_WINDOW_MS = Number(process.env.LLM_RATE_WINDOW_MS ?? 60_000);
 
 /** 每个 provider 的限流状态 */
 interface Bucket {
-  /** 当前可用令牌（令牌桶语义：均摊速率用） */
-  tokens: number;
-  /** 上次补充令牌的时刻 */
-  lastRefill: number;
   /**
    * 滑动窗口内的请求时间戳（升序）
    * ⚠️ 只保留窗口内的记录 —— 超出即剔除（这就是"滚动窗口"）
+   *
+   * ⚠️ 关键：**占位必须发生在 await 之前**。
+   *    如果等完才 push，两个并发调用会同时读到
+   *    "stamps.length < burst" → 都判定窗口未满 → 都放行 →
+   *    同一瞬间发出 N 个请求 → 突破上游配额 → 429。
+   *    （2026-11 踩过这个坑：单测用 acquireSlotForTest 是对的，
+   *      但生产实现把 push 放到了 await 之后 → 单测全绿、线上失效。）
    */
   stamps: number[];
   /**
-   * 上次**实际放行**的时刻（用于最小间隔检查）
+   * 上次**预定放行**的时刻
    *
-   * ⚠️ 为什么不能复用 lastRefill：
-   *   lastRefill 记的是"令牌补充到哪"，是**均摊**语义；
-   *   而最小间隔要的是"距上次发出去多久了"，是**节流**语义。
-   *   两者混用会导致过度等待：
-   *   等一次窗口（40 秒）后 lastRefill 被推到未来，
-   *   下一次调用又要再等一个令牌（10 秒）—— 双重限制叠加，
-   *   实测导致"窗口已过期却仍不放行"。
+   * ⚠️ 为什么需要它（不只是记录）：
+   *   并发调用各自算出 waitMs 后都要"占一个坑"。
+   *   若只按"窗口是否满"判断，两个并发调用会算出**同一个** waitMs
+   *   （都基于 stamps[0]）→ 等完同时放行 → 再次穿透。
+   *   正确做法：占位时就把**预定放行时刻**推进，
+   *   下一个并发调用会基于新的 stamps[0] 算出更长的等待 → 依次排开。
    */
   lastReleaseAt: number | null;
 }
@@ -274,12 +276,12 @@ async function acquireSlot(
 
   // ⚠️ 用 effectiveBurst（受自适应系数影响）而非固定的 RATE_BURST ——
   //    撞过 429 之后窗口容量会自动变小（更保守）。
-  const burst = effectiveBurst();
+  const burst = effectiveBurst(providerName);
   const now = Date.now();
 
   let bucket = buckets.get(providerName);
   if (!bucket) {
-    bucket = { tokens: RATE_BURST, lastRefill: now, stamps: [], lastReleaseAt: null };
+    bucket = { stamps: [], lastReleaseAt: null };
     buckets.set(providerName, bucket);
   }
 
@@ -308,15 +310,24 @@ async function acquireSlot(
   const waitMs = windowWaitMs;
 
   if (waitMs > 0) {
-    // 预定时刻写回：并发调用会接着往后排，不会一起冲出去
+    // ⚠️⚠️ 关键顺序：**先占位，再等待**
+    //    （这是 2026-11 修过的 bug：原来 push 在 await 之后，
+    //      导致并发调用同时判定"窗口未满" → 同时放行 → 穿透窗口 → 429 风暴。
+    //      而单测用的 acquireSlotForTest 是正确写法 → 单测全绿、线上失效。
+    //      教训：**注释不是证据，代码才是** —— 测试钩子必须与生产实现同源。）
     const releaseAt = now + waitMs;
+    // ⚠️ 推入的是**预定放行时刻**（未来），不是当前时刻：
+    //    这样下一个并发调用会基于新的 stamps[0] 算出**更长**的等待 → 依次排开。
+    bucket.stamps.push(releaseAt);
+    bucket.stamps.sort((a, b) => a - b);
     bucket.lastReleaseAt = releaseAt;
     // P2-⑪：告知调用方"正在限速等待"，让前端能区分"模型慢"与"主动限速"
     onWait?.(waitMs);
     await new Promise((r) => setTimeout(r, waitMs));
+    return;
   }
 
-  /* ---- ③ 放行：登记时间戳（滑动窗口的记录）---- */
+  /* ---- ③ 立即放行：也必须占位（否则并发会同时穿透）---- */
   const releaseNow = Date.now();
   bucket.stamps.push(releaseNow);
   bucket.lastReleaseAt = releaseNow;
@@ -352,14 +363,27 @@ async function acquireSlot(
  *   上游配额可能恢复（换了 key、窗口变了）。
  *   所以设一个下限，并且**随时间缓慢回升** ——
  *   由"每次请求时按流逝时间补一点容量"实现（见 effectiveBurst）。
+ *
+ * ⚠️⚠️ 为什么系数是 **per-provider** 而不是全局：
+ *   配额是**每个 provider 独立**的。
+ *   如果用一个全局系数，主用（MiniMax）被打满配额时，
+ *   备用（glm）的窗口容量也会被砍到 0.25× ——
+ *   于是"本可以正常服务的备用"也被降速，**failover 变得毫无意义**。
+ *   实测教训：拥塞传染比限流本身更致命。
  */
-let rateScale = 1; // 全局容量系数（1 = 初始容量，越小越保守）
+interface ProviderRateState {
+  /** 容量系数（1 = 初始容量，越小越保守） */
+  scale: number;
+  /** 上次调整的时刻（用于缓慢回升） */
+  lastAdjust: number;
+}
+/** per-provider 的速率状态 */
+const rateStates = new Map<string, ProviderRateState>();
 
 /** 容量系数随时间缓慢回升（每秒 +1%） */
 const SCALE_RECOVERY_PER_SEC = 0.01;
-/** 下限：0.25× → 4×0.25 = 1 次/60 秒 = 1 次/分 → 一场占卜 ~14 分钟（超 deadline，故实际不触发） */
+/** 下限：0.25× → 4×0.25 = 1 次/60 秒 = 1 次/分 */
 const SCALE_MIN = 0.25;
-let lastScaleAdjust = Date.now();
 
 /**
  * 当前生效的窗口容量（受自适应系数影响）
@@ -369,27 +393,37 @@ let lastScaleAdjust = Date.now();
  *   但如果基础 burst 是 3，floor(3 × 0.25) = 0 → 完全不能请求（死锁）。
  *   ceil 保证至少 1。
  */
-function effectiveBurst(): number {
+function effectiveBurst(providerName: string): number {
+  const st = rateStates.get(providerName);
+  if (!st) return RATE_BURST;
   // 缓慢回升
   const now = Date.now();
-  const elapsedSec = (now - lastScaleAdjust) / 1000;
-  if (elapsedSec > 0 && rateScale < 1) {
-    rateScale = Math.min(1, rateScale + elapsedSec * SCALE_RECOVERY_PER_SEC);
-    lastScaleAdjust = now;
+  const elapsedSec = (now - st.lastAdjust) / 1000;
+  if (elapsedSec > 0 && st.scale < 1) {
+    st.scale = Math.min(1, st.scale + elapsedSec * SCALE_RECOVERY_PER_SEC);
+    st.lastAdjust = now;
   }
-  return Math.max(1, Math.ceil(RATE_BURST * rateScale));
+  return Math.max(1, Math.ceil(RATE_BURST * st.scale));
 }
 
 /** 当前生效的每分钟请求数（等价于 窗口容量 × 60 / 窗口长度） */
-function effectivePerMin(): number {
-  return (effectiveBurst() * 60_000) / RATE_WINDOW_MS;
+function effectivePerMin(providerName: string): number {
+  return (effectiveBurst(providerName) * 60_000) / RATE_WINDOW_MS;
 }
 
-/** 收到 429 → 收紧窗口容量 */
-export function tightenOnRateLimit(): void {
-  const before = rateScale;
-  rateScale = Math.max(SCALE_MIN, rateScale * 0.5);
-  lastScaleAdjust = Date.now();
+/**
+ * 收到 429 → 收紧**该 provider** 的窗口容量
+ *
+ * ⚠️ 必须 per-provider：429 来自某一个具体 provider，
+ *    收紧全局会让其它 provider 一起变慢（拥塞传染）。
+ */
+export function tightenOnRateLimit(providerName: string): void {
+  const st = rateStates.get(providerName) ?? { scale: 1, lastAdjust: Date.now() };
+  const before = st.scale;
+  st.scale = Math.max(SCALE_MIN, st.scale * 0.5);
+  st.lastAdjust = Date.now();
+  rateStates.set(providerName, st);
+
   // ⚠️ 关键：**不要清空 stamps**。
   //   清空 = 窗口腾空 = 下一次立刻放行 = 刚撞了 429 就再撞一次。
   //   正确做法是让**容量收缩**（effectiveBurst 变小），
@@ -397,51 +431,51 @@ export function tightenOnRateLimit(): void {
   //
   //   这里反而要**填满**窗口（把容量位置占住），
   //   保证"429 之后至少等一个窗口过期"再试 —— 这是标准的退避。
-  for (const b of buckets.values()) {
-    b.tokens = 0;
+  const bucket = buckets.get(providerName);
+  if (bucket) {
     const now = Date.now();
     // ⚠️ 必须**填满到窗口容量**（不是"补足差额"）：
     //   收到 429 意味着上游窗口已经满了 ——
     //   我们的窗口计数可能少于上游的（因为我们只知道自己发过几次）。
     //   所以要把窗口**填到当前容量**，让下一次至少等一个窗口过期。
-    //   （补差额的写法在"我们已经发过 4 次"时反而什么都不做）
-    const target = effectiveBurst();
-    while (b.stamps.length < target) {
+    const target = effectiveBurst(providerName);
+    while (bucket.stamps.length < target) {
       // 用略微错开的时刻填满（模拟"刚刚占用了这些位置"）
-      b.stamps.push(now - (target - b.stamps.length) * 10);
+      bucket.stamps.push(now - (target - bucket.stamps.length) * 10);
     }
-    b.stamps.sort((a, z) => a - z);
+    bucket.stamps.sort((a, b) => a - b);
   }
   console.error(
-    `[llm-rate] 收到 429，窗口容量收紧 ${before.toFixed(2)}× → ${rateScale.toFixed(2)}×` +
-    `（现在 ${effectiveBurst()} 次/${RATE_WINDOW_MS / 1000}s）`
+    `[llm-rate] ${providerName} 收到 429，窗口容量收紧 ${before.toFixed(2)}× → ${st.scale.toFixed(2)}×` +
+    `（现在 ${effectiveBurst(providerName)} 次/${RATE_WINDOW_MS / 1000}s）`
   );
 }
 
+/** 收到 429 → 收紧窗口容量 */
 /* ------------------------------------------------------------------ */
 /* 测试钩子（让验证脚本与实现同源，避免"复制算法"的漂移风险）            */
 /* ------------------------------------------------------------------ */
 /** 当前生效的限流配置（受自适应系数影响） */
-export function rateConfig(): {
+export function rateConfig(providerName = "default"): {
   enabled: boolean; perMin: number; burst: number; windowMs: number;
   scale: number; effectivePerMin: number; effectiveBurst: number;
 } {
+  const st = rateStates.get(providerName);
   return {
     enabled: RATE_ENABLED, perMin: RATE_PER_MIN, burst: RATE_BURST,
     windowMs: RATE_WINDOW_MS,
-    scale: rateScale,
+    scale: st?.scale ?? 1,
     // ⚠️ 不取整 —— 取整会让"显示的速率"与"实际等待时间"不一致
     //    （比如真实是 1.5 次/分，显示成 2 次/分 → 断言与实际行为脱节）
-    effectivePerMin: Math.round(effectivePerMin() * 100) / 100,
-    effectiveBurst: effectiveBurst(),
+    effectivePerMin: Math.round(effectivePerMin(providerName) * 100) / 100,
+    effectiveBurst: effectiveBurst(providerName),
   };
 }
 
 /** 清空所有令牌桶 + 重置自适应系数（测试隔离用） */
 export function resetBucketsForTest(): void {
   buckets.clear();
-  rateScale = 1;
-  lastScaleAdjust = Date.now();
+  rateStates.clear();
 }
 
 /**
@@ -456,7 +490,7 @@ export async function acquireSlotForTest(
 ): Promise<{ granted: boolean; waitMs: number }> {
   let bucket = buckets.get(providerName);
   if (!bucket) {
-    bucket = { tokens: RATE_BURST, lastRefill: virtualNow, stamps: [], lastReleaseAt: null };
+    bucket = { stamps: [], lastReleaseAt: null };
     buckets.set(providerName, bucket);
   }
 
@@ -464,16 +498,22 @@ export async function acquireSlotForTest(
   const windowStart = virtualNow - RATE_WINDOW_MS;
   bucket.stamps = bucket.stamps.filter((t) => t > windowStart);
   const waitMs =
-    bucket.stamps.length >= effectiveBurst()
+    bucket.stamps.length >= effectiveBurst(providerName)
       ? Math.max(0, bucket.stamps[0] + RATE_WINDOW_MS - virtualNow + 50)
       : 0;
 
   if (waitMs > 0) {
-    // ⚠️ 模拟真实实现的完整过程：**预定放行时刻**。
+    // ⚠️ 模拟真实实现的完整过程：**预定放行时刻**（未来时刻）。
     //    真实 acquireSlot 等完会在该时刻放行并占用窗口位置。
     //    测试钩子若不预登记，后续调用的窗口计数就会与真实行为脱节。
+    //
+    // ⚠️⚠️ 这段逻辑必须与 acquireSlot **逐字对应**：
+    //    2026-11 踩过"钩子对、实现错"的坑 ——
+    //    钩子先 push、生产实现后 push，导致并发穿透而单测全绿。
+    //    教训：注释不是证据，代码才是。
     const releaseAt = virtualNow + waitMs;
     bucket.stamps.push(releaseAt);
+    bucket.stamps.sort((a, b) => a - b);
     bucket.lastReleaseAt = releaseAt;
     return { granted: false, waitMs };
   }
@@ -539,7 +579,7 @@ async function rawCall(
       if (sessionId) db.logTiming(sessionId, `llm_${agent}`, Date.now() - t0, `${p.name} fail`);
       // ⚠️ 429 → 自适应收紧速率（见 tightenOnRateLimit 的说明）：
       //    我们的初始额度是乐观估计，撞到 429 说明偏快 → 立刻变保守。
-      if (res.status === 429) tightenOnRateLimit();
+      if (res.status === 429) tightenOnRateLimit(p.name);
       throw new Error(`LLM 调用失败(${res.status}): ${errText.slice(0, 200)}`);
     }
     const json = await res.json();
@@ -733,7 +773,7 @@ async function* tryStreamOnce(
     const errText = await res.text().catch(() => res.statusText);
     db.logLLMUsage(sessionId ?? null, agent, p.name, 0, 0, Date.now() - t0, false);
     // ⚠️ 429 → 自适应收紧（同非流式路径）
-    if (res.status === 429) tightenOnRateLimit();
+    if (res.status === 429) tightenOnRateLimit(p.name);
     const err = new Error(`LLM 流式调用失败(${res.status}): ${errText.slice(0, 200)}`);
     onFail(err);
     if (isFailoverError(err, res.status)) { markFailed(p); breaker.recordFailure(p.name); }
