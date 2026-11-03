@@ -30,7 +30,6 @@ const check = (label, ok, detail = "") => {
 async function runFallback(answers = {}) {
   const session = createSession("我最近工作压力很大，很焦虑", "mystic", "verify-user");
   const events = [];
-  let answerIdx = 0;
   const askQueue = [];
 
   const it = runLocalFallback(session, "我最近工作压力很大，很焦虑");

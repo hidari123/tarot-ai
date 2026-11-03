@@ -14,6 +14,7 @@
 
 import * as db from "../db";
 import { PERSONAS } from "../personas";
+import { generateSessionId } from "../api-auth";
 import type { AgentSession } from "./types";
 import { derivePhase, type RitualPhase } from "./ritual-machine";
 
@@ -145,7 +146,13 @@ if (!gTimer.__tarotCleanTimer__) {
 /** 创建新会话（同时落库一条 running 记录） */
 export function createSession(question: string, personaId?: string, userKey?: string): AgentSession {
   cleanExpired();
-  const id = `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  // ⚠️ P1-④：会话 id 改为 **192bit 全随机**（不再是"时间戳 + 6 位随机"）
+  //   旧格式 `sess_${Date.now().toString(36)}_${random6}` 的问题：
+  //     · Date.now() 部分**可枚举**（攻击者能遍历最近的时间窗口）
+  //     · random6 只有 ~2.2B 空间
+  //   而 sessionId 就是**会话控制凭证**（能 answer/interject = 能替用户操作），
+  //   必须不可枚举。
+  const id = generateSessionId();
   const persona = PERSONAS.find((p) => p.id === personaId) ?? PERSONAS[0];
   const session: AgentSession = {
     id, createdAt: Date.now(), lastActive: Date.now(),

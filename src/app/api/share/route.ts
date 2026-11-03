@@ -1,11 +1,12 @@
-import { getSessionReading } from "@/lib/db";
+import { getSessionReading, getSessionByShareToken, ensureShareToken } from "@/lib/db";
 import { getCardById } from "@/lib/tarot-cards";
+import { generateShareToken, withSecurityHeaders } from "@/lib/api-auth";
 
 /**
- * 解读分享卡（P2-⑭）
+ * 解读分享卡（P2-⑭ · P1-④ 加固）
  *
- * GET /api/share?id=xxx        → 可分享的 HTML 卡片（独立页面，可截图/转发）
- * GET /api/share?id=xxx&fmt=json → 结构化数据（前端预览用）
+ * GET /api/share?t=<shareToken>          → 可分享的 HTML 卡片（独立页面）
+ * GET /api/share?t=<shareToken>&fmt=json → 结构化数据（前端预览用）
  *
  * ⚠️ 为什么服务端生成 HTML 而不是前端截图：
  *   - 截图依赖 html2canvas 之类的库，会把 ~200KB 塞进客户端
@@ -16,42 +17,90 @@ import { getCardById } from "@/lib/tarot-cards";
  *   占卜结果天然是"想分享"的内容（发给朋友、发给对象、存档纪念）。
  *   一个能直接转发的链接 = 产品的自然传播入口。
  *   这也是从"工具"变成"社交产品"的关键一步。
+ *
+ * ⚠️ P1-④：为什么用**独立的 shareToken** 而不是 sessionId：
+ *   审计实测：原来 `?id=<sessionId>` 直接返回私密解读全文，
+ *   而 sessionId 格式是 `sess_${时间戳36进制}_${随机6位}` —— 时间戳可枚举。
+ *   更严重的是：**sessionId 是会话控制凭证**（能 answer/interject），
+ *   分享出去等于把"替用户操作占卜师"的能力也给出去了。
+ *   现在：独立的 128bit shareToken，只能读不能控。
  */
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const id = url.searchParams.get("id");
   const fmt = url.searchParams.get("fmt");
+  // ⚠️ 分享凭证：t = shareToken（128bit，不可枚举）
+  const token = url.searchParams.get("t");
 
-  if (!id) return Response.json({ error: "缺少 id" }, { status: 400 });
+  if (token) {
+    const row = getSessionByShareToken(token);
+    if (!row) {
+      return withSecurityHeaders(
+        Response.json({ error: "分享链接无效或已失效" }, { status: 404 })
+      );
+    }
+    const cards = row.cards ?? [];
 
-  const row = getSessionReading(id);
-  if (!row) return Response.json({ error: "解读不存在" }, { status: 404 });
+    if (fmt === "json") {
+      return withSecurityHeaders(
+        Response.json({
+          id: row.id,
+          question: row.question,
+          reading: row.reading,
+          cards: cards.map((c) => ({
+            ...c,
+            // 补上牌面图片 URL（前端渲染分享卡用）
+            image: getCardById(c.id)?.image ?? "",
+          })),
+        })
+      );
+    }
 
-  const cards = row.cards ?? [];
-
-  if (fmt === "json") {
-    return Response.json({
-      id,
-      question: row.question,
-      reading: row.reading,
-      cards: cards.map((c) => ({
-        ...c,
-        // 补上牌面图片 URL（前端渲染分享卡用）
-        image: getCardById(c.id)?.image ?? "",
-      })),
-    });
+    const html = renderShareCard(row.id, row.question, row.reading, cards);
+    return new Response(html, { headers: shareHeaders() });
   }
 
-  const html = renderShareCard(id, row.question, row.reading, cards);
-  return new Response(html, {
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      // ⚠️ 允许被搜索引擎收录？不 —— 解读内容是私人的，noindex
-      "X-Robots-Tag": "noindex, nofollow",
-      // 内容是用户生成的，允许分享但禁止被当作资源嵌入
-      "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'",
-    },
-  });
+  // ⚠️ 兼容路径：老链接只有 id（没有 shareToken）。
+  //    不再直接返回内容 —— 改为签发一个 shareToken 并提示前端换用新链接。
+  //    （否则"可枚举的 id"依然能拿到私密内容）
+  if (id) {
+    const reading = getSessionReading(id);
+    if (!reading) {
+      return withSecurityHeaders(
+        Response.json({ error: "解读不存在" }, { status: 404 })
+      );
+    }
+    const shareToken = ensureShareToken(id, generateShareToken);
+    return withSecurityHeaders(
+      Response.json(
+        {
+          error: "请使用带分享令牌的链接",
+          shareToken,
+          url: `/api/share?t=${shareToken}`,
+        },
+        { status: 400 }
+      )
+    );
+  }
+
+  return withSecurityHeaders(
+    Response.json({ error: "缺少分享令牌" }, { status: 400 })
+  );
+}
+
+/** 分享页的安全响应头 */
+function shareHeaders(): Record<string, string> {
+  return {
+    "Content-Type": "text/html; charset=utf-8",
+    // ⚠️ 允许被搜索引擎收录？不 —— 解读内容是私人的，noindex
+    "X-Robots-Tag": "noindex, nofollow",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "X-Frame-Options": "DENY",
+    // ⚠️ script-src 'none' —— 分享页不需要脚本，且内容是用户生成的
+    "Content-Security-Policy":
+      "default-src 'self'; script-src 'none'; style-src 'unsafe-inline'; img-src 'self' data: https:; frame-ancestors 'none'",
+  };
 }
 
 /** 把解读正文按段落拆开（分享卡按段落渲染，比一整块好看） */

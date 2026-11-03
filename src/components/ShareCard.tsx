@@ -294,14 +294,33 @@ export default function ShareCardButton({ data }: { data: ShareCardData }) {
   const [copied, setCopied] = useState(false);
   const handleCopyLink = useCallback(async () => {
     if (!data.sessionId) return;
-    const url = `${window.location.origin}/api/share?id=${encodeURIComponent(data.sessionId)}`;
+    // ⚠️ P1-④：分享链接用**独立的 shareToken**，不用 sessionId
+    //   原因：sessionId 是会话控制凭证（能 answer/interject = 能替用户操作），
+    //   分享出去等于把控制权也给出去了。
+    //   服务端会为该会话签发一个 128bit 的 shareToken（只读）。
+    let shareUrl = "";
+    try {
+      const res = await fetch(`/api/share?id=${encodeURIComponent(data.sessionId)}`);
+      const j = await res.json();
+      if (j?.shareToken) {
+        shareUrl = `${window.location.origin}/api/share?t=${encodeURIComponent(j.shareToken)}`;
+      } else if (j?.url) {
+        shareUrl = `${window.location.origin}${j.url}`;
+      } else {
+        throw new Error(j?.error || "获取分享链接失败");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "获取分享链接失败");
+      return;
+    }
+
     try {
       if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(url);
+        await navigator.clipboard.writeText(shareUrl);
       } else {
         // 降级：老 API
         const ta = document.createElement("textarea");
-        ta.value = url;
+        ta.value = shareUrl;
         ta.style.position = "fixed";
         ta.style.opacity = "0";
         document.body.appendChild(ta);
@@ -312,7 +331,7 @@ export default function ShareCardButton({ data }: { data: ShareCardData }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
     } catch {
-      setError("复制失败 —— 可手动访问 /api/share?id=" + data.sessionId);
+      setError("复制失败 —— 可手动访问 " + shareUrl);
     }
   }, [data.sessionId]);
 

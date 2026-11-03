@@ -7,6 +7,9 @@ import {
 import { validateAgentEvent } from "@/lib/agent/schema";
 import { recordEvent, eventsSince, persistEvent } from "@/lib/agent/event-log";
 import { failSession } from "@/lib/db";
+import {
+  clampText, LIMITS, deriveUserKey, withSecurityHeaders, badRequest, checkBodySize,
+} from "@/lib/api-auth";
 
 /**
  * 解读接口：Supervisor 工具调用循环 + 子 Agent 管线 + HITL + SSE
@@ -26,8 +29,18 @@ import { failSession } from "@/lib/db";
  * ⚠️ 断点续传（P1-③D）：每个事件带单调递增 `id`（SSE 标准 id 字段），
  *    前端断线重连时带 `Last-Event-ID: <seq>` → 后端补发缺失事件。
  *    "流式 AI 应用的真实难点不是推流，是断流。"
+ *
+ * ⚠️ P1-④（公网标准）：
+ *   · 输入长度上限（question/followup）—— 防单请求放大 token 成本
+ *   · userKey **服务端派生** —— 客户端不能指定别人的画像主键
+ *   · 响应统一加安全头
  */
 export async function POST(req: Request) {
+  // ⚠️ 请求体大小上限（防成本放大：10MB 的 question 会进每一轮 prompt）
+  if (!checkBodySize(req)) {
+    return badRequest(`请求体过大（上限 ${Math.round(LIMITS.bodyBytes / 1024)}KB）`);
+  }
+
   let body: {
     question?: string;
     followup?: string;
@@ -40,7 +53,7 @@ export async function POST(req: Request) {
   try {
     body = await req.json();
   } catch {
-    return Response.json({ error: "请求体必须是合法 JSON" }, { status: 400 });
+    return badRequest("请求体必须是合法 JSON");
   }
 
   let session;
@@ -50,7 +63,9 @@ export async function POST(req: Request) {
   if (body.sessionId) {
     session = getSession(body.sessionId);
     if (!session) {
-      return Response.json({ error: "会话已过期，请重新开始占卜" }, { status: 410 });
+      return withSecurityHeaders(
+        Response.json({ error: "会话已过期，请重新开始占卜" }, { status: 410 })
+      );
     }
     // ⚠️ 断点续传（P1-③D）：resume 请求只需补发事件，不推进流程。
     //    因此**不能**走下面的 busy 检查（会话正在推进是正常的）。
@@ -60,21 +75,25 @@ export async function POST(req: Request) {
       // ⚠️ 并发互斥：会话正在推进（生成器运行中 / 挂在 HITL 等待）时，
       // 新 interpret 会把消息插到未配对的 tool_calls 后 → 协议 400 + 历史交叉污染。
       if (session.busy) {
-        return Response.json({ error: "这场占卜正在进行中，请先回应占卜师或稍候" }, { status: 409 });
+        return withSecurityHeaders(
+          Response.json({ error: "这场占卜正在进行中，请先回应占卜师或稍候" }, { status: 409 })
+        );
       }
-      followup = (body.followup ?? "").trim();
+      followup = clampText(body.followup, LIMITS.followup).trim();
       if (!followup) {
-        return Response.json({ error: "请写下你的追问" }, { status: 400 });
+        return badRequest("请写下你的追问");
       }
       question = session.question;
     }
   } else {
-    question = (body.question ?? "").trim();
+    question = clampText(body.question, LIMITS.question).trim();
     if (!question) {
-      return Response.json({ error: "请先写下你的问题" }, { status: 400 });
+      return badRequest("请先写下你的问题");
     }
-    // 方向①：userKey 用于跨会话画像（无则不留痕——匿名访客）
-    session = createSession(question, body.persona, body.userKey?.trim() || undefined);
+    // ⚠️ P1-④：userKey **服务端派生**（客户端传的只作区分维度）
+    //    审计实测：客户端可指定任意 userKey → 读写他人的跨会话画像。
+    const userKey = deriveUserKey(req, body.userKey);
+    session = createSession(question, body.persona, userKey);
   }
 
   // 把客户端断开信号注入会话：HITL 等待中的 Promise 可被取消（防生成器/内存泄漏）

@@ -91,7 +91,18 @@ console.log("=== P0-1 断点续传闭包过期 ===\n");
   check(
     hasRef ? "代码里已有 sessionIdRef（已修复）" : "代码里没有 sessionIdRef（bug 存在）",
     hasRef,
-    hasRef ? "" : "catch 块用的是 state 闭包 → 断流后无法恢复"
+    hasRef ? "catch 块已改为读 ref" : "catch 块用的是 state 闭包 → 断流后无法恢复"
+  );
+
+  // ⚠️ 关键：catch 块必须用 ref，不能用 state 闭包
+  const catchBlock = src.match(/catch \(e\) \{[\s\S]*?resumeStream\(\)/);
+  const body = catchBlock ? catchBlock[0] : "";
+  const usesRef = /sessionIdRef\.current/.test(body);
+  const usesState = /\bsessionId\s*&&/.test(body);
+  check(
+    "catch 块读的是 ref 而不是 state 闭包",
+    usesRef && !usesState,
+    usesRef ? "已修复" : usesState ? "仍在读 state 闭包 → 恢复分支永远进不去" : "未找到判定"
   );
 }
 

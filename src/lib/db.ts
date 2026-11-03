@@ -137,6 +137,14 @@ try {
   if (!cols.some((c) => c.name === "state_json")) {
     db.exec(`ALTER TABLE sessions ADD COLUMN state_json TEXT NOT NULL DEFAULT ''`);
   }
+  // P1-④：share_token —— **分享凭证**（与 sessionId 分离）。
+  // ⚠️ 为什么不能直接用 sessionId 分享：
+  //    sessionId 是**会话控制凭证**（能 answer/interject = 能替用户操作）。
+  //    分享出去等于把控制权也给出去了。
+  //    独立的 shareToken 只能**读**，不能控制。
+  if (!cols.some((c) => c.name === "share_token")) {
+    db.exec(`ALTER TABLE sessions ADD COLUMN share_token TEXT NOT NULL DEFAULT ''`);
+  }
 } catch { /* 迁移失败不阻断 */ }
 
 /* ---------------- 写入 API ---------------- */
@@ -188,6 +196,70 @@ export function finishSession(id: string, review: SessionRow["review"]): void {
 export function failSession(id: string, reason = "unknown"): void {
   db.prepare(`UPDATE sessions SET status = 'error', error_reason = ?, finished_at = ? WHERE id = ?`)
     .run(reason, Date.now(), id);
+}
+
+/* ------------------------------------------------------------------ */
+/* 分享凭证（P1-④）                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 设置会话的分享令牌
+ *
+ * ⚠️ 为什么用**独立的**令牌而不是 sessionId：
+ *   sessionId 是会话控制凭证（能 answer/interject），
+ *   分享出去等于把控制权也给出去了。
+ *   独立的 shareToken 只能**读**（看解读），不能控制（替用户回答）。
+ */
+export function setSessionShareToken(id: string, token: string): void {
+  db.prepare(`UPDATE sessions SET share_token = ? WHERE id = ?`).run(token, id);
+}
+
+/**
+ * 按分享令牌查会话（分享页的入口）
+ *
+ * ⚠️ 用令牌查而不是用 id 查 —— 让"分享链接"与"会话控制"彻底分离。
+ */
+export function getSessionByShareToken(token: string): SessionRow | null {
+  if (!token) return null;
+  const row = db.prepare(`SELECT * FROM sessions WHERE share_token = ? LIMIT 1`).get(token) as
+    | {
+        id: string; question: string; persona: string; cards_json: string;
+        reading: string; review_json: string; status: string;
+        created_at: number; finished_at: number | null;
+      }
+    | undefined;
+  if (!row) return null;
+  return {
+    id: row.id,
+    question: row.question,
+    persona: row.persona,
+    cards: safeParse(row.cards_json, []),
+    reading: row.reading,
+    review: safeParse(row.review_json, null),
+    status: row.status as SessionRow["status"],
+    createdAt: row.created_at,
+    finishedAt: row.finished_at ?? undefined,
+  };
+}
+
+/** 取会话已有的分享令牌（没有则生成并落库） */
+export function ensureShareToken(id: string, generate: () => string): string {
+  const row = db.prepare(`SELECT share_token FROM sessions WHERE id = ?`).get(id) as
+    | { share_token: string }
+    | undefined;
+  if (row?.share_token) return row.share_token;
+  const token = generate();
+  setSessionShareToken(id, token);
+  return token;
+}
+
+/** 安全 JSON 解析（失败返回默认值，不抛） */
+function safeParse<T>(s: string, fallback: T): T {
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return fallback;
+  }
 }
 
 /* ------------------------------------------------------------------ */

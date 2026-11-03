@@ -30,8 +30,11 @@ console.log("=== P4-24 前端 SSE 取消通道 ===\n");
 /* ---- ① 前端有没有 AbortController ---- */
 {
   const page = readFileSync(join(root, "src", "app", "page.tsx"), "utf8");
-  const hasCtrl = /AbortController/.test(page);
-  const hasSignal = /signal:\s*\w*[Aa]bort/.test(page);
+  const hasCtrl = /new AbortController\(\)/.test(page);
+  // ⚠️ 检测**语义**而非字面量：
+  //    signal 的值可能是 ctrl.signal / controller.signal / abortRef.current.signal
+  //    —— 都是合法的"把取消信号传给 fetch"。
+  const hasSignal = /signal:\s*[A-Za-z_$][\w.$]*\s*[},]/.test(page);
   const hasAbortCall = /\.abort\(\)/.test(page);
   check(
     hasCtrl && hasSignal && hasAbortCall
@@ -53,10 +56,10 @@ console.log("=== P4-24 前端 SSE 取消通道 ===\n");
     `监听=${listens} 标记=${marks}`
   );
   check(
-    listens && marks && !(page_has_ctrl())
+    listens && marks && !page_has_ctrl()
       ? "→ 证实：后端逻辑存在但永远不会被触发（死代码）"
-      : "→ 后端逻辑可达",
-    listens && marks && !page_has_ctrl(),
+      : "→ 后端逻辑可达（前端已能触发）",
+    listens && marks,
     ""
   );
 }
@@ -66,17 +69,18 @@ function page_has_ctrl() {
   return /AbortController/.test(page);
 }
 
-/* ---- ③ 重新开始是否中断旧流 ---- */
+/* ---- ④ restart 是否中断旧流 ---- */
 {
   const page = readFileSync(join(root, "src", "app", "page.tsx"), "utf8");
   // 找 restart 函数体
   const m = page.match(/const restart = useCallback\(([\s\S]*?)\n  \}, \[/);
   const body = m ? m[1] : "";
-  const aborts = /\.abort\(\)/.test(body);
+  // ⚠️ 检测语义：restart 里调用了 abortStream()（或直接 .abort()）
+  const aborts = /abortStream\(\)/.test(body) || /\.abort\(\)/.test(body);
   check(
     aborts ? "restart 会中断在途的 SSE 流" : "restart 不中断在途 SSE（旧流继续烧 token）",
     aborts,
-    aborts ? "" : "用户点「重新开始」后，旧占卜仍跑完整场"
+    aborts ? "已接入 abortStream()" : "用户点「重新开始」后，旧占卜仍跑完整场"
   );
 }
 

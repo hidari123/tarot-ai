@@ -293,6 +293,30 @@ export default function TarotApp() {
   const flipPendingRef = useRef(false);
   /** 最后收到的 SSE 事件序号（断点续传用，P1-③D） */
   const lastSeqRef = useRef(0);
+  /**
+   * sessionId 的 **ref 镜像**（P0-③）
+   *
+   * ⚠️ 为什么需要 ref 镜像（这是断点续传从"写了但从没用过"变成真能用的关键）：
+   *   `startDivination` 是 useCallback，它捕获的 `sessionId` 是**创建那一刻**的值。
+   *   而 session id 是 SSE 流中途才写进来的（case "session" → setSessionId）。
+   *   于是 catch 块里的 `if (sessionId && lastSeqRef.current > 0)`
+   *   读到的永远是**启动时的空串** → 恢复分支**一次都进不去**。
+   *
+   *   同一个恢复逻辑里 `lastSeqRef` 用 ref（正确）、`sessionId` 用 state（错误）——
+   *   混用导致语义不一致。
+   *   修法：sessionId 也用 ref 读，与 lastSeqRef 对齐。
+   */
+  const sessionIdRef = useRef("");
+  /**
+   * 在途 SSE 请求的取消句柄（P0-③）
+   *
+   * ⚠️ 为什么必须有（后端的断开检测形同虚设）：
+   *   后端有完整的 `req.signal → client_disconnect → 停止烧 token` 逻辑，
+   *   但前端 fetch **从不 abort** → req.signal 永远不触发 → 那段代码是死代码。
+   *   后果：用户误点「重新开始」→ 旧流继续跑完整场仪式（14 次 LLM 往返）
+   *   → 白烧约 ¥0.22 的 token，而且后端还把它记成"正常完成"。
+   */
+  const streamAbortRef = useRef<AbortController | null>(null);
   /** 条目 id 计数器 */
   const entryIdRef = useRef(0);
   const nextEntryId = () => `e${++entryIdRef.current}`;
@@ -530,10 +554,12 @@ export default function TarotApp() {
           .then(async (r) => {
             if (r.ok) {
               setSessionId((cur) => (cur ? cur : saved));
+              sessionIdRef.current = saved; // P0-③：同步 ref（恢复的会话也要能断点续传）
             } else {
               // 会话已过期/不存在：清本地，别再展示"可追问"入口
               try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
               setSessionId("");
+              sessionIdRef.current = "";
             }
           })
           .catch(() => {
@@ -542,6 +568,23 @@ export default function TarotApp() {
           });
       } catch { /* 隐私模式 */ }
     });
+  }, []);
+
+  /**
+   * 组件卸载时中断在途的 SSE 请求（P0-③）
+   *
+   * ⚠️ 为什么必须做：
+   *   用户关掉标签页 / 刷新 → 前端的 fetch 被浏览器取消，
+   *   但**后端**不知道（除非 req.signal 触发）。
+   *   不主动 abort 的话，后端会继续跑完整场仪式。
+   *   有了这个 cleanup，浏览器发 abort → req.signal 触发
+   *   → 后端标记 client_disconnect → 停止烧 token。
+   */
+  useEffect(() => {
+    return () => {
+      const ctrl = streamAbortRef.current;
+      if (ctrl) ctrl.abort();
+    };
   }, []);
 
   /* SSE 消费 */
@@ -557,8 +600,7 @@ export default function TarotApp() {
    *   EventSource 只能 GET，不能带自定义 body（POST /api/interpret）。
    *   所以用 fetch + ReadableStream 手动解析 SSE 帧。
    */
-  const consumeStream = useCallback(async (res: Response) => {
-    if (!res.ok || !res.body) {
+  const consumeStream = useCallback(async (res: Response) => {    if (!res.ok || !res.body) {
       const err = await res.json().catch(() => ({ error: "解读失败" }));
       throw new Error(err.error || "解读失败");
     }
@@ -596,6 +638,8 @@ export default function TarotApp() {
           switch (p.type) {
             case "session":
               setSessionId(p.sessionId);
+              // P0-③：同步 ref 镜像（断点续传的 catch 块要读最新值）
+              sessionIdRef.current = p.sessionId;
               // 持久化：刷新后可恢复会话继续追问（十几分钟的仪式流程不该因刷新作废）
               try { localStorage.setItem("tarot:sessionId", p.sessionId); } catch { /* 隐私模式 */ }
               break;
@@ -951,8 +995,15 @@ export default function TarotApp() {
    * @returns 是否成功恢复
    */
   const resumeStream = useCallback(async (): Promise<boolean> => {
-    if (!sessionId || lastSeqRef.current === 0) return false;
+    // ⚠️ P0-③：读 **ref** 而不是 state 闭包
+    //    （startDivination 的 catch 块在同一调用栈内执行，
+    //      state 闭包捕获的是启动时刻的值 = 空串 → 恢复分支永远进不去）
+    const sid = sessionIdRef.current;
+    if (!sid || lastSeqRef.current === 0) return false;
     try {
+      // P0-③：恢复请求也走 AbortController（用户可能在恢复途中点「重新开始」）
+      const ctrl = new AbortController();
+      streamAbortRef.current = ctrl;
       const res = await fetch("/api/interpret", {
         method: "POST",
         headers: {
@@ -960,15 +1011,35 @@ export default function TarotApp() {
           // SSE 标准头：告诉后端客户端最后收到哪个事件
           "Last-Event-ID": String(lastSeqRef.current),
         },
-        body: JSON.stringify({ sessionId, resume: true }),
+        body: JSON.stringify({ sessionId: sid, resume: true }),
+        signal: ctrl.signal,
       });
       if (!res.ok) return false;
       await consumeStream(res);
       return true;
-    } catch {
+    } catch (e) {
+      // ⚠️ 被主动取消 → 不是错误，不该弹"解读失败"
+      if (e instanceof DOMException && e.name === "AbortError") return false;
       return false;
+    } finally {
+      streamAbortRef.current = null;
     }
-  }, [sessionId, consumeStream]);
+  }, [consumeStream]);
+
+  /**
+   * 取消在途的 SSE 请求（P0-③）
+   *
+   * ⚠️ 必须在"重新开始 / 发起新请求 / 组件卸载"时调用：
+   *   不取消的话，后端会继续跑完整场仪式（14 次 LLM 往返），
+   *   白烧约 ¥0.22/次，而且后端还把它记成"正常完成"。
+   */
+  const abortStream = useCallback(() => {
+    const ctrl = streamAbortRef.current;
+    if (ctrl) {
+      ctrl.abort();
+      streamAbortRef.current = null;
+    }
+  }, []);
 
   /* 开始占卜 */
   const startDivination = useCallback(async () => {
@@ -1004,19 +1075,35 @@ export default function TarotApp() {
     setStreamStart(Date.now());
 
     try {
+      // P0-③：给这次请求挂上 AbortController
+      //    （用户点「重新开始」时能真正中断，后端随之停止烧 token）
+      abortStream();
+      const ctrl = new AbortController();
+      streamAbortRef.current = ctrl;
       const res = await fetch("/api/interpret", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: q, persona: persona?.id, userKey: getUserKey() }),
+        signal: ctrl.signal,
       });
       await consumeStream(res);
     } catch (e) {
+      // ⚠️ P0-③：主动取消（用户点了「重新开始」）不是错误 —— 静默返回
+      if (e instanceof DOMException && e.name === "AbortError") {
+        setStreaming(false);
+        return;
+      }
       // ⚠️ 断流恢复（P1-③D）：网络抖动导致流中断时，
       //    尝试用 Last-Event-ID 让后端补发缺失事件。
       //    前提：已经收到过至少一个事件（seq>0）且知道 sessionId
       //    —— 否则是"服务端一开始就没响应"，重连也没用。
+      //
+      // ⚠️ P0-③：sessionId 必须读 **ref**（sessionIdRef.current）——
+      //    这里在同一次调用栈内，state 闭包捕获的是启动时刻的空串，
+      //    恢复分支永远进不去（断点续传功能写了两轮却从未真正生效）。
       const msg = e instanceof Error ? e.message : "解读失败";
-      if (sessionId && lastSeqRef.current > 0) {
+      const sid = sessionIdRef.current;
+      if (sid && lastSeqRef.current > 0) {
         setError("连接中断，正在恢复对话…");
         const ok = await resumeStream();
         if (ok) {
@@ -1027,9 +1114,10 @@ export default function TarotApp() {
       }
       setError(`${msg}，请重试`);
     } finally {
+      streamAbortRef.current = null;
       setStreaming(false);
     }
-  }, [question, persona, consumeStream, streaming, sessionId, resumeStream]);
+  }, [question, persona, consumeStream, streaming, resumeStream, abortStream]);
 
   /* HITL 应答（选牌扇面 / 随机代抽等仍在流外的交互）。
      ⚠️ 提交锁：双击选项/按钮会双发 POST，第二次 409 报错干扰用户 */
@@ -1109,10 +1197,15 @@ export default function TarotApp() {
     setStreamStart(Date.now());
     setError("");
     try {
+      // P0-③：追问同样要能被取消
+      abortStream();
+      const ctrl = new AbortController();
+      streamAbortRef.current = ctrl;
       const res = await fetch("/api/interpret", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, followup: f }),
+        signal: ctrl.signal,
       });
       if (!res.ok && res.status === 410) {
         // ⚠️ 会话已被 TTL 清理/服务重启丢失：立即清掉本地会话记录，
@@ -1120,16 +1213,23 @@ export default function TarotApp() {
         // 错误文案由下方 setError 呈现，"重新开始"是唯一出路。
         try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
         setSessionId("");
+        sessionIdRef.current = "";
         setError("这场占卜已过期（超过 30 分钟），请重新开始");
         return;
       }
       await consumeStream(res);
     } catch (e) {
+      // ⚠️ P0-③：主动取消不是错误
+      if (e instanceof DOMException && e.name === "AbortError") {
+        setStreaming(false);
+        return;
+      }
       setError(e instanceof Error ? e.message : "追问失败");
     } finally {
+      streamAbortRef.current = null;
       setStreaming(false);
     }
-  }, [followup, sessionId, consumeStream, pushEntry, streaming]);
+  }, [followup, sessionId, consumeStream, pushEntry, streaming, abortStream]);
 
   /* 语音输入 */
   const startVoice = useCallback(() => {
@@ -1162,8 +1262,13 @@ export default function TarotApp() {
   }, []);
 
   const restart = useCallback(() => {
+    // ⚠️ P0-③：先中断在途的 SSE 请求
+    //    不中断的话，旧占卜会继续跑完整场仪式（14 次 LLM 往返），
+    //    白烧约 ¥0.22 的 token，而且后端还把它记成"正常完成"。
+    abortStream();
     setStage("input");
     setSessionId("");
+    sessionIdRef.current = ""; // P0-③：同步清 ref（否则恢复逻辑会指向已放弃的会话）
     try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
     setQuestion("");
     setReading("");
@@ -1187,7 +1292,7 @@ export default function TarotApp() {
     entryIdRef.current = 0;
     setError("");
     setStreaming(false);
-  }, []);
+  }, [abortStream]);
 
   const done = phase === "done" && !streaming;
 

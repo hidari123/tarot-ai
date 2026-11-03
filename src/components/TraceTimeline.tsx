@@ -66,8 +66,17 @@ export default function TraceTimeline({ sessionId }: { sessionId: string | null 
     }
     setLoading(true);
     setErr("");
-    fetch(`/api/dashboard/events?sessionId=${encodeURIComponent(sessionId)}`)
+    // ⚠️ P1-④：面板事件接口需要访问令牌（与 dashboard 同一套）
+    //    令牌从 sessionStorage 读（与 dashboard 页保持一致）
+    let token = "";
+    try {
+      token = sessionStorage.getItem("tarot:dashboardToken") ?? "";
+    } catch { /* 隐私模式 */ }
+    fetch(`/api/dashboard/events?sessionId=${encodeURIComponent(sessionId)}`, {
+      headers: token ? { "X-Access-Token": token } : {},
+    })
       .then(async (r) => {
+        if (r.status === 401) throw new Error("需要访问令牌（请重新输入面板令牌）");
         if (!r.ok) throw new Error(`事件接口异常(${r.status})`);
         const d = await r.json();
         setEvents(Array.isArray(d.events) ? d.events : []);

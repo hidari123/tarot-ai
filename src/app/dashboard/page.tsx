@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import TraceTimeline from "@/components/TraceTimeline";
@@ -70,6 +70,67 @@ const ERROR_REASON_LABEL: Record<string, string> = {
   unknown: "未知原因",
 };
 
+/**
+ * P1-④：令牌错误（401）的专用异常
+ *
+ * ⚠️ 为什么要单独一个类型：
+ *   "令牌错了"（要重新输入）与"服务端出错了"（显示错误）是两种 UX，
+ *   不能共用一个 catch 分支。
+ */
+class AuthError extends Error {}
+
+/**
+ * P1-④：拉取面板数据（带令牌）
+ *
+ * ⚠️ 抽成模块级函数的原因：
+ *   三个地方要用（初始加载 / 提交令牌 / 轮询），
+ *   各自写一遍会漂移（尤其是 401 的处理）。
+ */
+async function fetchStats(token: string): Promise<Stats> {
+  const r = await fetch("/api/dashboard", { headers: { "X-Access-Token": token } });
+  if (r.status === 401) throw new AuthError("访问令牌无效");
+  if (!r.ok) throw new Error(`面板接口异常(${r.status})`);
+  const d = await r.json();
+  // ⚠️ 接口失败返回 {error}：直接 setStats 会让下方 stats.staleSessions.length 抛 TypeError 炸掉整页
+  if (!d || typeof d.totalSessions !== "number") throw new Error(d?.error || "面板数据格式异常");
+  return d as Stats;
+}
+
+/**
+ * P1-④：令牌输入框
+ *
+ * ⚠️ 为什么用 type="password"：
+ *   令牌不该以明文显示（肩窥/截图/录屏）。
+ */
+function TokenInput({ onSubmit }: { onSubmit: (t: string) => void }) {
+  const [v, setV] = useState("");
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSubmit(v);
+      }}
+      className="flex gap-2"
+    >
+      <input
+        type="password"
+        value={v}
+        onChange={(e) => setV(e.target.value)}
+        placeholder="粘贴访问令牌"
+        autoComplete="off"
+        className="flex-1 px-4 py-2.5 rounded-xl bg-black/40 border border-purple-500/30 text-purple-100 text-sm outline-none focus:border-purple-400/60 placeholder:text-purple-300/30"
+      />
+      <button
+        type="submit"
+        disabled={!v.trim()}
+        className="px-5 py-2.5 rounded-xl bg-purple-700/70 hover:bg-purple-600/70 text-white text-sm disabled:opacity-40 transition-colors"
+      >
+        进入
+      </button>
+    </form>
+  );
+}
+
 export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -80,32 +141,104 @@ export default function Dashboard() {
    *    ref 的变化不会引起渲染。
    */
   const [traceSessionId, setTraceSessionId] = useState<string | null>(null);
+  /**
+   * P1-④：面板访问令牌
+   *
+   * ⚠️ 为什么存 sessionStorage 而不是 localStorage：
+   *   localStorage 会**永久留在磁盘**（XSS 可读、共享电脑可读）。
+   *   sessionStorage 关闭标签页即失效 —— 对"内部观测面板"够用。
+   *
+   * ⚠️ 为什么不放 URL query（?token=xxx）：
+   *   URL 会被 referer 泄露、会被浏览器历史记录、会被截图分享出去。
+   *   放 header 里更安全。
+   */
+  const [token, setToken] = useState<string>("");
+  /** 是否已尝试过加载（用于区分"还没输入 token"与"token 错了"） */
+  const [needToken, setNeedToken] = useState(false);
 
-  const load = () => {
+
+  /**
+   * P1-④：从 sessionStorage 恢复令牌并加载
+   *
+   * ⚠️ 用 sessionStorage（不是 localStorage）：
+   *   关闭标签页即失效 —— 对内部观测面板够用，且减少泄露面。
+   */
+  useEffect(() => {
+    let saved = "";
+    try {
+      saved = sessionStorage.getItem("tarot:dashboardToken") ?? "";
+    } catch { /* 隐私模式 */ }
+    // ⚠️ 所有 setState 都放在 setTimeout 里（不在 effect 内同步调用）——
+    //    React 的 "set-state-in-effect" 规则针对的是"根据 props/state 派生状态"，
+    //    但同步 setState 也会造成一次额外的渲染。
+    //    这里统一用异步推迟，既满足规则也避免级联渲染。
+    if (!saved) {
+      const t = setTimeout(() => {
+        setNeedToken(true);
+        setLoading(false);
+      }, 0);
+      return () => clearTimeout(t);
+    }
+    const t = setTimeout(() => {
+      setToken(saved);
+      fetchStats(saved)
+        .then((d) => {
+          setStats(d);
+          setLoading(false);
+        })
+        .catch((e) => {
+          // 401 → 需要输入令牌；其它错误 → 显示错误
+          if (e instanceof AuthError) {
+            setNeedToken(true);
+            setLoading(false);
+          } else {
+            setError(e instanceof Error ? e.message : "面板加载失败");
+            setLoading(false);
+          }
+        });
+    }, 0);
+    return () => clearTimeout(t);
+  }, []);
+
+  /**
+   * P1-④：保存令牌并加载
+   */
+  const submitToken = useCallback((value: string) => {
+    const t = value.trim();
+    if (!t) return;
+    try {
+      sessionStorage.setItem("tarot:dashboardToken", t);
+    } catch { /* 隐私模式：本次会话内仍可用 */ }
+    setToken(t);
+    setNeedToken(false);
+    setStats(null);
     setLoading(true);
-    setError("");
-    fetch("/api/dashboard")
-      .then(async (r) => {
-        if (!r.ok) throw new Error(`面板接口异常(${r.status})`);
-        const d = await r.json();
-        // ⚠️ 接口失败返回 {error}：直接 setStats 会让下方 stats.staleSessions.length 抛 TypeError 炸掉整页
-        if (!d || typeof d.totalSessions !== "number") throw new Error(d?.error || "面板数据格式异常");
-        setStats(d as Stats);
+    fetchStats(t)
+      .then((d) => {
+        setStats(d);
         setLoading(false);
       })
       .catch((e) => {
-        setError(e instanceof Error ? e.message : "面板加载失败");
-        setLoading(false);
+        if (e instanceof AuthError) {
+          setNeedToken(true);
+          setLoading(false);
+        } else {
+          setError(e instanceof Error ? e.message : "面板加载失败");
+          setLoading(false);
+        }
       });
-  };
-
-  useEffect(() => {
-    // 异步加载（setState 都在 Promise 回调里，避免 effect 内同步 setState）
-    const t0 = setTimeout(load, 0);
-    // 30s 轮询：面板是观测工具，数据新鲜度比省请求重要
-    const t = setInterval(load, 30_000);
-    return () => { clearTimeout(t0); clearInterval(t); };
   }, []);
+
+  // 30s 轮询（只在已有令牌时）
+  useEffect(() => {
+    if (!token) return;
+    const t = setInterval(() => {
+      fetchStats(token)
+        .then((d) => setStats(d))
+        .catch(() => { /* 轮询失败静默（下次再试） */ });
+    }, 30_000);
+    return () => clearInterval(t);
+  }, [token]);
 
   return (
     <main className="relative min-h-screen bg-[#05020a] px-4 py-10 md:py-14">
@@ -126,13 +259,30 @@ export default function Dashboard() {
           </Link>
         </div>
 
-        {loading && !stats && <p className="text-purple-300/60 text-center py-20 animate-pulse">星辰数据汇聚中…</p>}
+        {/* ---------- P1-④：令牌输入（面板需要鉴权）---------- */}
+        {needToken && (
+          <div className="max-w-md mx-auto mt-16 rounded-2xl border border-purple-500/30 bg-purple-950/25 backdrop-blur p-7">
+            <h2 className="text-purple-100 text-lg mb-2" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>
+              需要访问令牌
+            </h2>
+            <p className="text-purple-300/60 text-xs mb-4 leading-relaxed">
+              观测面板包含全站用户的占卜内容（私密），已启用访问保护。
+              请输入部署时配置的 <code className="text-purple-200">DASHBOARD_TOKEN</code>。
+            </p>
+            <TokenInput onSubmit={submitToken} />
+          </div>
+        )}
+
+        {loading && !stats && !needToken && <p className="text-purple-300/60 text-center py-20 animate-pulse">星辰数据汇聚中…</p>}
 
         {error && !stats && (
           <div className="rounded-2xl border border-rose-500/40 bg-rose-950/20 px-6 py-10 text-center">
             <p className="text-rose-200/90 mb-4">{error}</p>
             <button
-              onClick={load}
+              onClick={() => {
+                // ⚠️ 重新加载：复用 submitToken（它会走 fetchStats + 统一错误处理）
+                if (token) submitToken(token);
+              }}
               className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-purple-700 to-indigo-700 text-white text-sm"
             >
               重新加载
