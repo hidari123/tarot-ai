@@ -235,6 +235,19 @@ export interface AgentSession {
   emotionTags: string[];
   /** A1：承约——占卜师复述确认后的具体问题 */
   contractQuestion?: string;
+  /**
+   * P1-⑩：仪式阶段（显式状态机）
+   *
+   * ⚠️ 之前没有这个字段 —— 仪式进度靠"contractQuestion/invocation/drawnCards
+   *    哪个为空"隐式判断，导致：
+   *      1. 同一个守卫判断在代码里重复 4 次
+   *      2. 状态不可见（dashboard 不知道这场卡在哪一步）
+   *      3. 无法穷举合法转移（写不了状态机测试）
+   *    现在由 ritual-machine.ts 统一管理。
+   *
+   * ⚠️ 老会话没有这个字段 → 用 derivePhase() 从已有字段反推（见 session.ts）
+   */
+  ritualPhase?: import("./ritual-machine").RitualPhase;
   /** A2：牌阵范围声明 */
   scopeNote?: string;
   /** A3：三问呼召 —— 问题 + 用户回答 */

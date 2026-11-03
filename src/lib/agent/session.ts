@@ -15,6 +15,7 @@
 import * as db from "../db";
 import { PERSONAS } from "../personas";
 import type { AgentSession } from "./types";
+import { derivePhase, type RitualPhase } from "./ritual-machine";
 
 /**
  * 内存会话表 —— globalThis 单例。
@@ -154,6 +155,8 @@ export function createSession(question: string, personaId?: string, userKey?: st
     ragQueryHistory: [], ragCallCount: 0, dwellTimes: [], emotionTags: [],
     cardReadings: [], interjections: [], pendingInterjections: [],
     userKey,
+    // P1-⑩：新会话一律从"承约"开始（仪式第一站）
+    ritualPhase: "contract",
   };
   sessions.set(id, session);
   db.insertSession(id, question, persona.id, []);
@@ -200,7 +203,11 @@ export interface SessionSnapshot {
   emotionTags: string[];
   contractQuestion?: string;
   scopeNote?: string;
+  /** P1-⑩：仪式阶段（老会话没有 → 恢复时 derivePhase 反推） */
+  ritualPhase?: RitualPhase;
   invocationAnswers?: string[];
+  /** 三问呼召的完整问答对（P1-⑩ 推导仪式阶段时需要） */
+  invocation?: { questions: string[]; answers: string[] };
   interjections: string[];
   pendingInterjections: string[];
   userKey?: string;
@@ -230,6 +237,8 @@ export function snapshotSession(s: AgentSession): SessionSnapshot {
     emotionTags: s.emotionTags,
     contractQuestion: s.contractQuestion,
     scopeNote: s.scopeNote,
+    // P1-⑩：仪式阶段进快照（老会话没有 → 恢复时从其它字段推导）
+    ritualPhase: s.ritualPhase,
     invocationAnswers: s.invocationAnswers,
     interjections: s.interjections,
     pendingInterjections: s.pendingInterjections,
@@ -274,6 +283,17 @@ export function restoreSession(snap: SessionSnapshot): AgentSession | null {
       emotionTags: snap.emotionTags ?? [],
       contractQuestion: snap.contractQuestion,
       scopeNote: snap.scopeNote,
+      // P1-⑩：仪式阶段 —— 老会话没有这个字段，用 derivePhase 从其它字段反推。
+      // ⚠️ 必须反推而不是默认 "contract"：
+      //    否则恢复一个"已经承约完、正准备翻牌"的会话时，
+      //    守卫会认为它还在承约阶段 → 用户看到"请先承约"（明明已经承约过了）。
+      ritualPhase: snap.ritualPhase ?? derivePhase({
+        finished: snap.finished,
+        contractQuestion: snap.contractQuestion,
+        invocation: snap.invocation,
+        drawnCards: snap.drawnCards,
+        cardReadings: snap.cardReadings,
+      }),
       invocationAnswers: snap.invocationAnswers,
       interjections: snap.interjections ?? [],
       pendingInterjections: snap.pendingInterjections ?? [],

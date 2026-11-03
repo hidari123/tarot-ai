@@ -30,7 +30,8 @@ let pass = 0;
 let fail = 0;
 const check = (label, ok, detail = "") => {
   console.log(`  ${ok ? "✓" : "✗"} ${label}${detail ? ` — ${detail}` : ""}`);
-  ok ? pass++ : fail++;
+  if (ok) pass++;
+  else fail++;
 };
 
 /** 造一个最小 session 对象（waitUserAnswer 只用到 pendingAsk / abortSignal） */

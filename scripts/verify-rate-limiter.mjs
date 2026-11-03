@@ -35,7 +35,8 @@ let pass = 0;
 let fail = 0;
 const check = (label, ok, detail = "") => {
   console.log(`  ${ok ? "✓" : "✗"} ${label}${detail ? ` — ${detail}` : ""}`);
-  ok ? pass++ : fail++;
+  if (ok) pass++;
+  else fail++;
 };
 
 /* ---- ① 突发额度：空闲后立刻放行 burst 次 ---- */

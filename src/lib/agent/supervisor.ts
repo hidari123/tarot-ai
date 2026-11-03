@@ -34,6 +34,9 @@ import { execDrawCards } from "./tools/cards";
 import { runAnalyst, runWriter, runReviewer, type ReviewResult } from "./subagents";
 import { runLocalFallback } from "./fallback";
 import {
+  canEnter, advance, RITUAL_PHASE_LABEL, completedPhases,
+} from "./ritual-machine";
+import {
   extractEmotionTags, suggestPersonaByEmotion, extractBranchesFromPrompt,
   buildFinalReading, ensureCardSlot, compressRagResult, trimHistory,
   buildSystemPrompt, buildPlanSteps,
@@ -461,6 +464,8 @@ export async function* runAgent(
         }
         const closing = String(args.closing || "").trim();
         const question = String(args.question || "这三段里，哪一段最贴近你现在的状态？").trim();
+        // P1-⑩：推进阶段（综合 → 收束）
+        session.ritualPhase = advance(session.ritualPhase ?? "synthesis", "closing").phase;
         let cOptions = Array.isArray(args.options)
           ? (args.options as unknown[]).map(String).filter((s) => s.trim())
           : [];
@@ -493,6 +498,8 @@ export async function* runAgent(
           const lastReview = (session as unknown as { __lastReview?: ReviewResult | null }).__lastReview ?? null;
           db.finishSession(session.id, lastReview);
           session.finished = true;
+          // P1-⑩：推进到终态
+          session.ritualPhase = advance(session.ritualPhase ?? "closing", "done").phase;
           yield { type: "done" };
           return;
         }
@@ -518,6 +525,8 @@ export async function* runAgent(
         const lastReview = (session as unknown as { __lastReview?: ReviewResult | null }).__lastReview ?? null;
         db.finishSession(session.id, lastReview);
         session.finished = true;
+        // P1-⑩：推进到终态
+        session.ritualPhase = advance(session.ritualPhase ?? "closing", "done").phase;
         yield { type: "done" };
         return;
       }
@@ -827,6 +836,8 @@ export async function* runAgent(
           continue;
         }
         const focus = (args.focus as string) || "综合";
+        // P1-⑩：推进阶段（逐张解读 → 综合）
+        session.ritualPhase = advance(session.ritualPhase ?? "per_card", "synthesis").phase;
         yield { type: "phase", phase: "interpret", label: `子 Agent 管线启动（侧重：${focus}）…` };
         yield { type: "tool", tool: { name, args, resultSummary: "启动分析师→撰写者→审校者管线", durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, "启动管线", Date.now() - t0);
@@ -1033,6 +1044,8 @@ export async function* runAgent(
         });
         yield { type: "tool", tool: { name, args, resultSummary: `承约确认：${session.contractQuestion}`, durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, `承约：${session.contractQuestion}`, Date.now() - t0);
+        // P1-⑩：推进阶段（承约 → 呼召）
+        session.ritualPhase = advance(session.ritualPhase ?? "contract", "invocation").phase;
         roundToolNames.push(name);
         continue;
       }
@@ -1114,6 +1127,8 @@ export async function* runAgent(
         });
         yield { type: "tool", tool: { name, args, resultSummary: `三问呼召：${session.invocation.answers.length} 个回答`, durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, `呼召：${session.invocation.answers.join(" / ").slice(0, 80)}`, Date.now() - t0);
+        // P1-⑩：推进阶段（呼召 → 选牌）
+        session.ritualPhase = advance(session.ritualPhase ?? "invocation", "card_selection").phase;
         roundToolNames.push(name);
         continue;
       }
@@ -1129,31 +1144,26 @@ export async function* runAgent(
           askPrompt = q;
           askEvent = { type: "ask_user", ask: { question: q, options, allowFree: true, prompt: q } };
         } else if (name === "offer_card_selection") {
-          /* ---- 仪式守卫：承约未完成不得选牌；呼召未完成也不得选牌 ----
-           * （prompt 是软约束，模型会跳过 —— 必须在后端强制） */
-          if (!session.contractQuestion) {
+          /* ---- 仪式守卫（P1-⑩）：用状态机统一判断 ----
+           * ⚠️ 之前这里是两段手写的 if（承约检查 + 呼召检查），
+           *    同样的逻辑在 draw_cards 里又抄了一遍 —— 改一处忘另一处
+           *    就会漏防（模型能跳步）。
+           *    现在统一走 ritual-machine 的 canEnter()，
+           *    守卫与"缺哪一步、该做什么"由状态机给出。
+           */
+          const guard = canEnter(
+            session.ritualPhase ?? "contract",
+            "card_selection",
+            completedPhases(session),
+            { toolName: "offer_card_selection" }
+          );
+          if (!guard.ok) {
             session.messages.push({
               role: "tool",
               tool_call_id: tc.id,
               content: JSON.stringify({
-                error: "还不能选牌：承约尚未完成",
-                hint:
-                  "请先调用 establish_contract —— 把用户的问题复述成一个更具体、能被牌回答的问题，" +
-                  "并声明牌阵范围，请用户确认。真实占卜师绝不会跳过这一步。",
-              }),
-            });
-            roundToolNames.push("offer_card_selection(拦截)");
-            continue;
-          }
-          if (!session.invocation || session.invocation.answers.length === 0) {
-            session.messages.push({
-              role: "tool",
-              tool_call_id: tc.id,
-              content: JSON.stringify({
-                error: "还不能选牌：三问呼召尚未完成",
-                hint:
-                  "请先调用 invoke_three_questions —— 请用户回答" +
-                  "「想知道什么 / 打算做什么 / 需要防什么」。这三个回答是后续解读的骨架。",
+                error: `还不能选牌：${guard.missing ? `「${RITUAL_PHASE_LABEL[guard.missing]}」尚未完成` : "仪式阶段不符"}`,
+                hint: guard.hint,
               }),
             });
             roundToolNames.push("offer_card_selection(拦截)");
@@ -1228,6 +1238,8 @@ export async function* runAgent(
             }
             session.drawnCards = drawn;
             session.dwellTimes = drawn.map(() => -1);
+            // P1-⑩：推进阶段（选牌 → 逐张解读）
+            session.ritualPhase = advance(session.ritualPhase ?? "card_selection", "per_card").phase;
             const posNames = ["过去", "当下", "未来"];
             const cards = drawn.map((d, i) => ({
               id: d.card.id, nameZh: d.card.nameZh, image: d.card.image,
@@ -1283,6 +1295,8 @@ export async function* runAgent(
             });
           }
           session.drawnCards = drawn;
+          // P1-⑩：推进阶段（选牌 → 逐张解读）
+          session.ritualPhase = advance(session.ritualPhase ?? "card_selection", "per_card").phase;
           // P1.3：犹豫时长结构化存入 session（供 writer prompt 引用："你在恋人牌前停留最久"）
           session.dwellTimes = userAnswer.trim() === "random"
             ? drawn.map(() => -1) // 随机代抽无犹豫数据
@@ -1347,36 +1361,30 @@ export async function* runAgent(
       let toolContent: string | undefined;
 
       if (name === "draw_cards") {
-        /* ---- 仪式守卫：承约未完成不得抽牌 ----
+        /* ---- 仪式守卫（P1-⑩）：与 offer_card_selection 共用状态机 ----
          * ⚠️ 为什么不靠 prompt：system prompt 里"顺序不可颠倒"是**软约束**，
          *    实测 glm-5.3 会直接调 draw_cards 跳过承约+呼召+逐张解读
          *    （32/34 条 eval 用例的 contract/invocation/percard/closing 全缺）。
          *    仪式是这个产品的核心差异点 —— 缺了它就只是个"随机抽牌 + LLM 解读"。
          *    所以在**后端强制**：没承约就抽牌 → 打回并要求先承约。
+         *
+         * ⚠️ 判定逻辑已从"手写 if"迁移到 ritual-machine.canEnter() ——
+         *    之前同样的检查在这个文件和 offer_card_selection 里各抄一遍，
+         *    改一处忘另一处就会漏防。
          */
-        if (!session.contractQuestion) {
+        const guard = canEnter(
+          session.ritualPhase ?? "contract",
+          "card_selection",
+          completedPhases(session),
+          { toolName: "draw_cards" }
+        );
+        if (!guard.ok) {
           session.messages.push({
             role: "tool",
             tool_call_id: tc.id,
             content: JSON.stringify({
-              error: "还不能抽牌：承约尚未完成",
-              hint:
-                "请先调用 establish_contract —— 把用户的问题复述成一个更具体、能被牌回答的问题，" +
-                "并声明牌阵范围，请用户确认。真实占卜师绝不会跳过这一步。",
-            }),
-          });
-          roundToolNames.push("draw_cards(拦截)");
-          continue;
-        }
-        if (!session.invocation || session.invocation.answers.length === 0) {
-          session.messages.push({
-            role: "tool",
-            tool_call_id: tc.id,
-            content: JSON.stringify({
-              error: "还不能抽牌：三问呼召尚未完成",
-              hint:
-                "请先调用 invoke_three_questions —— 请用户回答" +
-                "「想知道什么 / 打算做什么 / 需要防什么」。这三个回答是后续解读的骨架。",
+              error: `还不能抽牌：${guard.missing ? `「${RITUAL_PHASE_LABEL[guard.missing]}」尚未完成` : "仪式阶段不符"}`,
+              hint: guard.hint,
             }),
           });
           roundToolNames.push("draw_cards(拦截)");
