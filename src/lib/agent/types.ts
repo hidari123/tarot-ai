@@ -58,7 +58,16 @@ export interface AgentEvent {
     | "cards" | "ask_user" | "subagent" | "review" | "delta"
     | "card_reveal" | "card_reading" | "card_flip_ready"
     | "contract" | "invocation" | "round" | "plan"
-    | "persona_suggest" | "done" | "error";
+    | "persona_suggest" | "done" | "error"
+    /**
+     * ⑳ HITL 分级提醒（P1-⑧）
+     *
+     * ⚠️ 为什么单独一个事件类型（而不是复用 phase）：
+     *    phase 是"流程进入某阶段"，nudge 是"在阶段里等待时的轻量提示"。
+     *    语义不同：前端对 phase 要切状态条，对 nudge 只要飘一行小字。
+     *    混用会让前端"每 30 秒切一次状态条"，视觉上很吵。
+     */
+    | "nudge";
 
   /** ① 会话建立 */
   sessionId?: string;
@@ -142,6 +151,12 @@ export interface AgentEvent {
   done?: boolean;
   /** ⑳ 错误 */
   error?: string;
+  /**
+   * ㉑ HITL 等待中的分级提醒（P1-⑧）
+   *
+   * level: 1 = 温和提醒（30s）· 2 = 明确提醒（2min）
+   */
+  nudge?: { level: 1 | 2; text: string; kind?: AskKind };
 }
 
 /* ------------------------------------------------------------------ */

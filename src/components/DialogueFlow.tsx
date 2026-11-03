@@ -23,7 +23,8 @@ export type FlowEntryKind =
   | "ask"             // 待回答的问题面板（答完转为 user 条目）
   | "card"            // 一张牌的完整段落（翻牌+念牌+问答+解读，可折叠）
   | "spread"          // 牌阵面板（三张牌背常驻，用户逐张亲手翻开）
-  | "scroll";         // 命运之卷（最终总结/全文卡片）
+  | "scroll"          // 命运之卷（最终总结/全文卡片）
+  | "nudge";          // 等待中的轻量提示（P1-⑧：占卜师在等你）
 
 /**
  * 牌阵面板里的一张牌（与 CardSpread 的 SpreadCard 同构）。
@@ -663,6 +664,24 @@ export default function DialogueFlow({
             return (
               <div key={e.id} data-entry-id={e.id}>
                 <ScrollCard entry={e} onToggle={onToggleEntry} />
+              </div>
+            );
+          case "nudge":
+            // ⚠️ P1-⑧：等待中的轻量提示 —— 刻意做成**低调的一行小字**，
+            //    而不是气泡/状态条：
+            //      - 气泡会被误读成"占卜师在说话"（占卜师此刻并没有说话）
+            //      - 状态条每 30 秒切一次，视觉上很吵
+            //    一行淡紫小字 + 呼吸动画，传达"我还活着，在等你"。
+            return (
+              <div
+                key={e.id}
+                data-entry-id={e.id}
+                className="flex items-center justify-center gap-2 py-1 animate-in fade-in duration-700"
+              >
+                <span className="text-[11px] text-purple-300/40 italic tracking-wide">
+                  {e.text}
+                </span>
+                <span className="w-1 h-1 rounded-full bg-purple-400/40 animate-pulse" />
               </div>
             );
           default:

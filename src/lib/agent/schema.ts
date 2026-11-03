@@ -190,6 +190,20 @@ export const AgentEventSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("done"), done: z.boolean().optional() }),
   z.object({ type: z.literal("error"), error: z.string() }),
+  // ⚠️ P1-⑧：HITL 分级提醒
+  //    level 1 = 温和提醒（30s）· 2 = 明确提醒（2min）
+  //    kind 用 enum 而不是 string —— 前端要按 kind 决定文案/行为，
+  //    放宽成 string 会让非法值静默通过校验。
+  z.object({
+    type: z.literal("nudge"),
+    nudge: z.object({
+      level: z.union([z.literal(1), z.literal(2)]),
+      text: z.string(),
+      kind: z
+        .enum(["clarify", "contract", "invocation", "card_confirm", "closing", "crossroads", "flip"])
+        .optional(),
+    }),
+  }),
 ]);
 
 export type AgentEventPayload = z.infer<typeof AgentEventSchema>;

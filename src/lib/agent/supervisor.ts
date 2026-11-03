@@ -26,7 +26,7 @@ import { persistMemory } from "../memory";
 import { rewriteQueryLocal } from "../query-rewrite";
 import { buildProviders, pickProvider, type LLMProvider } from "../llm-providers";
 import { callLLM, type CallResult } from "./llm";
-import { waitUserAnswer, isHitlGone } from "./hitl";
+import { waitUserAnswer, isHitlGone, nudgeText } from "./hitl";
 import { markSessionDirty, snapshotSession } from "./session";
 import { TOOLS } from "./tools/definitions";
 import { execRagSearch, prefetchForCard, RAG_BUDGET } from "./tools/rag";
@@ -177,6 +177,26 @@ export async function* runAgent(
    */
   let pendingPrefetch: Promise<void> | null = null;
 
+  /**
+   * P1-⑧：HITL 等待期间产生的**分级提醒队列**。
+   *
+   * ⚠️ 为什么需要队列（生成器不能在 await 期间 yield）：
+   *    提醒是在 `waitUserAnswer` 内部的 setTimeout 回调里触发的，
+   *    而那个回调运行在 Promise 微任务里 —— 生成器正卡在 await 上，
+   *    **没有任何办法从回调里把事件 yield 出去**。
+   *    解决办法：回调只往队列里塞事件，等等待结束、生成器恢复控制权后，
+   *    在**下一轮循环顶部**把队列 flush 出去。
+   *
+   *    代价：提醒会延后到"用户应答之后"才发出 ——
+   *    但这仍然有价值：它告诉前端"刚才那段时间用户在走神"，
+   *    前端可以据此显示"占卜师等了你 42 秒"。
+   *    真正需要"实时"提醒的场景（如倒计时）应该走独立通道。
+   */
+  const pendingNudges: AgentEvent[] = [];
+  /** 生成 nudge 事件的工厂（避免各处重复拼文案） */
+  const makeNudge = (level: 1 | 2, kind: "flip" | "contract" | "invocation" | "card_confirm" | "closing" | "clarify" | "crossroads" | undefined) =>
+    ({ type: "nudge", nudge: { level, text: nudgeText(level, kind), kind } }) as AgentEvent;
+
   // 看门狗：**活跃处理时间**上限（默认 8 分钟）。
   // ⚠️ 只累计 Agent 实际工作的时间（LLM 调用 + 工具执行），
   // HITL 等用户思考的时间不计——9 次交互每次 1 分钟就超的旧逻辑
@@ -200,6 +220,12 @@ export async function* runAgent(
     flushPendingToolResponses();
     // 插入节奏控制备注（continue 等）——在 deferred tool 响应之后，位置安全
     flushPendingUserNotes();
+
+    // ---- P1-⑧：flush HITL 分级提醒 ----
+    // ⚠️ 必须在循环顶部（生成器已恢复控制权）—— 提醒是在 await 期间的
+    //    setTimeout 回调里产生的，那时无法 yield。
+    for (const n of pendingNudges) yield n;
+    pendingNudges.length = 0;
 
     // ---- 插入暂存的插话（方案 C）----
     // 位置已安全（上一轮 assistant→tool 已配对完成）
@@ -453,7 +479,7 @@ export async function* runAgent(
         yield { type: "phase", phase: "wait_user", label: "收束——听听你的回响…" };
         // ⚠️ 闸门先就绪再通知（与下方 ask_user 分支同一原则）：
         //    否则客户端抢跑应答会撞 409，应答被丢弃 → 等满 5min HITL 超时。
-        const closingWait = waitUserAnswer(session, question, cOptions, "closing", hitlClock);
+        const closingWait = waitUserAnswer(session, question, cOptions, "closing", hitlClock, (level, kind) => pendingNudges.push(makeNudge(level, kind)));
         yield {
           type: "ask_user",
           ask: { question, options: cOptions, allowFree: true, prompt: question, kind: "closing" },
@@ -573,7 +599,7 @@ export async function* runAgent(
         //
         //    做法：先启动等待（拿到 pendingAsk），**再**发事件 ——
         //    前端的"可点"状态与后端闸门严格对齐，杜绝抢跑。
-        const flipWait = waitUserAnswer(session, flipPrompt, undefined, "flip", hitlClock);
+        const flipWait = waitUserAnswer(session, flipPrompt, undefined, "flip", hitlClock, (level, kind) => pendingNudges.push(makeNudge(level, kind)));
         yield {
           type: "ask_user",
           ask: {
@@ -636,7 +662,7 @@ export async function* runAgent(
         };
         // 提确认问题（这是 HITL：等用户回答）
         // ⚠️ 闸门先就绪再通知（避免客户端抢跑 409）
-        const confirmWait = waitUserAnswer(session, question, qOptions, "card_confirm", hitlClock);
+        const confirmWait = waitUserAnswer(session, question, qOptions, "card_confirm", hitlClock, (level, kind) => pendingNudges.push(makeNudge(level, kind)));
         yield {
           type: "ask_user",
           ask: { question, options: qOptions, allowFree: true, prompt: question, kind: "card_confirm" },
@@ -977,7 +1003,7 @@ export async function* runAgent(
           label: "占卜师复述问题，请你确认…",
         };
         // ⚠️ 闸门先就绪再通知（避免客户端抢跑 409）
-        const contractWait = waitUserAnswer(session, contractQ, confirmOptions, "contract", hitlClock);
+        const contractWait = waitUserAnswer(session, contractQ, confirmOptions, "contract", hitlClock, (level, kind) => pendingNudges.push(makeNudge(level, kind)));
         yield {
           type: "ask_user",
           ask: {
@@ -1042,7 +1068,7 @@ export async function* runAgent(
         yield { type: "invocation", invocation: { questions } };
         yield { type: "phase", phase: "wait_user", label: "呼召——请你回答三个问题…" };
         // ⚠️ 闸门先就绪再通知（避免客户端抢跑 409）
-        const invocationWait = waitUserAnswer(session, questions.join("\n"), undefined, "invocation", hitlClock);
+        const invocationWait = waitUserAnswer(session, questions.join("\n"), undefined, "invocation", hitlClock, (level, kind) => pendingNudges.push(makeNudge(level, kind)));
         yield {
           type: "ask_user",
           ask: {
@@ -1183,7 +1209,7 @@ export async function* runAgent(
         //    「当前没有等待回答的问题」→ 应答被丢弃 → 后端等满 5min
         //    HITL 超时 → 8min 看门狗中止 → client_disconnect。
         //    实测症状：每场占卜都撞满 8 分钟超时（eval 全军覆没）。
-        const askWait = waitUserAnswer(session, askPrompt, options, undefined, hitlClock);
+        const askWait = waitUserAnswer(session, askPrompt, options, undefined, hitlClock, (level, kind) => pendingNudges.push(makeNudge(level, kind)));
         yield askEvent;
 
         const userAnswer = await askWait;

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
+import TraceTimeline from "@/components/TraceTimeline";
 
 /**
  * 观测面板 —— Agent 系统运行数据一览
@@ -73,6 +74,12 @@ export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  /**
+   * P1-⑨：当前查看 trace 的会话 id
+   * ⚠️ 用 state 而不是 ref —— 需要它触发 TraceTimeline 重新拉取，
+   *    ref 的变化不会引起渲染。
+   */
+  const [traceSessionId, setTraceSessionId] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -345,13 +352,29 @@ export default function Dashboard() {
               </div>
             </div>
 
+            {/* P1-⑨：事件 Trace 时间轴（点下方会话切换） */}
+            <TraceTimeline sessionId={traceSessionId} />
+
             {/* 最近解读 */}
             <div className="rounded-2xl border border-purple-500/20 bg-purple-950/20 backdrop-blur p-5">
-              <h2 className="text-sm text-purple-200/80 tracking-wider mb-4">📜 最近占卜记录</h2>
+              <h2 className="text-sm text-purple-200/80 tracking-wider mb-4">
+                📜 最近占卜记录
+                <span className="ml-2 text-[11px] text-purple-300/40 font-normal">
+                  点击任意一条查看它的过程时间轴
+                </span>
+              </h2>
               {stats.recentSessions.length === 0 && <p className="text-purple-300/40 text-sm py-4 text-center">还没有占卜记录</p>}
               <div className="space-y-3">
                 {stats.recentSessions.map((s) => (
-                  <div key={s.id} className="rounded-xl border border-purple-500/15 bg-black/20 px-4 py-3">
+                  <button
+                    key={s.id}
+                    onClick={() => setTraceSessionId((cur) => (cur === s.id ? null : s.id))}
+                    className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
+                      traceSessionId === s.id
+                        ? "border-purple-400/40 bg-purple-500/10"
+                        : "border-purple-500/15 bg-black/20 hover:border-purple-400/30 hover:bg-purple-500/5"
+                    }`}
+                  >
                     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                       <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
                         s.status === "done" ? "bg-emerald-500/15 text-emerald-300" : s.status === "running" ? "bg-amber-500/15 text-amber-300" : "bg-rose-500/15 text-rose-300"
@@ -379,7 +402,7 @@ export default function Dashboard() {
                     {s.reading && (
                       <p className="mt-2 text-xs text-purple-300/45 line-clamp-2 leading-relaxed">{s.reading.slice(0, 120)}…</p>
                     )}
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>

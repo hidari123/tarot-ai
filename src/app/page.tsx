@@ -585,8 +585,7 @@ export default function TarotApp() {
               break;
             case "phase":
               setPhase(p.phase ?? null);
-              if (p.label) setPhaseLabel(p.label);
-              // 收束阶段：建"命运之卷"条目，后续收束 delta 流向它
+              if (p.label) setPhaseLabel(p.label);              // 收束阶段：建"命运之卷"条目，后续收束 delta 流向它
               // （含 write_reading 综合正文与 close_reading 收束语）
               if (p.label && (p.label.includes("收束") || p.label.includes("子 Agent 管线启动"))) {
                 // 已有 scroll 条目则复用（收束语接在综合正文后）
@@ -599,6 +598,20 @@ export default function TarotApp() {
                   const sid = nextEntryId();
                   deltaTargetRef.current = { type: "scroll", entryId: sid };
                   return [...prev, { id: sid, kind: "scroll", title: "命运之卷 · 综合与收束", text: "", collapsed: false } as FlowEntry];
+                });
+              }
+              break;
+            case "nudge":
+              // ⚠️ P1-⑧：HITL 等待中的分级提醒。
+              //    渲染成一行低调小字（FlowEntryKind="nudge"）——
+              //    刻意不用气泡：气泡会被当成"占卜师在说话"。
+              //    同一条提醒只显示一次（level 1/2 各一条）。
+              if (p.nudge) {
+                setEntries((prev) => {
+                  const dup = prev.some((e) => e.kind === "nudge" && e.text === p.nudge!.text);
+                  if (dup) return prev;
+                  const sid = nextEntryId();
+                  return [...prev, { id: sid, kind: "nudge", text: p.nudge!.text } as FlowEntry];
                 });
               }
               break;
