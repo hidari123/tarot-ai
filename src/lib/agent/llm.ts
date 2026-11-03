@@ -184,8 +184,20 @@ const buckets = new Map<string, Bucket>();
  * ⚠️ 关键实现细节：预定时刻（而不是实际发出时刻）写回桶里 ——
  *    否则多个并发调用会同时看到"有令牌"、同时放行，
  *    瞬间打满上游窗口（这正是我们要避免的）。
+ *
+ * ⚠️ P2-⑪：等待时通知前端（可选回调）
+ *    限流节流会让一次 LLM 调用静默等待最多 20 秒 ——
+ *    用户在界面上只看到"模型仍在思考…已等待 12s"，
+ *    不知道是模型慢还是我们在**主动限速**。
+ *    两种等待的性质完全不同，必须区分开：
+ *      模型慢   → "模型仍在思考"
+ *      主动限速 → "为避免触发服务端限流，正在控制请求节奏"
+ *    onWait(waitMs) 回调让调用方把这个信息透出。
  */
-async function acquireSlot(providerName: string): Promise<void> {
+async function acquireSlot(
+  providerName: string,
+  onWait?: (waitMs: number) => void
+): Promise<void> {
   if (!RATE_ENABLED || RATE_PER_MIN <= 0) return;
 
   const refillPerMs = RATE_PER_MIN / 60_000;
@@ -212,6 +224,8 @@ async function acquireSlot(providerName: string): Promise<void> {
   // ⚠️ 预定时刻写回：后续并发调用会接着往后排，不会一起冲出去
   bucket.tokens = 0;
   bucket.lastRefill = now + waitMs;
+  // P2-⑪：告知调用方"正在限速等待"，让前端能区分"模型慢"与"主动限速"
+  onWait?.(waitMs);
   await new Promise((r) => setTimeout(r, waitMs));
 }
 
@@ -276,11 +290,18 @@ async function rawCall(
    *    否则它会继续跑完（继续烧 token + 占节流槽位）。
    *    AbortSignal.timeout 无法被外部取消，所以这里把两个信号合流。
    */
-  externalSignal?: AbortSignal
+  externalSignal?: AbortSignal,
+  /**
+   * P2-⑪：限速等待通知（可选）
+   * ⚠️ 用途：让调用方把"正在限速等待"透给用户 ——
+   *    用户看到的应该是"为避免触发服务端限流，正在控制请求节奏"，
+   *    而不是含糊的"模型仍在思考"（这两件事的性质完全不同）。
+   */
+  onRateLimitWait?: (waitMs: number) => void
 ): Promise<CallResult> {
   const timeoutMs = llmTimeoutFor(agent);
   const attempt = async (): Promise<CallResult> => {
-    await acquireSlot(p.name);
+    await acquireSlot(p.name, onRateLimitWait);
     const t0 = Date.now();
     // 合并"超时"与"外部取消"两个信号：
     //   AbortSignal.any 在 Node 20+ 可用（两个信号任一触发就 abort）
@@ -363,7 +384,9 @@ export async function callLLM(
   messages: SessionMessage[],
   tools?: unknown[],
   sessionId?: string,
-  agent: SubAgent = "supervisor"
+  agent: SubAgent = "supervisor",
+  /** P2-⑪：限速等待通知（见 rawCall 的同名参数说明） */
+  onRateLimitWait?: (waitMs: number) => void
 ): Promise<CallResult> {
   const all = buildProviders();
   if (all.length === 0) throw new Error("未配置任何 LLM provider");
@@ -384,7 +407,7 @@ export async function callLLM(
       const race = await raceWithAbort(
         hedgeOrder.map((p) => ({
           providerName: p.name,
-          run: (signal: AbortSignal) => rawCall(p, messages, tools, sessionId, agent, signal),
+          run: (signal: AbortSignal) => rawCall(p, messages, tools, sessionId, agent, signal, onRateLimitWait),
         })),
         aborters
       );
@@ -414,7 +437,7 @@ export async function callLLM(
       continue;
     }
     try {
-      return await rawCall(p, messages, tools, sessionId, agent);
+      return await rawCall(p, messages, tools, sessionId, agent, undefined, onRateLimitWait);
     } catch (e) {
       lastErr = e;
       if (isFailoverError(e)) {

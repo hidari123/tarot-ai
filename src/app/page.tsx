@@ -197,8 +197,16 @@ function extractShareSummary(reading: string): string {
   return summary;
 }
 
-/** 等待反馈：显示已等待时长，超过 10 秒提示模型较慢 */
-function WaitingHint({ since }: { since: number }) {
+/**
+ * 等待反馈：显示已等待时长，超过 10 秒提示模型较慢
+ *
+ * ⚠️ P2-⑪：区分两种等待
+ *   rateLimited = true → "我们在主动限速"（为避免服务端 429，等一会儿就好）
+ *   否则            → "模型仍在思考"（真的是模型慢）
+ *   这两件事性质完全不同：前者是我们的策略、结果确定；
+ *   后者不可控。混为一谈会让用户觉得"这产品时快时慢、不可信"。
+ */
+function WaitingHint({ since, rateLimited }: { since: number; rateLimited?: boolean }) {
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
@@ -214,9 +222,11 @@ function WaitingHint({ since }: { since: number }) {
     <motion.p
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className={`mt-1.5 text-center text-xs tracking-wide ${slow ? "text-amber-300/80" : "text-purple-400/50"}`}
+      className={`mt-1.5 text-center text-xs tracking-wide ${rateLimited ? "text-sky-300/70" : slow ? "text-amber-300/80" : "text-purple-400/50"}`}
     >
-      {slow
+      {rateLimited
+        ? `正在控制请求节奏以避免服务端限流… 已等待 ${elapsed}s`
+        : slow
         ? `模型仍在思考… 已等待 ${elapsed}s（模型较慢，可查看下方时间轴定位瓶颈）`
         : `思考中… ${elapsed}s`}
     </motion.p>
@@ -233,6 +243,12 @@ export default function TarotApp() {
   const [sessionId, setSessionId] = useState("");
   const [phase, setPhase] = useState<Phase | null>(null);
   const [phaseLabel, setPhaseLabel] = useState("");
+  /**
+   * P2-⑪：当前是否处于"限速等待"
+   * ⚠️ 与 phase 分开存 —— 它描述的是"等待的原因"而不是"流程处于哪一步"，
+   *    两者会同时存在（我们既在某个阶段里，也在等限速配额）。
+   */
+  const [rateLimited, setRateLimited] = useState(false);
   const [reading, setReading] = useState("");
   const [reasoning, setReasoning] = useState("");
   const [tools, setTools] = useState<ToolCall[]>([]);
@@ -587,6 +603,8 @@ export default function TarotApp() {
               setPhase(p.phase ?? null);
               if (p.label) setPhaseLabel(p.label);              // 收束阶段：建"命运之卷"条目，后续收束 delta 流向它
               // （含 write_reading 综合正文与 close_reading 收束语）
+              // P2-⑪：识别"限速等待"phase —— 让等待提示显示正确的原因
+              if (p.label && p.label.includes("限流")) setRateLimited(true);
               if (p.label && (p.label.includes("收束") || p.label.includes("子 Agent 管线启动"))) {
                 // 已有 scroll 条目则复用（收束语接在综合正文后）
                 setEntries((prev) => {
@@ -973,6 +991,7 @@ export default function TarotApp() {
     setReview(null);
     setPhase(null);
     setPhaseLabel("");
+    setRateLimited(false); // P2-⑪：新一场占卜重置限速标记
     /* 仪式流程状态重置 */
     setSpread([]);
     setInterject("");
@@ -1158,6 +1177,7 @@ export default function TarotApp() {
     setReview(null);
     setPhase(null);
     setPhaseLabel("");
+    setRateLimited(false); // P2-⑪：新一场占卜重置限速标记
     /* 仪式流程状态重置 */
     setSpread([]);
     setInterject("");
@@ -1323,7 +1343,7 @@ export default function TarotApp() {
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mt-4">
               <AgentStatusBar phase={phase} />
               {phaseLabel && <p className="mt-2 text-center text-xs text-purple-400/60 tracking-wide">{phaseLabel}</p>}
-              {streaming && !ask && <WaitingHint since={streamStart} />}
+              {streaming && !ask && <WaitingHint since={streamStart} rateLimited={rateLimited} />}
             </motion.div>
           )}
 

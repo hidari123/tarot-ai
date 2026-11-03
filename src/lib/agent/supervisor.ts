@@ -196,6 +196,14 @@ export async function* runAgent(
    *    真正需要"实时"提醒的场景（如倒计时）应该走独立通道。
    */
   const pendingNudges: AgentEvent[] = [];
+  /**
+   * P2-⑪：本次 LLM 调用因限速而等待的毫秒数（0 = 没等）
+   * ⚠️ 为什么用变量而不是直接入队：
+   *    限速通知发生在 LLM 调用**之前**（acquireSlot 里），
+   *    那时生成器正卡在 await callLLM 上 —— 无法 yield。
+   *    所以先记下来，等这一轮结束、生成器恢复控制权后再补发事件。
+   */
+  let pendingRateLimitMs = 0;
   /** 生成 nudge 事件的工厂（避免各处重复拼文案） */
   const makeNudge = (level: 1 | 2, kind: "flip" | "contract" | "invocation" | "card_confirm" | "closing" | "clarify" | "crossroads" | undefined) =>
     ({ type: "nudge", nudge: { level, text: nudgeText(level, kind), kind } }) as AgentEvent;
@@ -302,8 +310,27 @@ export async function* runAgent(
           },
         ];
       }
-      decision = await callLLM(config, trimmed, availableTools, session.id, "supervisor");
+      decision = await callLLM(
+        config, trimmed, availableTools, session.id, "supervisor",
+        // P2-⑪：限速等待 → 推一个 phase 事件告诉用户"正在控制请求节奏"
+        // （与 nudge 同样的约束：回调里不能 yield，只能入队）
+        (waitMs) => {
+          pendingRateLimitMs = waitMs;
+        }
+      );
       roundPromptTokens = decision.usage?.prompt;
+      // P2-⑪：补发"限速等待"提示（此时生成器已恢复控制权，可以 yield 了）
+      // ⚠️ 为什么必须告知用户：限速等待（最长 20 秒）与"模型慢"是两回事 ——
+      //    前者是**我们主动控制节奏**（为了不触发服务端 429），
+      //    后者是模型本身慢。不说清楚，用户只会觉得"这产品好慢"。
+      if (pendingRateLimitMs > 0) {
+        yield {
+          type: "phase",
+          phase: "analyze",
+          label: `为避免触发服务端限流，已放慢请求节奏（等待 ${Math.round(pendingRateLimitMs / 1000)} 秒）`,
+        };
+        pendingRateLimitMs = 0;
+      }
       // failover 生效时更新会话粘住的 provider（保持后续风格一致）——按名称比较，避免对象实例误判
       const used = buildProviders().find((p) => p.name === decision.provider);
       if (used && used.name !== config?.name) {
