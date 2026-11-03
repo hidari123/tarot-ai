@@ -15,6 +15,7 @@ import * as db from "../../db";
 import { hybridSearch, type RagHit } from "../../rag-engine";
 import { rewriteQueryLocal } from "../../query-rewrite";
 import { TAROT_CARDS } from "../../tarot-cards";
+import { runtimeState } from "../../runtime";
 import type { AgentSession } from "../types";
 
 /** 单场占卜的检索预算（防死循环） */
@@ -39,7 +40,17 @@ interface CacheEntry {
   hits: RagHit[];
   at: number;
 }
-const ragCache = new Map<string, CacheEntry>();
+/**
+ * 检索缓存
+ *
+ * ⚠️ P1-⑥：挂到 globalThis —— 原来这里是**模块级** Map，
+ *    HMR 重载会清空 → 缓存命中率统计归零（指标失真）+
+ *    每次热重载后都要重算一次向量检索。
+ */
+const ragCache = runtimeState<Map<string, CacheEntry>>(
+  "rag.cache",
+  () => new Map<string, CacheEntry>()
+);
 
 /** 缓存 TTL（默认 10 分钟）—— 够覆盖一次占卜内的重复检索 */
 const CACHE_TTL_MS = Number(process.env.RAG_CACHE_TTL_MS) || 10 * 60 * 1000;
@@ -51,14 +62,34 @@ function cacheKey(query: string, k: number): string {
   return `${k}|${query.replace(/\s+/g, " ").trim().toLowerCase()}`;
 }
 
+/**
+ * 缓存命中/未命中计数（P3-⑩）
+ *
+ * ⚠️ 为什么必须真实计数（原来恒返回 0）：
+ *    审计实测：ragCacheStats() 永远返回 `{hits: 0, misses: 0}`。
+ *    这不只是"少个数字"—— 它是**误导性**的：
+ *    如果有人用它验证"跨会话缓存是否生效"，会得到"命中率 0%"
+ *    → **错误地否决掉 P1-③ 这个优化**。
+ *    指标本身坏了，比没有指标更危险。
+ */
+const cacheCounters = runtimeState<{ hits: number; misses: number }>(
+  "rag.cacheCounters",
+  () => ({ hits: 0, misses: 0 })
+);
+
 /** 读缓存（过期即删） */
 function readCache(key: string): RagHit[] | null {
   const e = ragCache.get(key);
-  if (!e) return null;
-  if (Date.now() - e.at > CACHE_TTL_MS) {
-    ragCache.delete(key);
+  if (!e) {
+    cacheCounters.misses++;
     return null;
   }
+  if (Date.now() - e.at > CACHE_TTL_MS) {
+    ragCache.delete(key);
+    cacheCounters.misses++;
+    return null;
+  }
+  cacheCounters.hits++;
   return e.hits;
 }
 
@@ -72,9 +103,22 @@ function writeCache(key: string, hits: RagHit[]): void {
   ragCache.set(key, { hits, at: Date.now() });
 }
 
-/** 缓存统计（诊断/dashboard 用） */
-export function ragCacheStats(): { size: number; hits: number; misses: number } {
-  return { size: ragCache.size, hits: 0, misses: 0 };
+/**
+ * 缓存统计（诊断/dashboard 用）
+ *
+ * ⚠️ P3-⑩：现在是**真实**计数（原来恒返回 0）。
+ */
+export function ragCacheStats(): {
+  size: number; hits: number; misses: number; hitRate: number;
+} {
+  const { hits, misses } = cacheCounters;
+  const total = hits + misses;
+  return {
+    size: ragCache.size,
+    hits,
+    misses,
+    hitRate: total > 0 ? Math.round((hits / total) * 100) : 0,
+  };
 }
 
 /** 清空缓存（测试用） */

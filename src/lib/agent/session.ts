@@ -15,6 +15,7 @@
 import * as db from "../db";
 import { PERSONAS } from "../personas";
 import { generateSessionId } from "../api-auth";
+import { runtimeState } from "../runtime";
 import type { AgentSession } from "./types";
 import { derivePhase, type RitualPhase } from "./ritual-machine";
 
@@ -23,12 +24,14 @@ import { derivePhase, type RitualPhase } from "./ritual-machine";
  * ⚠️ 为什么要 globalThis：Next.js dev 模式会热重载模块，
  *    普通 module-level Map 每次热重载都会被重建（会话凭空消失）。
  *    挂在 globalThis 上跨热重载存活。
+ *
+ * ⚠️ P1-⑥：改用统一的 runtimeState 入口（src/lib/runtime.ts）——
+ *    让所有跨请求状态都走同一个容器，便于审计"哪些状态是进程级的"。
  */
-const sessions: Map<string, AgentSession> = (() => {
-  const g = globalThis as unknown as { __tarotSessions__?: Map<string, AgentSession> };
-  if (!g.__tarotSessions__) g.__tarotSessions__ = new Map();
-  return g.__tarotSessions__;
-})();
+const sessions: Map<string, AgentSession> = runtimeState<Map<string, AgentSession>>(
+  "session.sessions",
+  () => new Map<string, AgentSession>()
+);
 
 /** 会话存活时长（30 分钟）—— 超过未活动即逐出 */
 const SESSION_TTL = 30 * 60 * 1000;
@@ -79,8 +82,14 @@ function reconcileOnBoot(): void {
 /* 状态快照（P1-④）                                                    */
 /* ------------------------------------------------------------------ */
 
-/** 会话是否需要落快照（脏标记） */
-const dirty = new Set<string>();
+/**
+ * 会话是否需要落快照（脏标记）
+ *
+ * ⚠️ P1-⑥：挂到 globalThis —— 原来这里是**模块级** Set，
+ *    HMR 重载会清空 → 落在重载后的会话**永远不会被落快照**
+ *    → 进程重启后该会话无法恢复。
+ */
+const dirty = runtimeState<Set<string>>("session.dirty", () => new Set<string>());
 
 /** 标记会话状态已变更（下次 persistAll 时落库） */
 export function markSessionDirty(id: string): void {
@@ -180,6 +189,42 @@ export function getSession(id: string): AgentSession | undefined {
   return s;
 }
 
+/**
+ * 原子地"检查并占用"会话（用于防并发追问）
+ *
+ * ⚠️ 为什么需要这个函数（TOCTOU 竞态）：
+ *   原来的写法是**分开**的两步：
+ *     ① 路由层：if (session.busy) return 409;   ← 检查
+ *     ② supervisor：session.busy = true;         ← 设置（在生成器首次 next() 时）
+ *   两步之间有一个 **await 间隙**（生成器启动是异步的）：
+ *     两个并发 POST /api/interpret（同一 sessionId）
+ *     → 都通过 ① 的检查 → 都进入 runAgent
+ *     → 各自往 session.messages push 消息
+ *     → **assistant→tool 配对错位**
+ *     → MiniMax 报 400 "tool call result does not follow tool call"
+ *     → 该会话之后的**所有**追问都失败（历史已被污染）
+ *
+ * ⚠️ 怎么做到原子：
+ *   Node 是单线程 —— 只要"检查 + 设置"在**同一个同步段**里完成，
+ *   就不可能有另一个请求插进来（中间没有 await）。
+ *   本函数就是那个同步段。
+ *
+ * @returns true = 占用成功（调用方负责在 finally 里释放）
+ */
+export function tryAcquireSession(id: string): boolean {
+  const s = sessions.get(id);
+  if (!s) return false;
+  if (s.busy) return false;
+  s.busy = true;
+  return true;
+}
+
+/** 释放会话占用（与 tryAcquireSession 配对） */
+export function releaseSession(id: string): void {
+  const s = sessions.get(id);
+  if (s) s.busy = false;
+}
+
 /** 列出所有内存会话（调试/dashboard 用） */
 export function listSessions(): AgentSession[] {
   return [...sessions.values()];
@@ -222,6 +267,12 @@ export interface SessionSnapshot {
   plan?: string[];
   agentMode?: "plan" | "react";
   flippedCardIdx?: number[];
+  /** P2-⑨：综合正文（恢复后 /api/session/[id] 要返回它） */
+  reading?: string;
+  /** P2-⑨：综合是否已完成（close_reading 守卫的前置条件） */
+  synthesisDone?: boolean;
+  /** P3-⑩：输出是否被截断（审校结论不计入通过率） */
+  outputTruncated?: boolean;
 }
 
 /** 导出可持久化的快照（剔除不可序列化的 pendingAsk） */
@@ -254,6 +305,13 @@ export function snapshotSession(s: AgentSession): SessionSnapshot {
     plan: s.plan,
     agentMode: s.agentMode,
     flippedCardIdx: s.flippedCardIdx,
+    // P2-⑨/P3-⑩：恢复后仍需保留这三个字段
+    //    · reading —— /api/session/[id] 的 live 分支返回它，丢了正文就"刷新即空"
+    //    · synthesisDone —— close_reading 守卫的前置（丢了会被永远拦截）
+    //    · outputTruncated —— 审校结论是否计入通过率
+    reading: s.reading,
+    synthesisDone: s.synthesisDone,
+    outputTruncated: s.outputTruncated,
   };
 }
 
@@ -309,6 +367,13 @@ export function restoreSession(snap: SessionSnapshot): AgentSession | null {
       plan: snap.plan,
       agentMode: snap.agentMode,
       flippedCardIdx: snap.flippedCardIdx,
+      // P2-⑨/P3-⑩：恢复这三个字段
+      //    · reading —— 丢了正文，用户刷新后看到空的解读
+      //    · synthesisDone —— 丢了会被 close_reading 守卫永远拦截（收束语出不来）
+      //    · outputTruncated —— 审校结论是否计入通过率
+      reading: snap.reading,
+      synthesisDone: snap.synthesisDone,
+      outputTruncated: snap.outputTruncated,
       // ⚠️ 标记：恢复的会话没有 pendingAsk（Promise 不可序列化）
       restoredFromSnapshot: true,
     };

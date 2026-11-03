@@ -34,7 +34,7 @@ import { execDrawCards } from "./tools/cards";
 import { runAnalyst, runWriter, runReviewer, type ReviewResult } from "./subagents";
 import { runLocalFallback } from "./fallback";
 import {
-  canEnter, advance, RITUAL_PHASE_LABEL, completedPhases,
+  canEnter, advancePhase, RITUAL_PHASE_LABEL, completedPhases, TOOL_PHASE_REQUIREMENT,
 } from "./ritual-machine";
 import {
   extractEmotionTags, suggestPersonaByEmotion, extractBranchesFromPrompt,
@@ -454,6 +454,56 @@ export async function* runAgent(
       let askPrompt = "";
       let options: string[] | undefined;
 
+      /* ================================================================
+       * 仪式守卫（P2-⑨）：**统一入口**，覆盖全部仪式工具
+       *
+       * ⚠️ 为什么放在这里（而不是每个分支里各写一份）：
+       *   审计实测：守卫只覆盖了 2 个工具（offer_card_selection / draw_cards），
+       *   其余 6 个仪式工具（establish_contract / invoke_three_questions /
+       *   reveal_card / interpret_card / write_reading / close_reading）
+       *   **完全没有前置检查** —— 模型可以：
+       *     · 不承约直接 reveal_card（跳步）
+       *     · 不抽牌直接 interpret_card（解读不存在的牌）
+       *     · 不逐张讲完直接 write_reading（综合没依据）
+       *   实测证据：32/34 条 eval 用例的 contract/invocation/percard/closing 全缺。
+       *
+       * ⚠️ 为什么统一在分发前拦截（单一事实源）：
+       *   分支里各写一份 → 加新工具时必然漏（这正是 bug 的成因）。
+       *   在分发前统一查表 → 新工具只要在表里登记就自动受保护。
+       *
+       * ⚠️ 表的语义：每个工具声明"它需要哪些阶段已完成"。
+       *   判定交给 ritual-machine.canEnter()（同一套规则，不重复实现）。
+       * ================================================================ */
+      {
+        const required = TOOL_PHASE_REQUIREMENT[name];
+        if (required) {
+          const guard = canEnter(
+            session.ritualPhase ?? "contract",
+            required,
+            completedPhases(session),
+            { toolName: name }
+          );
+          if (!guard.ok) {
+            session.messages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: JSON.stringify({
+                error: `仪式阶段不符：${name} 需要先完成「${RITUAL_PHASE_LABEL[required]}」`,
+                missing: guard.missing ? RITUAL_PHASE_LABEL[guard.missing] : undefined,
+                hint: guard.hint,
+              }),
+            });
+            roundToolNames.push(`${name}(拦截)`);
+            db.logToolCall(
+              session.id, seq, "supervisor", name, args,
+              `守卫拦截：缺「${guard.missing ? RITUAL_PHASE_LABEL[guard.missing] : required}」`,
+              Date.now() - t0
+            );
+            continue;
+          }
+        }
+      }
+
       /* ---- D：收束 + 收尾追问 ---- */
       if (name === "close_reading") {
         // ⚠️ 守卫：零牌路径绕过（第 1 轮就 close → reading='' 落库 done）
@@ -492,7 +542,7 @@ export async function* runAgent(
         const closing = String(args.closing || "").trim();
         const question = String(args.question || "这三段里，哪一段最贴近你现在的状态？").trim();
         // P1-⑩：推进阶段（综合 → 收束）
-        session.ritualPhase = advance(session.ritualPhase ?? "synthesis", "closing").phase;
+        session.ritualPhase = advancePhase(session.id, session.ritualPhase ?? "synthesis", "closing");
         let cOptions = Array.isArray(args.options)
           ? (args.options as unknown[]).map(String).filter((s) => s.trim())
           : [];
@@ -526,7 +576,7 @@ export async function* runAgent(
           db.finishSession(session.id, lastReview);
           session.finished = true;
           // P1-⑩：推进到终态
-          session.ritualPhase = advance(session.ritualPhase ?? "closing", "done").phase;
+          session.ritualPhase = advancePhase(session.id, session.ritualPhase ?? "closing", "done");
           yield { type: "done" };
           return;
         }
@@ -553,7 +603,7 @@ export async function* runAgent(
         db.finishSession(session.id, lastReview);
         session.finished = true;
         // P1-⑩：推进到终态
-        session.ritualPhase = advance(session.ritualPhase ?? "closing", "done").phase;
+        session.ritualPhase = advancePhase(session.id, session.ritualPhase ?? "closing", "done");
         yield { type: "done" };
         return;
       }
@@ -864,7 +914,7 @@ export async function* runAgent(
         }
         const focus = (args.focus as string) || "综合";
         // P1-⑩：推进阶段（逐张解读 → 综合）
-        session.ritualPhase = advance(session.ritualPhase ?? "per_card", "synthesis").phase;
+        session.ritualPhase = advancePhase(session.id, session.ritualPhase ?? "per_card", "synthesis");
         yield { type: "phase", phase: "interpret", label: `子 Agent 管线启动（侧重：${focus}）…` };
         yield { type: "tool", tool: { name, args, resultSummary: "启动分析师→撰写者→审校者管线", durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, "启动管线", Date.now() - t0);
@@ -937,16 +987,26 @@ export async function* runAgent(
            *    评估侧也判成"review 维度未达标"（实测：reviewer 失败率 75%，
            *    因为它在流程末尾、正好吃到限流窗口的尾部）。
            *    降级策略：审校不可用 → 按"通过"处理并如实标注来源。
-           *    （底线：降级不删 —— 宁可标注"审校暂不可用"，也不要静默消失。） */
+           *    （底线：降级不删 —— 宁可标注"审校暂不可用"，也不要静默消失。）
+           *
+           * ⚠️ P3-⑩（假绿灯修复）：这个降级 review **不能计入通过率**。
+           *    它根本没有审校（scores 全 0），把它算作"通过"会让指标失真。
+           *    所以打 `truncated: true` 标记 —— 复用同一个"不计入分母"的通道
+           *    （语义上略宽：都是"未经完整审校"）。
+           *    ⚠️ 为什么复用而不是新增字段：
+           *    两者的处理方式完全一致（都不计入分母 + 都标注），
+           *    新增字段会让分析脚本要判两个条件 —— 反而更容易漏。
+           */
           const reason = e instanceof Error ? e.message : "未知错误";
           review = {
             pass: true,
             scores: { grounding: 0, empathy: 0, tone: 0 },
             comment: `审校服务暂不可用（${reason.slice(0, 60)}），本次解读未经审校`,
+            truncated: true,
           };
           yield {
             type: "review",
-            review: { pass: true, scores: { grounding: 0, empathy: 0, tone: 0 }, comment: review.comment },
+            review: { ...review },
           };
           yield { type: "subagent", subagent: { agent: "reviewer", action: "审校不可用，已跳过（降级）" } };
         }
@@ -991,8 +1051,18 @@ export async function* runAgent(
         }
 
         db.updateSessionReading(session.id, reading);
+        // ⚠️ 同步写回内存会话（端到端实测发现的真 bug）
+        //   原来只落库、没写 session.reading —— 而 /api/session/[id] 的
+        //   **live 分支返回的是 live.reading**（内存值），DB 值只在
+        //   "会话不在内存里"时才读 → 前端刷新后**解读正文变空**。
+        //   （用户可见故障：占卜做完了，刷新一下内容就没了。）
+        session.reading = reading;
         // 存审校结果（供 close_reading 收束时落库）
         (session as unknown as { __lastReview?: ReviewResult | null }).__lastReview = review;
+        // ⚠️ P2-⑨：标记"综合已完成"（close_reading 守卫的前置条件）
+        //    时序要点：综合完成于**这里**，而 close_reading 发生在会话结束**之前**
+        //    → 不能用 finished 判断（那会让守卫永远拦截收束）。
+        session.synthesisDone = true;
         // ⚠️ 不在这里结束会话：逐张模式下还需要 close_reading 做收束
         // （收束语 + 一条行动建议 + 收尾追问）。
         // 旧流程（没有逐张解读）也走 close_reading，保证流程一致。
@@ -1072,7 +1142,7 @@ export async function* runAgent(
         yield { type: "tool", tool: { name, args, resultSummary: `承约确认：${session.contractQuestion}`, durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, `承约：${session.contractQuestion}`, Date.now() - t0);
         // P1-⑩：推进阶段（承约 → 呼召）
-        session.ritualPhase = advance(session.ritualPhase ?? "contract", "invocation").phase;
+        session.ritualPhase = advancePhase(session.id, session.ritualPhase ?? "contract", "invocation");
         roundToolNames.push(name);
         continue;
       }
@@ -1155,7 +1225,7 @@ export async function* runAgent(
         yield { type: "tool", tool: { name, args, resultSummary: `三问呼召：${session.invocation.answers.length} 个回答`, durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, `呼召：${session.invocation.answers.join(" / ").slice(0, 80)}`, Date.now() - t0);
         // P1-⑩：推进阶段（呼召 → 选牌）
-        session.ritualPhase = advance(session.ritualPhase ?? "invocation", "card_selection").phase;
+        session.ritualPhase = advancePhase(session.id, session.ritualPhase ?? "invocation", "card_selection");
         roundToolNames.push(name);
         continue;
       }
@@ -1171,31 +1241,12 @@ export async function* runAgent(
           askPrompt = q;
           askEvent = { type: "ask_user", ask: { question: q, options, allowFree: true, prompt: q } };
         } else if (name === "offer_card_selection") {
-          /* ---- 仪式守卫（P1-⑩）：用状态机统一判断 ----
-           * ⚠️ 之前这里是两段手写的 if（承约检查 + 呼召检查），
-           *    同样的逻辑在 draw_cards 里又抄了一遍 —— 改一处忘另一处
-           *    就会漏防（模型能跳步）。
-           *    现在统一走 ritual-machine 的 canEnter()，
-           *    守卫与"缺哪一步、该做什么"由状态机给出。
+          /* ⚠️ P2-⑩/P2-⑨：仪式守卫已**上移到统一入口**
+           *    （见上方 TOOL_PHASE_REQUIREMENT 查表 + canEnter）。
+           *    原来这里和 draw_cards 各抄了一份手写守卫 ——
+           *    加新工具时必然漏（这正是 bug 的成因）。
+           *    判定规则仍由 ritual-machine 统一实现，行为不变。
            */
-          const guard = canEnter(
-            session.ritualPhase ?? "contract",
-            "card_selection",
-            completedPhases(session),
-            { toolName: "offer_card_selection" }
-          );
-          if (!guard.ok) {
-            session.messages.push({
-              role: "tool",
-              tool_call_id: tc.id,
-              content: JSON.stringify({
-                error: `还不能选牌：${guard.missing ? `「${RITUAL_PHASE_LABEL[guard.missing]}」尚未完成` : "仪式阶段不符"}`,
-                hint: guard.hint,
-              }),
-            });
-            roundToolNames.push("offer_card_selection(拦截)");
-            continue;
-          }
           const count = Math.min(Math.max(Number(args.count) || 3, 1), 5);
           askPrompt = `请凭直觉，从 ${count} 张牌中选出属于你的 ${count} 张命运之牌`;
           // 随机抽 7 张候选牌组成扇面（比全 78 张更聚焦，保留"直觉挑选"仪式感）
@@ -1266,7 +1317,7 @@ export async function* runAgent(
             session.drawnCards = drawn;
             session.dwellTimes = drawn.map(() => -1);
             // P1-⑩：推进阶段（选牌 → 逐张解读）
-            session.ritualPhase = advance(session.ritualPhase ?? "card_selection", "per_card").phase;
+            session.ritualPhase = advancePhase(session.id, session.ritualPhase ?? "card_selection", "per_card");
             const posNames = ["过去", "当下", "未来"];
             const cards = drawn.map((d, i) => ({
               id: d.card.id, nameZh: d.card.nameZh, image: d.card.image,
@@ -1323,7 +1374,7 @@ export async function* runAgent(
           }
           session.drawnCards = drawn;
           // P1-⑩：推进阶段（选牌 → 逐张解读）
-          session.ritualPhase = advance(session.ritualPhase ?? "card_selection", "per_card").phase;
+          session.ritualPhase = advancePhase(session.id, session.ritualPhase ?? "card_selection", "per_card");
           // P1.3：犹豫时长结构化存入 session（供 writer prompt 引用："你在恋人牌前停留最久"）
           session.dwellTimes = userAnswer.trim() === "random"
             ? drawn.map(() => -1) // 随机代抽无犹豫数据
@@ -1388,35 +1439,12 @@ export async function* runAgent(
       let toolContent: string | undefined;
 
       if (name === "draw_cards") {
-        /* ---- 仪式守卫（P1-⑩）：与 offer_card_selection 共用状态机 ----
-         * ⚠️ 为什么不靠 prompt：system prompt 里"顺序不可颠倒"是**软约束**，
-         *    实测 glm-5.3 会直接调 draw_cards 跳过承约+呼召+逐张解读
-         *    （32/34 条 eval 用例的 contract/invocation/percard/closing 全缺）。
-         *    仪式是这个产品的核心差异点 —— 缺了它就只是个"随机抽牌 + LLM 解读"。
-         *    所以在**后端强制**：没承约就抽牌 → 打回并要求先承约。
-         *
-         * ⚠️ 判定逻辑已从"手写 if"迁移到 ritual-machine.canEnter() ——
-         *    之前同样的检查在这个文件和 offer_card_selection 里各抄一遍，
-         *    改一处忘另一处就会漏防。
+        /* ⚠️ P1-⑩/P2-⑨：仪式守卫已**上移到统一入口**
+         *    （见上方 TOOL_PHASE_REQUIREMENT 查表 + canEnter）。
+         *    判定规则与原来完全一致（同样要求承约 + 呼召完成），
+         *    只是把"每个分支各抄一份"改成"查表"——
+         *    加新工具时不会漏防。
          */
-        const guard = canEnter(
-          session.ritualPhase ?? "contract",
-          "card_selection",
-          completedPhases(session),
-          { toolName: "draw_cards" }
-        );
-        if (!guard.ok) {
-          session.messages.push({
-            role: "tool",
-            tool_call_id: tc.id,
-            content: JSON.stringify({
-              error: `还不能抽牌：${guard.missing ? `「${RITUAL_PHASE_LABEL[guard.missing]}」尚未完成` : "仪式阶段不符"}`,
-              hint: guard.hint,
-            }),
-          });
-          roundToolNames.push("draw_cards(拦截)");
-          continue;
-        }
         const spread = (args.spread as string) || "three";
         const { summary, cards } = execDrawCards(spread, session);
         resultSummary = summary;

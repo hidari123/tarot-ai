@@ -21,6 +21,8 @@ export interface LLMProvider {
   model: string;
 }
 
+import { runtimeState } from "./runtime";
+
 /** 从环境变量构建 provider 列表（主 → 备） */
 export function buildProviders(): LLMProvider[] {
   const candidates: LLMProvider[] = [];
@@ -71,7 +73,17 @@ interface ProviderHealth {
   failedAt: number | null;
 }
 
-const health = new Map<string, ProviderHealth>();
+/**
+ * provider 健康记忆
+ *
+ * ⚠️ P1-⑥：挂到 globalThis —— 原来这里是**模块级** Map，
+ *    HMR 重载会清空 → "这个 provider 刚失败过"的信息丢失
+ *    → 每次重载都重新吃一次超时（failover 的粘性窗口形同虚设）。
+ */
+const health = runtimeState<Map<string, ProviderHealth>>(
+  "providers.health",
+  () => new Map<string, ProviderHealth>()
+);
 
 /** 主用 provider 的粘性窗口：切换后这段时间内不再探测主用 */
 const STICKY_MS = Number(process.env.FAILOVER_STICKY_MS) || 10 * 60 * 1000;

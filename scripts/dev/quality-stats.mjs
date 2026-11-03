@@ -4,11 +4,19 @@ const q = (sql, ...a) => db.prepare(sql).all(...a);
 
 console.log("=== ① 审校结果分布（sessions.review_json）===");
 const rows = q("SELECT review_json FROM sessions WHERE review_json IS NOT NULL AND review_json != ''");
-const stat = { pass: 0, fail: 0, unknown: 0, dims: {} };
+const stat = { pass: 0, fail: 0, unknown: 0, truncated: 0, dims: {} };
 for (const r of rows) {
   try {
     const rv = JSON.parse(r.review_json);
     const pass = rv.pass ?? rv.overallPass;
+    // ⚠️ P3-⑩：正文被截断的会话**单独计数，不计入通过率分母**
+    //   原因：reviewer 看到的是半截正文，评分不能代表完整解读的质量。
+    //   把它们混进通过率 → 指标失真（假绿灯）。
+    //   这也修正了此前"通过率 61.2%"这个数字的口径。
+    if (rv.truncated === true) {
+      stat.truncated++;
+      continue;
+    }
     if (pass === true) stat.pass++;
     else if (pass === false) stat.fail++;
     else stat.unknown++;
@@ -24,8 +32,12 @@ for (const r of rows) {
     }
   } catch { stat.unknown++; }
 }
-console.log(`  样本 ${rows.length} · 通过 ${stat.pass} · 未通过 ${stat.fail} · 解析失败 ${stat.unknown}`);
-console.log(`  通过率 ${((stat.pass / Math.max(1, rows.length)) * 100).toFixed(1)}%`);
+const rated = stat.pass + stat.fail;
+console.log(`  样本 ${rows.length} · 通过 ${stat.pass} · 未通过 ${stat.fail} · 解析失败 ${stat.unknown} · 截断不计 ${stat.truncated}`);
+console.log(`  通过率（仅计完整审校） ${((stat.pass / Math.max(1, rated)) * 100).toFixed(1)}%（分母 ${rated}）`);
+if (stat.truncated > 0) {
+  console.log(`  ⚠️ 有 ${stat.truncated} 场正文被截断（流中断），已从分母剔除 —— 此前它们会被算作"通过"`);
+}
 for (const [d, s] of Object.entries(stat.dims)) {
   console.log(`  ${d.padEnd(10)} 均值 ${(s.sum / s.n).toFixed(2)} · 最低 ${s.min} · 最高 ${s.max} · n=${s.n}`);
 }

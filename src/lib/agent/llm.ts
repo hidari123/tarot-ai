@@ -14,6 +14,8 @@
  */
 
 import * as db from "../db";
+import { runtimeState } from "../runtime";
+import { markTruncated } from "./truncation";
 import {
   buildProviders, pickProvider, markHealthy, markFailed, isFailoverError,
   isRecentlyFailed, isHedgedEnabled, raceWithAbort,
@@ -81,10 +83,16 @@ export class CircuitBreaker {
   }
 }
 
-/** 全局熔断器（跨请求共享 —— provider 的健康度是全局属性） */
-const gBreaker = globalThis as unknown as { __tarotBreaker__?: CircuitBreaker };
-export const breaker: CircuitBreaker = gBreaker.__tarotBreaker__ ?? new CircuitBreaker();
-gBreaker.__tarotBreaker__ = breaker;
+/**
+ * 全局熔断器（跨请求共享 —— provider 的健康度是全局属性）
+ *
+ * ⚠️ P1-⑥：改用统一的 runtimeState 入口（原来自成一套 globalThis 写法，
+ *    分散的单例声明容易漏 —— 现在全部走同一个容器，便于审计）。
+ */
+export const breaker: CircuitBreaker = runtimeState<CircuitBreaker>(
+  "llm.breaker",
+  () => new CircuitBreaker()
+);
 
 /* ------------------------------------------------------------------ */
 /* 基础类型                                                            */
@@ -243,7 +251,11 @@ interface Bucket {
    */
   lastReleaseAt: number | null;
 }
-const buckets = new Map<string, Bucket>();
+/**
+ * P1-⑥：挂到 globalThis —— 原来这里是**模块级** Map，
+ * HMR 重载会清空限流窗口 → 立刻连发一批 → 429。
+ */
+const buckets = runtimeState<Map<string, Bucket>>("llm.buckets", () => new Map<string, Bucket>());
 
 /**
  * 取号：等到有可用令牌才放行（并发调用会各自排队，不会聚在一起）。
@@ -377,8 +389,15 @@ interface ProviderRateState {
   /** 上次调整的时刻（用于缓慢回升） */
   lastAdjust: number;
 }
-/** per-provider 的速率状态 */
-const rateStates = new Map<string, ProviderRateState>();
+/**
+ * per-provider 的速率状态
+ *
+ * ⚠️ P1-⑥：挂到 globalThis（HMR 重载会丢掉"已收紧"的状态）
+ */
+const rateStates = runtimeState<Map<string, ProviderRateState>>(
+  "llm.rateStates",
+  () => new Map<string, ProviderRateState>()
+);
 
 /** 容量系数随时间缓慢回升（每秒 +1%） */
 const SCALE_RECOVERY_PER_SEC = 0.01;
@@ -730,6 +749,31 @@ export async function* streamLLM(
     }
     const gotAnyOutput = yield* tryStreamOnce(p, messages, sessionId, agent, (e) => { lastErr = e; });
     if (gotAnyOutput === "ok") return; // 成功跑完
+    // ⚠️ P3-⑩："truncated" = 已经输出了内容但流被中断（正文不完整）
+    //    不能当作成功（那会让半截正文拿到 pass:true → **假绿灯**），
+    //    但也**不能**换 provider 重试（重发会重复输出已给用户的半截）。
+    //    处理：记录到 DB（让指标能归因），然后结束本次流。
+    if (gotAnyOutput === "truncated") {
+      // ⚠️ logTiming 要求非空 sessionId（没有会话上下文时跳过记录）
+      if (sessionId) {
+        db.logTiming(
+          sessionId,
+          `stream_truncated_${agent}`,
+          0,
+          `输出被截断（provider=${p.name}）`
+        );
+      }
+      console.error(
+        `[llm] 流被截断（${agent}/${p.name}）—— 已输出内容保留，但**不标记为成功**`
+      );
+      // ⚠️ 在 session 上打标记（供审校环节判断"这次正文不完整"）
+      //    ⚠️ 为什么用 session 表而不是全局 Set：
+      //    标记是**会话级**的（别的会话的截断不该影响这一场的审校），
+      //    而且 llm.ts 不应该直接依赖 agent/session.ts（会造成循环导入）——
+      //    所以通过一个独立的标记表实现（见 markTruncated）。
+      markTruncated(sessionId);
+      return;
+    }
     // gotAnyOutput === "pre-output-fail"：还没输出任何内容，可安全换下一个 provider 重试
   }
   throw lastErr instanceof Error ? lastErr : new Error("所有 LLM provider 均不可用（流式）");
@@ -742,7 +786,7 @@ async function* tryStreamOnce(
   sessionId: string | undefined,
   agent: SubAgent,
   onFail: (e: unknown) => void
-): AsyncGenerator<string, "ok" | "pre-output-fail"> {
+): AsyncGenerator<string, "ok" | "pre-output-fail" | "truncated"> {
   const t0 = Date.now();
   let res: Response;
   try {
@@ -810,12 +854,16 @@ async function* tryStreamOnce(
       logUsage(totalChars === 0);
       onFail(e);
       if (totalChars === 0 && isFailoverError(e)) { markFailed(p); breaker.recordFailure(p.name); }
-      // ⚠️ 中断但已有输出 = 内容被截断。旧逻辑静默当"正常完成"，
-      // 截断正文照常送审落库，用户看到戛然而止却显示流程完成。
-      // 现在显式返回截断标记，调用方可见。
+      // ⚠️ 中断但已有输出 = 内容被截断。
+      // ⚠️ P3-⑩：这里的 `as "ok"` 是**类型断言**，它骗过了编译器 ——
+      //    调用方收到的仍然是 "ok"，看不到"截断"这个事实。
+      //    后果：截断的正文照常送审落库 → reviewer 给一个基于半截正文的评分
+      //    → `pass: true` 落库 → **审校指标是伪影**（假绿灯）。
+      //    修法：把 "truncated" 纳入返回类型（去掉断言），
+      //    并让调用方显式处理（记录 + 不让截断内容拿 pass）。
       if (totalChars > 0) {
         console.error(`[llm] 流中断但已有 ${totalChars} 字输出（${agent}/${p.name}），内容可能截断`);
-        return "truncated" as "ok";
+        return "truncated";
       }
       return "pre-output-fail";
     }

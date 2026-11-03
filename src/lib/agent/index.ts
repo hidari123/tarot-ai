@@ -40,6 +40,9 @@ export {
   restoreSession,
   markSessionDirty,
   persistDirtySessions,
+  /** P1-⑦：原子占用会话（防并发追问的 TOCTOU 竞态） */
+  tryAcquireSession,
+  releaseSession,
   type SessionSnapshot,
 } from "./session";
 export { waitUserAnswer, isHitlGone } from "./hitl";

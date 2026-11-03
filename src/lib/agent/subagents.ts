@@ -17,6 +17,7 @@ import { parseLLMJSON, extractScore, extractString } from "../robust-json";
 import { buildAnalystPrompt, buildWriterPrompt, buildReviewerPrompt } from "../prompts";
 import type { LLMProvider } from "../llm-providers";
 import { streamLLM } from "./llm";
+import { isTruncated } from "./truncation";
 import type { AgentEvent, AgentSession, SessionMessage } from "./types";
 
 /* ------------------------------------------------------------------ */
@@ -127,9 +128,19 @@ ${revision ? `\n⚠️ 审校意见（上一版被退回，必须针对性修改
   session.messages.push({ role: "assistant", content: `（撰写者产出解读 ${full.length} 字）` });
   // 供审校
   (session as unknown as { __lastReading?: string }).__lastReading = full;
+  // ⚠️ P3-⑩：标记"这次输出可能被截断"（流中断但已输出内容）
+  //    → 审校环节据此**不把半截正文判为通过**（避免假绿灯）。
+  const truncated = isTruncated(session.id);
+  if (truncated) {
+    console.error(`[writer] 输出可能被截断（${full.length} 字）—— 审校将标注`);
+  }
   yield {
     type: "subagent",
-    subagent: { agent: "writer", action: revision ? "重写完成" : "初稿完成", detail: `${full.length} 字` },
+    subagent: {
+      agent: "writer",
+      action: revision ? "重写完成" : "初稿完成",
+      detail: truncated ? `${full.length} 字（输出被截断）` : `${full.length} 字`,
+    },
   };
   return full;
 }
@@ -148,6 +159,13 @@ export interface ReviewResult {
   parseLevel?: 0 | 1 | 2 | 3;
   /** 是否重试过 */
   retried?: boolean;
+  /**
+   * P3-⑩：本次审校的正文是否被截断
+   *
+   * ⚠️ 截断的会话**不计入审校通过率**的分母 ——
+   *   reviewer 看到的是半截正文，它的评分不能代表完整解读的质量。
+   */
+  truncated?: boolean;
 }
 
 /**
@@ -288,6 +306,25 @@ ${reading}
     parseLevel,
     retried,
   };
+
+  // ⚠️ P3-⑩（假绿灯修复）：正文被截断时，审校结论**不计入通过率**
+  //   原因：reviewer 看到的是**半截正文**，
+  //   它给出的评分不能代表完整解读的质量。
+  //   如果照常记 pass:true → dashboard 的"审校通过率"混入了
+  //   **根本没被完整审校的内容** → 指标失真。
+  //
+  //   ⚠️ 注意：pass 字段本身**不改**（改成 false 会触发 Reflexion 重写，
+  //   而重写一份已经截断的正文没有意义，还会浪费一轮 LLM 调用）。
+  //   改的是**指标口径**：被标记为 truncated 的会话不计入分母。
+  //   （见 db.ts 的 getDashboardStats —— 按 truncated 标记过滤）
+  const truncated = isTruncated(session.id);
+  if (truncated) {
+    console.error(
+      `[reviewer] 正文被截断 —— 审校结论标注为"未完整审校"（不计入通过率）`
+    );
+    result.comment = `⚠️ 本次解读的正文在生成途中被截断，审校基于不完整内容进行，结论仅供参考。${result.comment}`;
+    (result as { truncated?: boolean }).truncated = true;
+  }
 
   yield { type: "review", review: { ...result } };
   yield {

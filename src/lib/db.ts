@@ -68,6 +68,13 @@ CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_created ON tool_calls(created_at);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage(created_at);
+-- P1-⑧：llm_usage 按 session_id 查询的索引（**原本缺失**）
+-- ⚠️ 为什么重要：dashboard 的"每场占卜 token"统计走
+--    WHERE session_id = ? 与关联子查询 —— 没有索引就是**全表扫**。
+--    llm_usage 是增长最快的表（一场占卜 ~14 行，实测 143 场 → 2956 行），
+--    数据量涨上去后每次 dashboard 请求都要扫全表。
+--    而 better-sqlite3 是**同步**的 → 阻塞事件循环 → 所有 SSE 流卡顿。
+CREATE INDEX IF NOT EXISTS idx_llm_usage_session ON llm_usage(session_id);
 
 -- P2-⑦：事件日志（轻量 trace）—— 每场占卜的完整事件时间线
 -- ⚠️ 不落 delta（一场占卜几百条），只落结构性事件 —— 够画时间线即可
@@ -321,6 +328,28 @@ export function listRecoverableSessions(olderThanMs = 0): Array<{ id: string; st
 }
 
 /**
+ * 僵死会话判据（SQL 片段常量）
+ *
+ * ⚠️ P3-⑩：两条 SQL（reconcileStaleSessions 与 listStaleSessions）**共用**它。
+ *    审计实测：listStaleSessions 曾用 created_at 判据，而
+ *    reconcileStaleSessions 已修成用快照里的 lastActive ——
+ *    两条判据不一致 → dashboard 显示**假僵尸**
+ *    （一场正在跑但已超过 10 分钟的正常占卜被误标为僵死），
+ *    反而掩盖了真问题。
+ *    写成常量才能防止再次漂移。
+ *
+ * 判据含义：
+ *   · 有快照 → 用快照里的 lastActive（真实最后活跃时间）
+ *   · 无快照 → 退回 created_at（没有别的信息可用）
+ */
+const STALE_SESSION_PREDICATE = `
+  status = 'running' AND (
+    (state_json != '' AND CAST(json_extract(state_json, '$.lastActive') AS INTEGER) < ?)
+    OR (state_json = '' AND created_at < ?)
+  )
+`;
+
+/**
  * 启动对账：把"僵死"的 running 会话标记为 error。
  *
  * 场景：进程重启 / 客户端断开 / 生成器被 GC —— 这些路径不会执行正常收尾，
@@ -333,34 +362,52 @@ export function listRecoverableSessions(olderThanMs = 0): Array<{ id: string; st
  */
 export function reconcileStaleSessions(maxAgeMs = 30 * 60 * 1000): number {
   const cutoff = Date.now() - maxAgeMs;
+  // ⚠️ 与 listStaleSessions 共用同一个判据常量（防止两条 SQL 漂移）
   const result = db.prepare(`
     UPDATE sessions
     SET status = 'error', error_reason = 'stale_timeout', finished_at = ?
-    WHERE status = 'running' AND (
-      (state_json != '' AND CAST(json_extract(state_json, '$.lastActive') AS INTEGER) < ?)
-      OR (state_json = '' AND created_at < ?)
-    )
+    WHERE ${STALE_SESSION_PREDICATE}
   `).run(Date.now(), cutoff, cutoff);
   return result.changes;
 }
 
-/** 列出僵死会话（dashboard 卡死视图用） */
+/**
+ * 列出僵死会话（dashboard 卡死视图用）
+ *
+ * ⚠️ P3-⑩：判据必须与 reconcileStaleSessions **完全一致**
+ *    （快照里的 lastActive 优先，无快照才退回 created_at）。
+ *    审计实测：原来这里用的是 created_at ——
+ *    一场**正在跑但已超过 10 分钟**的正常占卜
+ *    （用户慢思考是允许的：HITL 超时 5 分钟，但可以连续多轮慢思考）
+ *    会被误标为"僵死" → dashboard 全是**假僵尸** → 掩盖真问题。
+ */
 export function listStaleSessions(maxAgeMs = 10 * 60 * 1000): {
   id: string; question: string; createdAt: number; ageMinutes: number;
 }[] {
   const cutoff = Date.now() - maxAgeMs;
   const rows = db.prepare(`
-    SELECT id, question, created_at FROM sessions
-    WHERE status = 'running' AND created_at < ?
+    SELECT id, question, created_at, state_json FROM sessions
+    WHERE ${STALE_SESSION_PREDICATE}
     ORDER BY created_at DESC LIMIT 50
-  `).all(cutoff) as { id: string; question: string; created_at: number }[];
+  `).all(cutoff, cutoff) as {
+    id: string; question: string; created_at: number; state_json: string;
+  }[];
   const now = Date.now();
-  return rows.map((r) => ({
-    id: r.id,
-    question: r.question,
-    createdAt: r.created_at,
-    ageMinutes: Math.round((now - r.created_at) / 60000),
-  }));
+  return rows.map((r) => {
+    // ⚠️ ageMinutes 用**真实最后活跃时间**（不是创建时间）——
+    //    否则一个"刚活跃但创建得早"的会话会显示成"卡了很久"。
+    let lastActive = r.created_at;
+    try {
+      const snap = r.state_json ? JSON.parse(r.state_json) : null;
+      if (typeof snap?.lastActive === "number") lastActive = snap.lastActive;
+    } catch { /* 快照损坏 → 退回 created_at */ }
+    return {
+      id: r.id,
+      question: r.question,
+      createdAt: r.created_at,
+      ageMinutes: Math.round((now - lastActive) / 60000),
+    };
+  });
 }
 
 export function logToolCall(
@@ -450,25 +497,36 @@ function computeDashboardStats(): DashboardStats {
     FROM sessions ORDER BY created_at DESC LIMIT 20
   `).all() as { id: string; question: string; persona: string; status: string; reading: string; cards_json: string; created_at: number; error_reason: string }[];
   // P2-⑧：单场成本（token 合计 + LLM 调用数 → 估算人民币）
+  // ⚠️ P1-⑧：原来是 **N+1**（20 个会话 → 20 次 `WHERE session_id = ?` 查询）。
+  //    现在一次批量查询（GROUP BY + IN）—— 20 次往返变 1 次。
   const costById = new Map<string, { tokens: number; estCny: number; llmCalls: number }>();
-  for (const r of recent) {
-    try {
-      const u = db.prepare(`
-        SELECT COALESCE(SUM(prompt_tokens + completion_tokens),0) t, COUNT(*) n
-        FROM llm_usage WHERE session_id = ?
-      `).get(r.id) as { t: number; n: number };
+  if (recent.length > 0) {
+    const placeholders = recent.map(() => "?").join(",");
+    const usageRows = db.prepare(`
+      SELECT session_id,
+             COALESCE(SUM(prompt_tokens + completion_tokens),0) t,
+             COUNT(*) n
+      FROM llm_usage WHERE session_id IN (${placeholders}) GROUP BY session_id
+    `).all(...recent.map((r) => r.id)) as { session_id: string; t: number; n: number }[];
+    const usageMap = new Map(usageRows.map((u) => [u.session_id, u]));
+    for (const r of recent) {
+      const u = usageMap.get(r.id);
       costById.set(r.id, {
-        tokens: u.t,
-        llmCalls: u.n,
-        estCny: Math.round((u.t / 1_000_000) * 10 * 100) / 100, // 混合单价 ¥10/M
+        tokens: u?.t ?? 0,
+        llmCalls: u?.n ?? 0,
+        estCny: Math.round(((u?.t ?? 0) / 1_000_000) * 10 * 100) / 100, // 混合单价 ¥10/M
       });
-    } catch { costById.set(r.id, { tokens: 0, estCny: 0, llmCalls: 0 }); }
+    }
   }
   // P2-⑧：单场成本分布（全部已完成会话 —— 毛利模型的基础）
+  // ⚠️ P1-⑧：原来用**关联子查询**（每行会话扫一次 llm_usage），
+  //    现在改成 JOIN + GROUP BY（一次扫描）。
   const perSession = db.prepare(`
-    SELECT s.id,
-           (SELECT COALESCE(SUM(prompt_tokens + completion_tokens),0) FROM llm_usage WHERE session_id = s.id) t
-    FROM sessions s WHERE s.status = 'done'
+    SELECT s.id, COALESCE(SUM(u.prompt_tokens + u.completion_tokens),0) t
+    FROM sessions s
+    LEFT JOIN llm_usage u ON u.session_id = s.id
+    WHERE s.status = 'done'
+    GROUP BY s.id
   `).all() as Array<{ id: string; t: number }>;
   const sessionTokens = perSession.map((p) => p.t).filter((t) => t > 0);
   const costPerSession = sessionTokens.length > 0

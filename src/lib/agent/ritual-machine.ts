@@ -82,6 +82,43 @@ export function phaseIndex(p: RitualPhase): number {
   return RITUAL_ORDER.indexOf(p);
 }
 
+/**
+ * 工具 → 必需阶段（P2-⑨）
+ *
+ * ⚠️ 这张表是"仪式不许跳步"的**单一事实源**。
+ *   审计实测：守卫原本只覆盖 2 个工具（offer_card_selection / draw_cards），
+ *   其余 6 个仪式工具完全没有前置检查 → 模型可以：
+ *     · 不承约直接 reveal_card
+ *     · 不抽牌直接 interpret_card
+ *     · 不逐张讲完直接 write_reading（综合没依据）
+ *   实测证据：32/34 条 eval 用例的 contract/invocation/percard/closing 全缺。
+ *
+ * ⚠️ 语义：值 = "调用这个工具时，**至少要处于**哪个阶段"
+ *   （canEnter 会用 completedPhases 检查该阶段的前置是否齐备）。
+ *
+ * ⚠️ 为什么 ask_user / rag_search 不在表里：
+ *   它们是**任何阶段都能调用**的自由工具（澄清提问、查典籍）。
+ *   把它们加进守卫会阻断合法的"边查边问"。
+ */
+export const TOOL_PHASE_REQUIREMENT: Record<string, RitualPhase> = {
+  /** 承约：从头开始（无前置） */
+  establish_contract: "contract",
+  /** 呼召：需要承约已完成 */
+  invoke_three_questions: "invocation",
+  /** 选牌：需要承约 + 呼召 */
+  offer_card_selection: "card_selection",
+  /** 抽牌（代抽）：需要承约 + 呼召 */
+  draw_cards: "card_selection",
+  /** 翻牌：需要已选牌 */
+  reveal_card: "per_card",
+  /** 讲牌：需要已翻牌（牌面必须先揭示才能解读） */
+  interpret_card: "per_card",
+  /** 综合：需要逐张解读完成 */
+  write_reading: "synthesis",
+  /** 收束：需要综合完成 */
+  close_reading: "closing",
+};
+
 /* ------------------------------------------------------------------ */
 /* 转移表                                                              */
 /* ------------------------------------------------------------------ */
@@ -214,6 +251,8 @@ export function completedPhases(s: {
   invocation?: { answers?: string[] } | null;
   drawnCards?: unknown[];
   cardReadings?: Array<{ reading?: string }>;
+  /** P2-⑨：综合是否已完成（write_reading 结束时置位） */
+  synthesisDone?: boolean;
 }): Set<RitualPhase> {
   const done = new Set<RitualPhase>();
   if (s.contractQuestion) done.add("contract");
@@ -222,8 +261,13 @@ export function completedPhases(s: {
   const cards = s.drawnCards?.length ?? 0;
   const readings = s.cardReadings ?? [];
   if (cards > 0 && readings.filter((r) => r.reading).length >= cards) done.add("per_card");
+  // ⚠️ P2-⑨：synthesis 的完成标志是"综合正文已产出"，
+  //    **不是** finished（会话结束）。
+  //    原因：close_reading 的守卫要求 synthesis 已完成，
+  //    而 close_reading 发生在会话结束**之前** ——
+  //    如果用 finished 判断，守卫会永远拦截（收束语永远不生成）。
+  if (s.synthesisDone) done.add("synthesis");
   if (s.finished) {
-    done.add("synthesis");
     done.add("closing");
     done.add("done");
   }
@@ -281,6 +325,39 @@ export function derivePhase(s: {
 export function advance(current: RitualPhase, target: RitualPhase): { ok: boolean; phase: RitualPhase } {
   if (!canTransition(current, target)) return { ok: false, phase: current };
   return { ok: true, phase: target };
+}
+
+/**
+ * 推进阶段并**记录非法转移**（P2-⑨）
+ *
+ * ⚠️ 为什么需要这个包装（审计实测的 8 处静默失败）：
+ *   supervisor 里有 8 处 `advance(...).phase` —— 全部**丢弃了 `.ok`**。
+ *   而 advance() 在非法转移时返回 `{ok: false, phase: current}` ——
+ *   也就是"原地不动"，**没有任何声音**。
+ *   后果：状态机形同虚设 ——
+ *     · 阶段跳过了（contract → done）→ 守卫基于阶段判断 → 全线失守
+ *     · 而且**日志里看不到任何异常** → 排查时完全看不出发生了什么
+ *   这个包装把 `.ok` 用起来：非法转移 → 打日志（可观测）+ 保持原阶段。
+ *
+ * ⚠️ 为什么不在 advance() 内部直接打日志：
+ *   那样会掩盖"调用方忽略了返回值"这个事实 ——
+ *   调用方本可以自己处理（比如拒绝这次转移并给模型反馈），
+ *   但它们都没处理。**在调用点暴露问题**才是对的设计。
+ *
+ * @param sessionId 用于日志定位
+ */
+export function advancePhase(
+  sessionId: string,
+  current: RitualPhase,
+  target: RitualPhase
+): RitualPhase {
+  const r = advance(current, target);
+  if (!r.ok) {
+    console.error(
+      `[ritual] 非法阶段转移：${current} → ${target}（会话 ${sessionId}）—— 已保持原阶段`
+    );
+  }
+  return r.phase;
 }
 
 /**

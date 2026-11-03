@@ -21,6 +21,7 @@
  */
 
 import * as db from "../db";
+import { runtimeState } from "../runtime";
 import type { AgentEvent } from "./types";
 
 /* ------------------------------------------------------------------ */
@@ -39,7 +40,17 @@ interface SessionBuffer {
   nextSeq: number;
 }
 
-const buffers = new Map<string, SessionBuffer>();
+/**
+ * 每场会话的事件缓冲
+ *
+ * ⚠️ P1-⑥：挂到 globalThis（runtimeState）—— 原来这里��**模块级** Map，
+ *    Next dev 的 HMR 重载会把它清空 → SSE 的 seq 序号从头开始
+ *    → 断点续传补发的 seq 会与客户端已收到的**冲突**（Last-Event-ID 语义失效）。
+ */
+const buffers = runtimeState<Map<string, SessionBuffer>>(
+  "eventLog.buffers",
+  () => new Map<string, SessionBuffer>()
+);
 
 /** 单会话最多缓冲多少事件（超出丢最旧的 —— 断点续传只需要"最近的一段"） */
 const MAX_BUFFER = 500;

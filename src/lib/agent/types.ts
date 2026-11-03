@@ -212,6 +212,16 @@ export interface AgentSession {
    *    永久挂在 Promise 上，start() 闭包与 session 一起泄漏。
    */
   abortSignal?: AbortSignal;
+  /**
+   * P3-⑩：本次输出是否被截断（流中断但已输出内容）
+   *
+   * ⚠️ 为什么需要这个标记（假绿灯的根源）：
+   *   流式调用中断时，已经输出给用户的正文是**不完整**的。
+   *   但这个"不完整"如果不显式标记，后面审校会基于半截正文打分
+   *   → `pass: true` 落库 → **审校指标失真**（假绿灯）。
+   *   标记后，审校环节可以显式标注"正文被截断，未经完整审校"。
+   */
+  outputTruncated?: boolean;
   finished: boolean;
   toolSeq: number;
   /**
@@ -248,6 +258,19 @@ export interface AgentSession {
    * ⚠️ 老会话没有这个字段 → 用 derivePhase() 从已有字段反推（见 session.ts）
    */
   ritualPhase?: import("./ritual-machine").RitualPhase;
+  /**
+   * P2-⑨：综合（synthesis）是否已完成
+   *
+   * ⚠️ 为什么需要这个独立标记（守卫表引入后暴露的真 bug）：
+   *   `completedPhases` 原本把 synthesis/closing 挂在 `finished` 上
+   *   （会话**结束**时才算完成）。
+   *   但 close_reading 的守卫要求"synthesis 已完成" ——
+   *   而 synthesis 完成于 write_reading 结束，**早于**会话结束。
+   *   → 守卫会**永远拦截 close_reading** → 收束语永远不生成。
+   *   （这是"加守卫"时最容易踩的坑：判据与守卫的时机不匹配。）
+   *   现在用独立标记表达"综合已完成"，时序正确。
+   */
+  synthesisDone?: boolean;
   /** A2：牌阵范围声明 */
   scopeNote?: string;
   /** A3：三问呼召 —— 问题 + 用户回答 */

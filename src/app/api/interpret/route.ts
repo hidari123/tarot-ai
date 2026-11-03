@@ -2,6 +2,8 @@ import {
   createSession,
   getSession,
   runAgent,
+  tryAcquireSession,
+  releaseSession,
   type AgentEvent,
 } from "@/lib/tarot-agent";
 import { validateAgentEvent } from "@/lib/agent/schema";
@@ -59,6 +61,8 @@ export async function POST(req: Request) {
   let session;
   let question = "";
   let followup: string | undefined;
+  /** ⚠️ P1-⑦：本请求是否已原子占用会话（需要在 finally 里释放） */
+  let acquired = false;
 
   if (body.sessionId) {
     session = getSession(body.sessionId);
@@ -72,15 +76,23 @@ export async function POST(req: Request) {
     if (body.resume === true) {
       question = session.question;
     } else {
-      // ⚠️ 并发互斥：会话正在推进（生成器运行中 / 挂在 HITL 等待）时，
-      // 新 interpret 会把消息插到未配对的 tool_calls 后 → 协议 400 + 历史交叉污染。
-      if (session.busy) {
+      // ⚠️ P1-⑦：并发互斥改为**原子占用**（tryAcquireSession）
+      //    原来是"路由层检查 busy" + "supervisor 里设置 busy" 两步，
+      //    中间有 await 间隙 → 两个并发追问能同时通过检查
+      //    → assistant→tool 配对错位 → 400 → **该会话之后所有追问都失败**。
+      //    tryAcquireSession 把"检查 + 占用"放在同一个同步段里，天然原子。
+      if (!tryAcquireSession(body.sessionId)) {
         return withSecurityHeaders(
           Response.json({ error: "这场占卜正在进行中，请先回应占卜师或稍候" }, { status: 409 })
         );
       }
+      acquired = true;
       followup = clampText(body.followup, LIMITS.followup).trim();
       if (!followup) {
+        // ⚠️ P1-⑦：已经占用了会话，提前返回前**必须释放**
+        //    否则这个会话永远卡在 busy → 后续追问全部 409。
+        releaseSession(body.sessionId);
+        acquired = false;
         return badRequest("请写下你的追问");
       }
       question = session.question;
@@ -183,13 +195,21 @@ export async function POST(req: Request) {
         }
       } catch (e) {
         if (!aborted) {
-          send({ type: "error", error: e instanceof Error ? e.message : "占卜引擎异常" });
+          // ⚠️ P1-④：不把内部异常原文返给客户端
+          //    （llm.ts 抛的是 `LLM 调用失败(429): {上游原始响应体}`，
+          //      会泄露上游网关细节）
+          console.error("[interpret] 引擎异常:", e);
+          send({ type: "error", error: "占卜引擎遇到问题，请稍后重试" });
           try { failSession(sid, "engine_exception"); } catch { /* ignore */ }
         }
       } finally {
         closed = true;
         req.signal.removeEventListener("abort", onAbort);
         try { controller.close(); } catch { /* 已关闭 */ }
+        // ⚠️ P1-⑦：释放原子占用
+        //    （supervisor 的 finally 也会释放，但那条路径不一定被走到 ——
+        //      比如 followup 为空的 400、或流还没启动就断线）
+        if (acquired) releaseSession(sid);
       }
     },
   });
@@ -198,8 +218,12 @@ export async function POST(req: Request) {
     headers: {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
+      // ⚠️ P1-④：Connection 是 hop-by-hop 头，HTTP/2 下被禁止
+      //    （某些代理会报错）—— Node/Next 自动管理，别手写
       "X-Accel-Buffering": "no",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "X-Frame-Options": "DENY",
     },
   });
 }
