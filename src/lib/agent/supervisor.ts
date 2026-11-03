@@ -43,6 +43,28 @@ import {
 } from "./helpers";
 import type { AgentEvent, AgentSession, DrawnCard } from "./types";
 
+/**
+ * 辅助性写库失败时的记录（P3-⑦：静默吞异常）
+ *
+ * ⚠️ 为什么这些 catch 不阻断主流程（保持不变）：
+ *   记 prompt 版本、落重写归因、写快照 —— 都是**辅助**操作。
+ *   它们的失败不该让用户看到"解读失败"（正文已经生成好了）。
+ *
+ * ⚠️ 但原来是**完全无痕**的 catch（注释里写着 ignore）：
+ *   排障时无法区分"没发生过"和"发生了但被吞了"。
+ *   降级路径的标注原则（"宁可标注，不要静默消失"）同样适用于这里。
+ *
+ * ⚠️ 为什么用 console.debug 而不是 console.error：
+ *   console.error 会在生产日志里刷屏（这类失败虽罕见但会累积）；
+ *   debug 级足够排障时打开，且不掩盖真正的错误。
+ */
+function dbLog(what: string, e: unknown): void {
+  console.debug(
+    `[supervisor] ${what}（不影响主流程）:`,
+    e instanceof Error ? e.message : String(e)
+  );
+}
+
 /** delta 合批发送：按 ~36 字符切块（SSE JSON 信封 ~40 字节，
  *  6 字符净荷的信封开销是净荷 2 倍+，长正文事件数是必要值 5~10 倍）。
  *  36 字符在打字机观感与事件数之间取平衡（约 1.5 行文字/事件）。 */
@@ -80,7 +102,7 @@ export async function* runAgent(
     session.messages.push({ role: "system", content: buildSystemPrompt(session) });
     session.messages.push({ role: "user", content: `我想占卜：${question}` });
     // 记录 prompt 版本，便于后续版本效果对比
-    try { db.updateSessionPromptVersion(session.id, PROMPT_VERSION); } catch { /* ignore */ }
+    try { db.updateSessionPromptVersion(session.id, PROMPT_VERSION); } catch (e) { dbLog("记录 prompt 版本失败", e); }
   } else if (opts?.followup) {
     session.messages.push({ role: "user", content: `（追问）${opts.followup}` });
     session.messages.push({
@@ -112,7 +134,7 @@ export async function* runAgent(
    * 计划生成失败（LLM 异常）静默降级回 ReAct——降级不删是底线。 */
   const agentMode = process.env.AGENT_MODE === "plan" ? "plan" : "react";
   session.agentMode = agentMode;
-  try { db.updateSessionPromptVersion(session.id, `${PROMPT_VERSION}/${agentMode}`); } catch { /* ignore */ }
+  try { db.updateSessionPromptVersion(session.id, `${PROMPT_VERSION}/${agentMode}`); } catch (e) { dbLog("记录 prompt 版本失败", e); }
   const planSteps = agentMode === "plan" ? await buildPlanSteps(config, session) : null;
   if (planSteps && planSteps.length >= 3) {
     session.plan = planSteps;
@@ -354,7 +376,12 @@ export async function* runAgent(
         yield* runLocalFallback(session, question);
         return;
       }
-      yield { type: "error", error: `占卜师暂时失联：${e instanceof Error ? e.message : "未知错误"}` };
+      // ⚠️ P3-⑫：不把内部错误原文发给客户端
+      //    llm.ts 抛的是 `LLM 调用失败(429): {上游原始响应体}` ——
+      //    里面可能含上游网关的内部细节（URL、错误码、甚至 key 前缀）。
+      //    内部细节进 console.error（排障用），用户只看到可读文案。
+      console.error("[supervisor] LLM 调用失败:", e);
+      yield { type: "error", error: "占卜师暂时失联，请稍后重试" };
       db.failSession(session.id, "llm_error");
       return;
     }
@@ -930,7 +957,9 @@ export async function* runAgent(
           }
           notes = session.analystNotes;
         } catch (e) {
-          yield { type: "error", error: `分析师异常：${e instanceof Error ? e.message : "未知"}` };
+          // ⚠️ P3-⑫：内部异常只进服务端日志，不发给客户端
+          console.error("[supervisor] 分析师异常:", e);
+          yield { type: "error", error: "分析师暂时无法工作，请稍后重试" };
           db.failSession(session.id, "llm_error");
           return;
         }
@@ -964,7 +993,9 @@ export async function* runAgent(
               yield value;
             }
           } catch (e) {
-            yield { type: "error", error: `撰写中断：${e instanceof Error ? e.message : "未知"}` };
+            // ⚠️ P3-⑫：内部异常只进服务端日志
+            console.error("[supervisor] 撰写中断:", e);
+            yield { type: "error", error: "解读撰写中断，请稍后重试" };
             db.failSession(session.id, "llm_error");
             return;
           }
@@ -1032,12 +1063,18 @@ export async function* runAgent(
                   if (evt.type === "review") reReview = evt.review ?? null;
                   yield evt;
                 }
-              } catch { /* 复检失败沿用原 review */ }
+              } catch (e) {
+                // ⚠️ P3-⑦：复检失败沿用原 review（不阻断），
+                //    但必须留痕 —— 否则"没复检"和"复检通过"无法区分。
+                dbLog("审校复检失败，沿用原结论", e);
+              }
               if (reReview) review = reReview;
-            } catch (e) {
-              yield { type: "error", error: `重写中断：${e instanceof Error ? e.message : "未知"}` };
+              } catch (e) {
+                // ⚠️ P3-⑫：内部异常只进服务端日志
+                console.error("[supervisor] 重写中断:", e);
+                yield { type: "error", error: "重写中断，请稍后重试" };
               // 方向④：重写失败不终止会话（沿用原稿），但落库归因便于统计
-              try { db.logTiming(session.id, "rewrite_fail", 0, e instanceof Error ? e.message.slice(0, 80) : "未知"); } catch { /* ignore */ }
+              try { db.logTiming(session.id, "rewrite_fail", 0, e instanceof Error ? e.message.slice(0, 80) : "未知"); } catch (e2) { dbLog("记录重写失败归因失败", e2); }
             }
           } else {
             // 逐张模式：把审校意见挂到 session，供收束阶段采纳

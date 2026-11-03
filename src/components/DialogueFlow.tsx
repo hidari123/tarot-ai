@@ -522,7 +522,30 @@ const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview, wa
 
 /* ---------------- 对话流容器 ---------------- */
 
-export default function DialogueFlow({
+/**
+ * 对话流容器（memo）
+ *
+ * ⚠️ 为什么容器也要 memo（审计发现 P1-④）：
+ *   子组件（TellerBubble / CardBlock / AskPanel …）早就 memo 了，
+ *   但**容器**没有 → 父组件（page.tsx）每次重渲染，
+ *   容器都要重新执行一遍（协调 + 遍历所有条目生成元素）。
+ *
+ *   ⚠️ 这里的收益是实实在在的：
+ *     page.tsx 有一个 `reading` state，**每帧**都被 delta 刷新
+ *     （流式输出时 60 次/秒）。
+ *     那些帧里 entries 数组**根本没变**（delta 走的是 bufferRef + flush，
+ *     只改 reading 和单个 card 条目），
+ *     但容器仍会全量重渲染 → 长会话（几十个条目）明显卡顿。
+ *
+ * ⚠️ memo 生效的前提（已在 page.tsx 确认）：
+ *   ① 所有回调 props 都是 useCallback（引用稳定）
+ *   ② entries 只在真正变化时才换引用（setEntries 用函数式更新）
+ *   ③ streaming / waitingUser 是原始值（=== 比较有效）
+ *
+ * ⚠️ 为什么用 `memo(function ...)` 而不是 `React.memo`：
+ *   需要给组件加 displayName，devtools 里能看出是哪个组件。
+ */
+const DialogueFlow = memo(function DialogueFlow({
   entries,
   onAskAnswer,
   onCardAnswer,
@@ -716,7 +739,9 @@ export default function DialogueFlow({
       )}
     </div>
   );
-}
+});
+
+export default DialogueFlow;
 
 /* ---------------- 问题面板（承约/呼召/澄清/岔路，插入流中的待答条目） ---------------- */
 

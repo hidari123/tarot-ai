@@ -174,3 +174,124 @@ Vercel 作为"我知道它的边界在哪"的加分项。
 | SSE 中途断流 | 反向代理缓冲 | Nginx 加 `proxy_buffering off;` |
 | `SQLITE_BUSY` | 跨进程写冲突 | 已设 `busy_timeout=5000`；避免多副本共写同一卷 |
 | 镜像构建失败在 `npm ci` | 无 lockfile | `npm install` 生成 lockfile 后重试 |
+
+---
+
+## 6. 公网部署安全标准（P1-④）
+
+> 本章是 2026-11 公网化改造新增的。
+> 核心观点：这个应用处理的是**用户的私密心理内容**（占卜问题往往涉及感情/健康/财务），
+> 所以"能跑起来"和"跑起来不出事"是两件事。
+
+### 6.1 三条不可违反的约束
+
+这三条是**架构层面的限制**，不是配置项。违反任何一条都会导致真实故障。
+
+#### 约束①：必须单 worker 运行
+
+```bash
+node server.js          # ✅ 单进程
+# ⚠️ 不要用 --scale / deploy.replicas / 多进程启动
+```
+
+**为什么**：
+
+项目有**跨请求共享的内存状态**（会话表、SSE 事件缓冲、限流窗口、熔断器、RAG 缓存）。
+`globalThis` 只能解决 **HMR 热重载**丢失，**解决不了多进程** ——
+每个 worker 有独立的 JS realm，各自的 `globalThis` 也独立。
+
+| 状态 | 多 worker 的后果 |
+|---|---|
+| 会话表 | 用户 A 的追问被路由到 worker 2 → 查不到会话 → "会话已过期" |
+| SSE 事件缓冲 | 断点续传时后端**没有**那条事件的缓冲 → "无法恢复该会话的事件流" |
+| 限流窗口 | 每个 worker 各算各的 → 实际并发是 N 倍 → 上游 429 风暴 |
+| 熔断器 | worker 1 知道 provider 挂了，worker 2 不知道 → 继续打挂掉的 provider |
+
+**单 worker 的代价**：吞吐上限 = 1 个 Node 进程。对这个项目**可接受** ——
+占卜是长耗时的 AI 交互（单场实测 78.7 秒），瓶颈在 LLM 而不在 Node。
+
+**要多 worker 怎么办**：把热状态外置（Redis / PostgreSQL）。当前**没有做** ——
+所以必须单 worker。诚实地说明这一点，比假装能横向扩展更有说服力。
+
+#### 约束②：必须配置 `DASHBOARD_TOKEN`
+
+不配置时观测面板 **fail closed**（拒绝所有访问）——
+这是**刻意设计**：公网部署下"没配置就放开"是危险的默认值。
+
+#### 约束③：必须改掉 `USER_KEY_SALT`
+
+`USER_KEY_SALT` 是跨会话画像主键的盐。保持默认值的话，
+攻击者可以用"已知盐 + 猜测的 IP/UA"**离线枚举**出所有画像主键。
+
+### 6.2 安全能力凭证（不用用户体系）
+
+占卜产品的用户是**匿名的** —— 强制登录会把"打开网页就能占卜"这个核心体验毁掉。
+所以不用用户体系，而是用**能力凭证**：
+
+| 凭证 | 用途 | 强度 |
+|---|---|---|
+| `sessionId` | 会话控制（answer/interject） | **192bit 全随机**（原格式含时间戳可枚举，已改） |
+| `shareToken` | 分享链接（只读） | **128bit**，独立于 sessionId |
+| `DASHBOARD_TOKEN` | 观测面板 | 环境变量配置 |
+| 服务端派生的 `userKey` | 跨会话画像 | IP + UA + 盐 的 SHA-256 |
+
+**为什么分享要用独立令牌**：sessionId 是**控制凭证**（能替用户回答占卜师），
+分享出去等于把控制权也给出去了。独立的 shareToken 只能**读**，不能控制。
+
+### 6.3 公网安全清单
+
+- [ ] `DASHBOARD_TOKEN` 已设置且**不是默认值**
+- [ ] `USER_KEY_SALT` 已改成随机值
+- [ ] 服务以**单 worker** 运行
+- [ ] HTTPS 已启用（剪贴板 API 需要安全上下文）
+- [ ] `data/` 目录已持久化（不挂载 → 重启丢历史与统计）
+- [ ] 反向代理已关闭 `proxy_buffering`
+- [ ] `proxy_read_timeout` ≥ 300s（默认 60s < 实测 78.7s）
+- [ ] 未设置 `CORS_ORIGINS`（同源部署）或已设为**精确域名**（非 `*`）
+- [ ] `/api/dashboard` 无令牌访问返回 401
+- [ ] 响应带 CSP / `X-Frame-Options` / `nosniff`
+- [ ] `.env.local` **未**进版本库
+
+### 6.4 验证命令
+
+```bash
+# ① 面板必须 401
+curl -i http://localhost:3000/api/dashboard | head -1
+
+# ② 正确令牌必须 200
+curl -s -H "X-Access-Token: $DASHBOARD_TOKEN" http://localhost:3000/api/dashboard | head -c 80
+
+# ③ 安全头
+curl -I http://localhost:3000/ | grep -iE "content-security|x-frame|x-content-type"
+
+# ④ 分享接口无令牌必须拒绝
+curl -i "http://localhost:3000/api/share" | head -1
+```
+
+预期：① 401 ② 200 ③ 三行头齐全 ④ 400/404
+
+### 6.5 生成安全密钥
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+### 6.6 Nginx 的三个 SSE 坑
+
+1. **`proxy_buffering off`** —— 不关的话 Nginx 攒够一块才发，
+   用户看到"卡住 30 秒然后一次全出来"，流式体验完全消失。
+2. **`proxy_set_header Connection '';`** —— HTTP/1.1 下 `Connection: upgrade`
+   会让 Nginx 把请求当 WebSocket 处理。空值最稳。
+3. **`proxy_read_timeout 300s`** —— 默认 60s 会切断 78.7 秒的占卜。
+
+### 6.7 已知的架构限制（诚实清单）
+
+| 限制 | 影响 | 缓解 |
+|---|---|---|
+| 单 worker | 吞吐上限 1 进程 | 热状态外置到 Redis 后可横向扩展 |
+| SQLite 同步写 | 写入时阻塞事件循环 | 量大后换 PostgreSQL |
+| 会话在内存 | 重启丢失活跃会话 | 快照已落 DB，重启后可恢复大部分 |
+| 分享链接永久有效 | 拿到链接的人一直能看 | 可加有效期（尚未实现） |
+| 无用户体系 | 无法"找回我的历史" | 画像按 IP+UA 派生（换设备即新画像） |
+
+**这张表比"功能列表"更重要** —— 能讲清楚边界在哪里，比声称"什么都能做"可信得多。

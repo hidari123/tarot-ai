@@ -122,7 +122,10 @@ export function persistDirtySessions(): number {
 const gPersist = globalThis as unknown as { __tarotPersistTimer__?: NodeJS.Timeout };
 if (!gPersist.__tarotPersistTimer__) {
   gPersist.__tarotPersistTimer__ = setInterval(() => {
-    try { persistDirtySessions(); } catch { /* ignore */ }
+    // ⚠️ 这里**必须**捕获异常：setInterval 回调里抛出的异常会变成
+    //    uncaughtException → **整个进程崩溃**（不只是这次落盘失败）。
+    //    但不捕获也不行（不捕获 = 崩），所以捕获 + 留 debug 痕迹。
+    try { persistDirtySessions(); } catch (e) { console.debug("[session] 定时落盘失败:", e); }
   }, 10_000);
   gPersist.__tarotPersistTimer__.unref?.(); // 不阻塞进程退出
 }
@@ -135,7 +138,8 @@ export function cleanExpired(): void {
       // 逐出前落库收尾：开着页面不答/生成器泄漏的会话在 DB 里仍是 running，
       // 不收尾就成僵尸行（此前要等下次进程重启才被 reconcile 清掉）
       if (!s.finished) {
-        try { db.failSession(id, "ttl_expired"); } catch { /* ignore */ }
+        // ⚠️ 同上：定时器回调里不能抛异常
+        try { db.failSession(id, "ttl_expired"); } catch (e) { console.debug("[session] 逐出落库失败:", e); }
       }
       sessions.delete(id);
     }
@@ -147,7 +151,8 @@ const CLEAN_INTERVAL_MS = 5 * 60 * 1000;
 const gTimer = globalThis as unknown as { __tarotCleanTimer__?: NodeJS.Timeout };
 if (!gTimer.__tarotCleanTimer__) {
   gTimer.__tarotCleanTimer__ = setInterval(() => {
-    try { cleanExpired(); } catch { /* ignore */ }
+    // ⚠️ 定时器回调不能抛异常（会崩进程）
+    try { cleanExpired(); } catch (e) { console.debug("[session] 定时清理失败:", e); }
   }, CLEAN_INTERVAL_MS);
   gTimer.__tarotCleanTimer__.unref?.(); // 不阻塞进程退出
 }

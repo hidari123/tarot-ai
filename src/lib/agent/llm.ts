@@ -545,6 +545,28 @@ export async function acquireSlotForTest(
 /* 非流式调用                                                          */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 带 HTTP 状态码的 LLM 错误（P3-⑲）
+ *
+ * ⚠️ 为什么需要这个类（而不是在 message 里塞 "(429)" 然后正则匹配）：
+ *   调用方需要区分三种错误，处理方式**完全不同**：
+ *     · 429（限速）→ **不能原地重试**（上游窗口还是满的，必然再撞）
+ *                    → 交给上层 failover（备用 provider 有独立配额）
+ *     · 5xx / 网络错误 → 可以原地重试 1 次（瞬时抖动）
+ *     · 4xx（业务错误）→ 不重试，直接抛
+ *   用正则从 message 里抠状态码是**脆弱**的（上游错误文案可能变）。
+ */
+export class LLMHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: string,
+    providerName: string
+  ) {
+    super(`LLM 调用失败(${status}) [${providerName}]: ${body.slice(0, 200)}`);
+    this.name = "LLMHttpError";
+  }
+}
+
 /** 单次原始 HTTP 调用（不 failover；快速网络抖动在同 provider 重试 1 次） */
 async function rawCall(
   p: LLMProvider,
@@ -599,7 +621,7 @@ async function rawCall(
       // ⚠️ 429 → 自适应收紧速率（见 tightenOnRateLimit 的说明）：
       //    我们的初始额度是乐观估计，撞到 429 说明偏快 → 立刻变保守。
       if (res.status === 429) tightenOnRateLimit(p.name);
-      throw new Error(`LLM 调用失败(${res.status}): ${errText.slice(0, 200)}`);
+      throw new LLMHttpError(res.status, errText, p.name);
     }
     const json = await res.json();
     db.logLLMUsage(
@@ -631,11 +653,21 @@ async function rawCall(
   // 仍失败才交给上层 callLLM 走 failover 换 provider。
   // 例外：超时（abort）不原地重试 —— 首次已烧满 45s 预算，再等 45s 才切换
   // 体验太差，直接 failover；业务错误（4xx）不重试直接抛。
+  //
+  // ⚠️ P3-⑲：**429 也不原地重试**
+  //   审计实测：原来 429 走的是"原地重试一次"路径 ——
+  //   而 429 的含义是"上游窗口已满"，**立刻重试必然再撞 429**：
+  //     · 白等一次（还占着限流窗口的槽位）
+  //     · 且**绕过**了限流器的收紧逻辑（收紧是在收到 429 时做的，
+  //       但紧接着的重试又立刻打出去 → 收紧形同虚设）
+  //   正确处理：429 直接抛给上层 → failover 到备用 provider
+  //   （备用有**独立配额**）→ 主用等下一个窗口自然恢复。
   try {
     return await attempt();
   } catch (e) {
     const timedOut = e instanceof Error && /timeout|abort/i.test(e.message);
-    if (timedOut || !isFailoverError(e)) throw e;
+    const rateLimited = e instanceof LLMHttpError && e.status === 429;
+    if (timedOut || rateLimited || !isFailoverError(e)) throw e;
     return await attempt();
   }
 }
@@ -818,7 +850,8 @@ async function* tryStreamOnce(
     db.logLLMUsage(sessionId ?? null, agent, p.name, 0, 0, Date.now() - t0, false);
     // ⚠️ 429 → 自适应收紧（同非流式路径）
     if (res.status === 429) tightenOnRateLimit(p.name);
-    const err = new Error(`LLM 流式调用失败(${res.status}): ${errText.slice(0, 200)}`);
+    // ⚠️ P3-⑲：用带 status 的错误类型（上层要区分 429 不原地重试）
+    const err = new LLMHttpError(res.status, errText, p.name);
     onFail(err);
     if (isFailoverError(err, res.status)) { markFailed(p); breaker.recordFailure(p.name); }
     return "pre-output-fail";
@@ -828,6 +861,20 @@ async function* tryStreamOnce(
   const decoder = new TextDecoder();
   let buffer = "";
   let totalChars = 0;
+  /**
+   * P3-⑳：是否**产出过任何分片**（不只是"有内容"）
+   *
+   * ⚠️ 为什么不能用 totalChars 判"有没有输出"：
+   *   totalChars 只统计**过滤后**的正文长度。
+   *   如果模型的第一个分片只有 <think> 思考链（被过滤器剥离），
+   *   或者是一个空串 → totalChars 仍是 0，
+   *   但流**其实正常工作**（后续分片有正文）。
+   *   后果：流中断时被判成 "pre-output-fail"
+   *   → 触发 failover → **换 provider 重发**（重复内容 + 烧双份 token）。
+   *
+   *   正确判据：**是否收到过任何 data 分片**。
+   */
+  let sawChunk = false;
   const streamFilter = createStreamThinkFilter();
   const reasoningParts: string[] = [];
   /** 流式 usage（OpenAI 兼容协议：usage 在最后一个分片，需 stream_options.include_usage） */
@@ -851,9 +898,12 @@ async function* tryStreamOnce(
       chunk = await reader.read();
     } catch (e) {
       // 流中断：若已有输出则放弃（不切避免重复推送）；无输出则可重试
-      logUsage(totalChars === 0);
+      // ⚠️ P3-⑳：判据用 sawChunk（收到过任何分片），不是 totalChars
+      //    （空分片 / 纯 think 分片会让 totalChars 仍是 0，
+      //      但流其实正常工作 → 误判成"无输出" → failover 重发 → 重复内容）
+      logUsage(!sawChunk);
       onFail(e);
-      if (totalChars === 0 && isFailoverError(e)) { markFailed(p); breaker.recordFailure(p.name); }
+      if (!sawChunk && isFailoverError(e)) { markFailed(p); breaker.recordFailure(p.name); }
       // ⚠️ 中断但已有输出 = 内容被截断。
       // ⚠️ P3-⑩：这里的 `as "ok"` 是**类型断言**，它骗过了编译器 ——
       //    调用方收到的仍然是 "ok"，看不到"截断"这个事实。
@@ -861,8 +911,10 @@ async function* tryStreamOnce(
       //    → `pass: true` 落库 → **审校指标是伪影**（假绿灯）。
       //    修法：把 "truncated" 纳入返回类型（去掉断言），
       //    并让调用方显式处理（记录 + 不让截断内容拿 pass）。
-      if (totalChars > 0) {
-        console.error(`[llm] 流中断但已有 ${totalChars} 字输出（${agent}/${p.name}），内容可能截断`);
+      if (sawChunk) {
+        console.error(
+          `[llm] 流中断但已产出 ${totalChars} 字（${agent}/${p.name}），内容可能截断`
+        );
         return "truncated";
       }
       return "pre-output-fail";
@@ -884,6 +936,9 @@ async function* tryStreamOnce(
       }
       try {
         const json = JSON.parse(data);
+        // ⚠️ P3-⑳：收到过任何**有效 data 分片** → 标记"已产出"
+        //    （哪怕内容是空的 / 只有 reasoning —— 流已经正常工作）
+        sawChunk = true;
         // 流式 usage：仅在带 include_usage 的最后一个分片出现
         if (json.usage) {
           usageAvailable = true;

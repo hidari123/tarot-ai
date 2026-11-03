@@ -78,6 +78,22 @@ Supervisor（占卜师编排者，工具调用循环）
 - **并行择优（Hedged Request）**：主用疑似故障时双路竞速，谁先回用谁，落败方主动 abort；把主用挂掉时的 45~80 秒等待压缩到最快那路
 - **CI** `.github/workflows/ci.yml`：三阶段（静态门禁 → 功能验证 → 质量评估），快的先跑快速失败；失败时上传 DB 作为现场证据
 
+### 🔒 公网部署标准（2026-11）
+
+- **能力凭证鉴权**（不用用户体系 —— 强制登录会毁掉"打开网页就能占卜"的零摩擦体验）：
+  - `sessionId` = **192bit 全随机**（原格式含时间戳可枚举，已改）→ 它本身就是会话**控制凭证**
+  - `shareToken` = **128bit 独立令牌** → 分享出去的是**读权限**，不是控制权
+  - `DASHBOARD_TOKEN` → 观测面板鉴权，**未配置时 fail closed**（公网下"没配置就放开"是危险默认值）
+  - `userKey` **服务端派生**（IP+UA+盐 的 SHA-256）→ 客户端不能指定他人的画像主键
+- **六处泄露面已修**：面板公开 / 分享页可枚举 / userKey 可伪造 / 输入无上限 / health 泄露绝对路径 / 安全头只有一处有
+- **输入长度上限**：question 500 / followup 500 / answer 4000 / body 32KB —— 防单请求放大 token 成本
+- **全局安全头**（`next.config.ts` 的 `headers()`，框架级统一配置，含 HTML 页面）：CSP（生产去 `unsafe-eval`）/ `X-Frame-Options: DENY` / `nosniff` / `Referrer-Policy` / `Permissions-Policy`
+- **前端可取消 SSE**：`AbortController` 打通 → 后端的 `req.signal → client_disconnect → 停止烧 token` 从**死代码**变成真能触发（误点"重新开始"不再白烧 ¥0.22）
+- **断点续传真能触发**：原来 catch 块读的是 state 闭包（启动时刻的空串）→ 恢复分支**一次都进不去**；改用 ref 镜像后修复
+- **原子占用会话**：`tryAcquireSession` 把"检查 busy + 设置 busy"放进同一同步段 —— 原来中间有 await 间隙，两个并发追问会把会话历史搞坏（assistant→tool 配对错位）
+- **运行时状态收敛**：`src/lib/runtime.ts` 单一入口（8 处跨请求状态）—— HMR 重载不再清空限流窗口/熔断状态/SSE 序号/快照脏标记
+- **端到端流程测试** `scripts/verify-e2e-ritual.mjs`：真实跑完整场占卜（自动答 10 次 HITL），抓到了"刷新后正文变空"等静态检查抓不到的真 bug
+
 ### 🎨 交互体验
 
 - **占卜师人格**：月影占卜师（神秘优雅）/ 心灵疗愈师（温柔共情）/ 直断导师（犀利毒舌）/ **赛特行者**（古埃及赫尔墨斯传统）/ **凯尔特林语者**（自然与季节）五选一 —— 影响 system prompt 与审校标准
@@ -252,22 +268,25 @@ MCP 工具是**无状态**的（不暴露整场 HITL 仪式），
 | `src/lib/memory.ts` | 跨会话记忆：主题分类 + 画像摘要注入 + 90 天衰减 |
 | `src/lib/personas.ts` | 占卜师人格定义（5 种流派：月影/疗愈/直断/赛特/凯尔特） |
 | `src/lib/mcp-tools.ts` | MCP 工具实现（与 stdio 传输层解耦，可独立测试） |
-| `src/lib/db.ts` | SQLite 持久层（六张表 + 启动对账 + event_log + 单场成本聚合） |
-| `src/app/api/interpret/route.ts` | SSE 接口（abort 感知 + 断连标记 + 互斥 409 + **断点续传**） |
+| `src/lib/db.ts` | SQLite 持久层（七张表 + 启动对账 + event_log + 单场成本聚合 + `share_token`） |
+| `src/lib/api-auth.ts` | **公网鉴权与安全策略**：能力凭证（sessionId / shareToken / 面板 token）+ 服务端派生 userKey + 输入上限 + 安全头 |
+| `src/lib/runtime.ts` | **运行时状态单一入口**（`runtimeState(key, factory)`）—— 8 处跨请求状态挂 globalThis，避免 HMR 重载清空 |
+| `src/lib/agent/truncation.ts` | 输出截断标记（P3-⑩ 假绿灯修复）—— 截断的审校结论不计入通过率 |
+| `src/app/api/interpret/route.ts` | SSE 接口（abort 感知 + 断连标记 + 互斥 409 + **断点续传** + 原子占用会话） |
 | `src/app/api/answer/route.ts` | HITL 应答（唤醒挂起流） |
-| `src/app/api/share/route.ts` | 分享卡 HTML（可传播的 URL） |
-| `src/app/api/dashboard/events/route.ts` | 单会话事件时间轴（trace 视图数据源） |
+| `src/app/api/share/route.ts` | 分享卡 HTML（**shareToken 鉴权** —— 只能读不能控） |
+| `src/app/api/dashboard/events/route.ts` | 单会话事件时间轴（trace 视图数据源，**需令牌**） |
 | `src/app/api/session/[id]/route.ts` | 会话恢复端点（live 状态 / DB 回放 / 404） |
-| `src/app/dashboard/page.tsx` | 观测面板 UI（延迟瀑布 + 成本卡 + 异常分布 + Agent 明细） |
+| `src/app/dashboard/page.tsx` | 观测面板 UI（延迟瀑布 + 成本卡 + 异常分布 + Agent 明细 + **令牌输入**） |
 | `src/components/TraceTimeline.tsx` | 事件 Trace 时间轴（单场占卜的过程可见性） |
-| `src/components/DialogueFlow.tsx` | 统一对话流（承约/呼召/翻牌/解读/收束同区） |
+| `src/components/DialogueFlow.tsx` | 统一对话流（承约/呼召/翻牌/解读/收束同区，容器 memo 化） |
 | `src/components/CardFan.tsx` | 选牌扇面（记录顺序 + 犹豫时长） |
 | `src/components/SubAgentPipeline.tsx` | 子 Agent 生命周期可视化 |
 | `src/components/ReviewCard.tsx` | 审校报告卡片（三维度评分条） |
 | `src/components/AgentTrace.tsx` | 工具调用 Trace + 思考链 + 轮次时间轴 |
 | `src/components/KnowledgePanel.tsx` | RAG 命中可视化（分数条 + 引文联动高亮） |
 | `src/components/CitedReading.tsx` | 解读 [n] 引文角标（点击跳转知识面板） |
-| `src/components/ShareCard.tsx` | Canvas 分享卡合成（星空 + 牌面 + 摘要） |
+| `src/components/ShareCard.tsx` | Canvas 分享卡合成（星空 + 牌面 + 摘要）+ **分享令牌换取** |
 | `src/components/PwaRegister.tsx` | Service Worker 注册（生产环境） |
 | `scripts/mcp-server.mjs` | MCP Server（stdio，3 工具） |
 | `scripts/eval-agent.mjs` | Agent 评估套件（分层用例 + 失败分类 + CI 模式） |
@@ -276,8 +295,11 @@ MCP 工具是**无状态**的（不暴露整场 HITL 仪式），
 | `scripts/chaos-test.mjs` | 混沌测试（故障注入断言） |
 | `scripts/classify-errors.mjs` | 错误归因聚类 + 改进建议 |
 | `scripts/prefetch-model.mjs` | 构建期 ONNX 模型预取（Docker） |
+| `scripts/verify-e2e-ritual.mjs` | **端到端跑完整场占卜**（自动答 HITL，零误拦断言） |
+| `scripts/verify-api-auth.mjs` | 鉴权 + 安全头 + 输入截断（真实 HTTP 断言） |
 | `scripts/dev/` | 一次性诊断工具（无断言、用完即弃，与回归验证器分层） |
-| `docs/architecture.md` | **整体设计思路与实现解析**（含被实测否决的三个"优化"） |
+| `docs/architecture.md` | **整体设计思路与实现解析**（含被实测否决的四个"优化" + 公网化改造章） |
+| `docs/deployment.md` | 部署手册（本地 / Docker / **公网安全标准**） |
 | `Dockerfile` / `docker-compose.yml` | 多阶段构建 + 一键起服务 |
 
 ## 🎨 面试讲点
@@ -304,6 +326,19 @@ MCP 工具是**无状态**的（不暴露整场 HITL 仪式），
 | **限流语义必须与上游逐字一致** | 网关配额是「滚动 ~60 秒内最多 4 次」。第一版用令牌桶（"空闲攒额度"语义）—— 实测 30 秒内发了 8 次、第 9 次 429：**攒额度后连发 → 全落在同一窗口**。改成滑动窗口（记录窗口内时间戳）后全程零 429。**"差不多"的限流语义在这里是有害的** |
 | **令牌桶 vs 滑动窗口** | 已弃用令牌桶 —— 见上一条。滑动窗口 + 「窗口容量自适应收缩」（收到 429 → 容量 ×0.5 → 至少等一个窗口过期再试）比"固定间隔"和"令牌桶"都更贴合真实配额。配额探针 `scripts/probe-gateway-quota.mjs` 留档：配额是**环境相关**的，必须能随时实测 |
 | **实测否决三个优化** | ① RAG 并发（净省 3ms，`hybridSearch` 是同步 CPU 计算）② 字段权重进 RRF 融合（重复计数，实测负收益）③ supervisor 流式化（网关流式下不下发思考链，收益≈0）。**结论与数据都写进代码注释**，防止后人重复踩坑 |
+
+### 🔒 公网化相关的面试讲点（2026-11 新增）
+
+| 主题 | 要点 |
+|---|---|
+| **功能测试 ≠ 攻击面测试** | 第一轮的 34 条用例全绿，但面板公开返回全站用户心理内容、sessionId 含时间戳可枚举、userKey 可伪造、输入无上限。**"该做的做了"和"不该做的没做"是两套用例**，后者只能靠换视角（假设你是攻击者）想到 |
+| **能力凭证 vs 用户体系** | 占卜是"打开网页就能用"的产品，强制登录会毁掉零摩擦体验。用**能力凭证**代替身份认证：sessionId（192bit，控制权）/ shareToken（128bit，只读）/ 面板 token / 服务端派生的 userKey。**分享出去的是读权限，不是控制权** —— 这是最容易漏的一条 |
+| **fail closed 的默认值** | 面板 token 未配置时**拒绝访问**，而不是放开。公网部署下"没配置就放开"是危险的默认值。**安全功能的默认值应该偏严** |
+| **注释不是证据，代码才是** | 两次同一类的翻车：① 测试钩子用正确写法、生产实现没有（单测全绿线上失效）② `return "truncated" as "ok"` —— **类型断言骗过了编译器**，运行时行为完全没变，而注释里写着"调用方可见"。**绿色的测试和详尽的注释都不等于行为正确** |
+| **判据的时序要匹配守卫的时机** | 守卫扩到 8 个工具后暴露：`completedPhases` 把 synthesis 挂在 `finished`（会话结束）上，但 close_reading 需要 synthesis 已完成（早于结束）→ **守卫永远拦截 → 收束语永远不生成**。只有端到端跑完整流程才能发现 |
+| **检查与设置之间不能有 await** | 并发追问把会话历史搞坏（assistant→tool 配对错位）→ 该会话之后**所有**追问都失败。根因是 TOCTOU：路由层检查 busy 与 supervisor 设置 busy 之间有 await 间隙。修法不是加锁（Node 没有），而是把两件事放进**同一个同步段** |
+| **globalThis 解决什么、不解决什么** | 它解决 **HMR 热重载**清空限流窗口/熔断状态/SSE 序号；**解决不了多进程**（各 worker 有独立 realm）。所以本项目**必须单 worker 部署** —— 把限制写进部署文档，比含糊地说"我们用了单例所以线程安全"诚实得多 |
+| **端到端测试抓到的真 bug** | `verify-e2e-ritual.mjs` 真实跑完整场占卜（自动答 10 次 HITL），抓到"落库了但 `session.reading` 没赋值 → **用户刷新后正文变空**"。静态检查和单元测试都测不到"七步有序依赖"的中间态 |
 | **限流语义必须与上游逐字一致** | 第一版用令牌桶限流，实测每场占卜都撞 429。根因：上游是「滚动 60 秒内 4 次」，令牌桶是「空闲攒额度」—— 用户思考久了攒满令牌就连发，全落在同一窗口。改成滑动窗口后全程零 429。**教训：限流器的语义不能"差不多"，必须与上游一致**；且配额是环境相关的，必须能随时实测（探针脚本留档） |
 | **指标本身要验证** | 34 条用例曾"全军覆没"（通过率 2%）—— 真因是环境限流 + 降级被误算成质量缺陷。修正分类后真实通过率 99%，并暴露出真正的问题（审校维度 33%）。**指标不可信时，数字再好看都没意义** |
 | **限流治不好先查谁占资源** | 7 条僵尸会话占着网关 4 个并发槽位，最老的躺了 3 天。根因：`restoreSession` 把 `lastActive` 填成 `Date.now()` → 假心跳 → 永久保鲜。修完重启配额立即恢复 |
