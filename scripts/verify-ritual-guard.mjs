@@ -38,21 +38,35 @@ console.log("\n=== 最近 8 场会话的仪式覆盖 ===");
 const recent = db.prepare("SELECT id, question FROM sessions ORDER BY created_at DESC LIMIT 8").all();
 let full = 0;
 for (const s of recent) {
-  const ev = db.prepare(
-    "SELECT type FROM event_log WHERE session_id = ?"
-  ).all(s.id).map((e) => e.type);
+  // ⚠️ 必须取 payload_json —— 收束判定要看 ask_user 的 kind，
+  //    光看 type 列只能知道"发生过 ask_user"，分不清是承约还是收束。
+  const raw = db.prepare(
+    "SELECT type, payload_json FROM event_log WHERE session_id = ?"
+  ).all(s.id);
+  const ev = raw.map((e) => e.type);
   const has = (t) => ev.includes(t);
   const contract = has("contract");
   const invocation = has("invocation");
   const cards = has("cards");
   const reveal = ev.filter((t) => t === "card_reveal").length;
   const reading = ev.filter((t) => t === "card_reading").length;
-  const closing = has("ask_user") && ev.includes("ask_user");
-  const ok = contract && invocation && cards && reveal > 0 && reading > 0;
+  // ⚠️ 收束判定：必须看 ask_user 的 **kind === "closing"**，
+  //    不能只看"有没有 ask_user 事件"—— 承约/呼召/选牌/翻牌也都是 ask_user。
+  //    （此前写成 `has("ask_user") && ev.includes("ask_user")`，恒等于前者，
+  //      是无效判定 —— 这里一并修正。）
+  const closing = raw.some((e) => {
+    if (e.type !== "ask_user") return false;
+    try {
+      return JSON.parse(e.payload_json)?.ask?.kind === "closing";
+    } catch {
+      return false;
+    }
+  });
+  const ok = contract && invocation && cards && reveal > 0 && reading > 0 && closing;
   if (ok) full++;
   console.log(
     `  ${ok ? "✅" : "⚠️"} 承约${contract ? "✓" : "✗"} 呼召${invocation ? "✓" : "✗"} ` +
-    `抽牌${cards ? "✓" : "✗"} 翻${reveal} 讲${reading} | ${s.question.slice(0, 22)}`
+    `抽牌${cards ? "✓" : "✗"} 翻${reveal} 讲${reading} 收束${closing ? "✓" : "✗"} | ${s.question.slice(0, 22)}`
   );
 }
 console.log(`\n完整仪式率: ${full}/${recent.length}`);

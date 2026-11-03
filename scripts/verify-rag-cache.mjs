@@ -4,9 +4,13 @@
  *
  * 判定：同一个查询连续检索两次，第二次应命中缓存（显著更快）。
  * 同时验证缓存不改变检索结果（正确性）。
+ *
+ * ⚠️ 注意：本脚本**直接 import 模块**（不走 HTTP）——
+ *    缓存是模块内的进程级 Map，跨请求才生效；
+ *    若通过 HTTP 验证，缓存行为会受 dev server 热重载影响，不可靠。
  */
-const BASE = process.argv[2] || "http://localhost:3000";
 
+// 加载本地模块（不经过 HTTP —— 见上方说明）
 async function loadRag() {
   return await import("../src/lib/rag-engine.ts");
 }
@@ -51,11 +55,10 @@ for (const q of queries) {
   // 第一次（冷）
   const t0 = Date.now();
   let hits = readCache(key);
-  let cached = false;
   if (!hits) {
     hits = await rag.hybridSearch(rewritten, k);
     writeCache(key, hits);
-  } else cached = true;
+  }
   const cold = Date.now() - t0;
 
   // 第二次（应命中）

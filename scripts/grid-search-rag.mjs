@@ -70,10 +70,14 @@ console.log("== 当前配置（字段权重进融合 = ON）==");
 console.log(`  裸:   Recall@5 ${(nowRaw.recall * 100).toFixed(1)}%  MRR ${nowRaw.mrr.toFixed(3)}  零命中 ${nowRaw.zeroHit}`);
 console.log(`  改写: Recall@5 ${(nowRewritten.recall * 100).toFixed(1)}%  MRR ${nowRewritten.mrr.toFixed(3)}  零命中 ${nowRewritten.zeroHit}`);
 
-// 对照：临时关掉字段权重（改 FIELD_WEIGHT_FUSION 环境变量）
-process.env.RAG_FIELD_FUSION = "off";
-const { fuseAndDedup: _fd, ...rest } = rag; // 模块已加载，环境变量改动不会重载 —— 直接在脚本内模拟
-// ⚠️ 模块是单例，改环境变量不生效。改为：直接读两组数据对比（当前 ON 的结果 vs git 基线）
+// ⚠️ 为什么是这个写法（而不是"改配置跑两遍对比"）：
+//   rag-engine 是**单例模块**（import 后缓存），运行期改环境变量不会重新加载 ——
+//   想真正对比"字段权重进融合 ON/OFF"必须能切分实现，成本远大于收益。
+//   所以这里的定位是「**记录一次实验**」，不是「可复现的 A/B 框架」：
+//   ON 的实现已被实测否决并回退（结论写在 rag-engine.ts 的 fuseAndDedup 注释里），
+//   本脚本保留下来是为了让结论**可复现核对** —— 跑一遍看看当前实现的数字
+//   是否仍与当初的基线一致（基线硬编码在下方）。
+//   若要做真正的 A/B，应给 fuseAndDedup 加一个显式参数（而非环境变量）。
 console.log("\n== 结论依据 ==");
 console.log("基线（字段权重不进融合，git 提交 fc41951 前）：");
 console.log("  裸:   Recall@5 44.6%  MRR 0.556  零命中 14");

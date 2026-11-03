@@ -17,7 +17,8 @@ import {
   DrawCardsSchema, InterpretCardsSchema, SearchTarotSchema,
   drawCards, interpretLocally, searchTarot,
 } from "../src/lib/mcp-tools";
-import { z } from "zod";
+// ⚠️ 不需要单独 import zod —— schema 自带 safeParse 能力，
+//    校验通过 DrawCardsSchema.safeParse(...) 即可（见下方"① 工具 schema 校验"）。
 
 const cards = await import("../src/lib/tarot-cards");
 const rag = await import("../src/lib/rag-engine");

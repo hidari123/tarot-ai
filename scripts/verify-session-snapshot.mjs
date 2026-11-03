@@ -90,7 +90,9 @@ const ok = snap.question === "测试快照功能"
 console.log(`\n${ok ? "✅ 快照内容完整" : "❌ 快照内容缺失"}`);
 
 console.log("\n=== ③ 模拟进程重启：清内存 + 从快照恢复 ===\n");
-const { getSession, restoreSession, snapshotSession } = await import("../src/lib/agent/session.ts");
+// 只解构用得到的 restoreSession —— getSession / snapshotSession 在此用不到
+// （快照是上面直接从 DB 读出来的，不走 snapshotSession 生成）
+const { restoreSession } = await import("../src/lib/agent/session.ts");
 // 恢复（restoreSession 会写入内存 Map）
 const restored = restoreSession(snap);
 if (!restored) { console.log("❌ 恢复失败"); process.exit(2); }
