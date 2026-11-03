@@ -42,3 +42,20 @@ next-env.d.ts
 
 # tarot data (sqlite + embedding cache)
 /data
+
+# ---- 本项目补充 ----
+
+# 提交信息临时文件（写 commit message 时用，避免反复改 -m 的引号转义问题）
+# ⚠️ 曾经的教训：这个文件被误提交进仓库，且多次出现在 git status 里。
+#    统一改用 scripts/commit-msg.ps1 或 git commit -F 生成的文件（放在 .git 内）。
+/commit-msg-tmp.txt
+/commit-msg-*.txt
+
+# 本地开发用的临时产物（诊断脚本输出、评估报告等）
+/tmp/
+*.log
+scripts/dev/.out/
+
+# 模型缓存（Docker 构建时会重新预取，不入仓库）
+/.model-cache
+/.cache

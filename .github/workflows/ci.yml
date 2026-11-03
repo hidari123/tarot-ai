@@ -1,0 +1,177 @@
+# CI —— 持续集成
+#
+# 设计取舍（面试可讲）：
+#   这个项目的核心风险不是"代码写错"，而是**"看起来对、实际坏"**：
+#     - HITL 闸门抢跑 → 每场占卜撞满 8 分钟超时（功能全废但编译通过）
+#     - SSE 加了 id: 字段 → 11 个客户端解析器整帧跳过（测试全红）
+#     - 模型跳过仪式 → 32/34 条用例断言失败（质量指标失真）
+#   这三类问题 **tsc 和 eslint 都发现不了**，只有真正跑一遍才暴露。
+#   所以 CI 的重心放在「跑起来验证」，而不是「静态检查」。
+#
+# 三个阶段（快的先跑，快速失败）：
+#   ① 静态门禁：typecheck + lint + build（~2 分钟，无需 LLM）
+#   ② 静态验证：SSE 协议/防剧透/翻牌闸门/混沌测试（~1 分钟，无需 LLM）
+#   ③ 动态评估：RAG 召回 + Agent 仪式（需 LLM key，配额受限时用 --only 子集）
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# 并发取消：同一分支的新 push 自动取消旧 run（省 CI 配额）
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # ⚠️ CI 里不需要真实 LLM —— 静态验证全部用固定样本
+  #    动态评估阶段需要 key，见下方 secrets 配置
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  # ────────────────────────────────────────────────────────────
+  # ① 静态门禁：类型 / lint / 构建
+  # ────────────────────────────────────────────────────────────
+  static:
+    name: 静态门禁 (typecheck + lint + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # better-sqlite3 是原生模块：预编译二进制在多数平台可用，
+      # 不可用时 node-gyp 需要 python3 + build-essential
+      - name: 准备原生模块编译环境
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 build-essential
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: 生产构建
+        run: npm run build
+
+  # ────────────────────────────────────────────────────────────
+  # ② 静态验证：不需要 LLM 的功能回归
+  # ────────────────────────────────────────────────────────────
+  verify:
+    name: 功能验证 (SSE/防剧透/翻牌闸门/混沌)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: static
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      - name: 准备原生模块编译环境
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 build-essential
+
+      # ⚠️ 混沌测试要打真实端点 → 必须先起服务
+      - name: 启动生产服务
+        run: |
+          npm run build
+          npm run start &
+          npx wait-on http://localhost:3000/api/health --timeout 120000
+
+      # 前端结构 + 防剧透 + 翻牌闸门（静态源码级断言）
+      - name: 前端结构与防剧透
+        run: node scripts/verify-flip-frontend.mjs http://localhost:3000
+
+      # 翻牌闸门（真实端点：点牌 → 409 抢跑 → 重试 → 成功）
+      - name: 翻牌闸门竞态
+        run: node scripts/verify-flip-gate.mjs http://localhost:3000
+
+      # 混沌测试：畸形 body / 并发互斥 / 不存在会话
+      - name: 混沌测试
+        run: node scripts/chaos-test.mjs
+
+      # 断点续传：断开 → Last-Event-ID 补发 → seq 连续无重复
+      - name: SSE 断点续传
+        run: node scripts/verify-resume.mjs http://localhost:3000
+
+      - name: 上传失败日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: |
+            data/*.db
+            .next/**/*.log
+          retention-days: 3
+
+  # ────────────────────────────────────────────────────────────
+  # ③ 动态评估：需要 LLM key
+  #    配额受限时（实测网关约 4 次/80s 窗口）用 --only 子集
+  # ────────────────────────────────────────────────────────────
+  eval:
+    name: 质量评估 (RAG 召回 + Agent 仪式)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: static
+    # ⚠️ 没有 key 就跳过 —— 不让 CI 变成红灯
+    #    （公开仓库场景；内部项目应改成必需）
+    if: ${{ secrets.LLM_API_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      - name: 准备原生模块编译环境
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 build-essential
+
+      # RAG 召回：纯本地计算，不需要 LLM —— 但需要向量模型（首次会下载）
+      - name: RAG 召回率（裸检索）
+        run: node scripts/eval-rag.mjs
+
+      - name: RAG 召回率（含查询改写 = 生产路径）
+        run: node scripts/eval-rag.mjs --rewrite
+
+      - name: 启动生产服务
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.LLM_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          OPENAI_MODEL: ${{ secrets.LLM_MODEL }}
+        run: |
+          npm run build
+          npm run start &
+          npx wait-on http://localhost:3000/api/health --timeout 120000
+
+      # Agent 仪式评估：子集（配额受限）
+      - name: Agent 仪式评估（子集）
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.LLM_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          OPENAI_MODEL: ${{ secrets.LLM_MODEL }}
+        run: >
+          node scripts/eval-agent.mjs http://localhost:3000
+          --only=love-vague,work-specific,money,study-exam,human-boss

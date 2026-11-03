@@ -26,6 +26,16 @@ const eslintConfig = defineConfig([
       "@typescript-eslint/no-unused-vars": "warn",
     },
   },
+  // ⚠️ scripts/dev/ 是**一次性诊断工具**（见 scripts/dev/README.md）：
+  //    这些脚本常刻意解构用不到的字段（只看其中一两个），
+  //    例如 `const { getSession, snapshotSession } = await import(...)` 只用后者。
+  //    对它们关闭 unused-vars —— 这不是"代码质量问题"，是脚本形态使然。
+  {
+    files: ["scripts/dev/**/*.{cjs,mjs,js}"],
+    rules: {
+      "@typescript-eslint/no-unused-vars": "off",
+    },
+  },
 ]);
 
 export default eslintConfig;
