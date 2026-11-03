@@ -2,6 +2,9 @@
 
 > 倾听星辰的低语，窥探命运的轨迹 —— 一个 **多 Agent 协作 + 混合 RAG + 人机协同（HITL）+ Reflexion 反思重写 + SSE 流式** 的 AI 塔罗占卜应用。
 
+📖 **完整设计思路与实现解析 → [`docs/architecture.md`](docs/architecture.md)**
+（含每个模块"为什么这么写"、一次真实排查的完整链条、以及**被实测否决的三个"优化"**）
+
 ## ✨ 特性
 
 ### 🧠 多 Agent 架构（Supervisor 编排）
@@ -64,16 +67,23 @@ Supervisor（占卜师编排者，工具调用循环）
 - **投机预检索**：用户答"翻下一张"的瞬间提前触发下一张牌的检索（fire-and-forget），省 1-3s 等待
 - **PWA**：`manifest.json` + Service Worker（静态资源 SWR / 导航 network-first / **API 与 SSE 永不缓存**）+ 生成式图标，可安装到桌面
 - **Docker 化**：多阶段构建（deps → builder → runner），`output: standalone`，非 root 运行，ONNX 模型构建期预取，**构建期数据不入镜像层**
-- **Agent 评估套件** `scripts/eval-agent.mjs`：固定题集自动 E2E，9 维度断言 + 失败分类（环境阻塞/超时/断言失败），`--ci` 模式环境阻塞不阻塞 CI
-- **MCP Server** `mcp-server/`：把 4 个塔罗工具封装为 Model Context Protocol 服务
+- **Agent 评估套件** `scripts/eval-agent.mjs`：34 条**分层**题集（主题 × 问法 × 长度）自动 E2E，多维度断言 + 失败分类（环境阻塞/超时/断言失败），`--ci` 模式环境阻塞不阻塞 CI
+- **MCP Server** `scripts/mcp-server.mjs`：把 3 个塔罗能力封装为 Model Context Protocol 服务（`draw_cards` / `interpret_cards` / `search_tarot`），任何 MCP 客户端（Claude Desktop / Cursor）都能直接调用占卜能力
 - **多模型 Failover**：glm-5.3 主 + MiniMax-M3 备（`PRIMARY_PROVIDER` 可指定主模型），网络错误/超时/5xx 自动切换（粘性记忆 + 会话风格一致 + 流式首包安全切换），启动探活预标记不可达节点
 - **降级策略**（每层都不删）：LLM 全挂 → 本地剧本引擎；向量模型不可用 → 特征哈希向量；全失败 → 纯 BM25
+- **仪式状态机** `src/lib/agent/ritual-machine.ts`：把"仪式进度"从散落的 if 判断收敛成**显式转移表**（承约→呼召→选牌→逐张→综合→收束），守卫统一入口 + 可执行的修复提示；**核心不变量在后端强制，不靠 prompt 约束**
+- **SSE 断点续传**：每个事件带 SSE 标准 `id: <seq>`，客户端断线后用 `Last-Event-ID` 请求补发缺失事件（内存 ring buffer，实测无缝衔接/无缺口/无重复）
+- **事件日志 + Trace 时间轴**：`event_log` 表记录结构事件，`/api/dashboard/events` 提供单会话逐条时间轴 —— "这场占卜卡在哪一步"一眼可见
+- **令牌桶限速**：按「每分钟 N 次 + 突发次数」表达上游配额（比固定间隔更贴近突发语义），空闲能攒额度、持续高频被均摊；**限速等待对用户可见**（区分"模型慢"与"主动限速"）
+- **并行择优（Hedged Request）**：主用疑似故障时双路竞速，谁先回用谁，落败方主动 abort；把主用挂掉时的 45~80 秒等待压缩到最快那路
+- **CI** `.github/workflows/ci.yml`：三阶段（静态门禁 → 功能验证 → 质量评估），快的先跑快速失败；失败时上传 DB 作为现场证据
 
 ### 🎨 交互体验
 
-- **占卜师人格**：月影占卜师（神秘优雅）/ 心灵疗愈师（温柔共情）/ 直断导师（犀利毒舌）三选一，影响 system prompt 与审校标准
+- **占卜师人格**：月影占卜师（神秘优雅）/ 心灵疗愈师（温柔共情）/ 直断导师（犀利毒舌）/ **赛特行者**（古埃及赫尔墨斯传统）/ **凯尔特林语者**（自然与季节）五选一 —— 影响 system prompt 与审校标准
 - **可点击引文**：解读文本中的 `[n]` 角标可点击，联动跳转 RAG 知识面板对应命中并高亮；引文越界（可能幻觉）显示为红色禁用态
 - **分享卡生成**：Canvas 本地合成 1080×1620 竖版 PNG（星空背景 + 牌面正/逆位 + 问题摘要 + 结论 + 落款），一键下载，无服务端参与
+- **分享链接**：服务端渲染的可分享 HTML 卡（一个 URL 即可转发，带**完整解读**而非摘要），与 PNG 分享互补
 - **星尘光标**：淡紫白发光灵球 + canvas 粒子拖尾，悬停可交互元素时放大
 - **3D 卡牌翻转**：CSS `preserve-3d` + `backface-visibility`，GPU 合成层
 - **语音输入**：Web Speech API 浏览器原生
@@ -82,30 +92,43 @@ Supervisor（占卜师编排者，工具调用循环）
 
 ```
 ┌─────────────── 前端 (React 19 + Tailwind 4 + Framer Motion) ───────────────┐
-│  人格选择 → 问题输入(语音) → HITL 交互(问答/选牌扇面/岔路) → 3D 翻牌      │
-│  → Agent 状态条+等待提示 → 子 Agent 流水线 → Trace+轮次时间轴              │
-│  → RAG 知识面板(引文联动) → 审校报告 → 流式解读(可点击引文) → 追问/分享卡 │
-└──────────────────────────┬────────────────────────────────────────────────┘
-                           │ SSE fetch + /api/answer (HITL)
-┌──────────────────────────▼────────────────────────────────────────────────┐
-│  /api/interpret POST  Supervisor 循环 → SSE 事件流（13 类事件）           │
-│  /api/answer   POST  HITL 应答（resolve 挂起的 Promise）                  │
-│  /api/personas GET   占卜师人格列表                                        │
-│  /api/dashboard GET  观测数据                                              │
-│                                                                            │
-│  Agent 引擎 (src/lib/tarot-agent.ts · ~1400 行)                            │
-│    while (round < 12): supervisor 决策(tools) → 执行工具 → 回填 → 继续      │
-│      ├ ask_user / offer_card_selection / fate_crossroads → await 应答     │
-│      ├ 历史压缩(最近4轮完整) + RAG 回填瘦身 → token 受控                   │
-│      ├ 看门狗 deadline + 客户端断连标记 → 会话状态必收敛                   │
-│      └ write_reading → 子 Agent 管线:                                       │
-│          analyst(≤250字) → writer(流式) → reviewer(鲁棒解析+复检)           │
-│            └ 不过 → revision → writer 重写 → reviewer 复检                  │
-│                                                                            │
-│  RAG (src/lib/rag-engine.ts + vector-engine.ts)                            │
-│    312 chunks → BM25 ‖ vector(ONNX|hash) → RRF(k=60) → 每牌去重 → top-k  │
-│                                                                            │
-│  持久化 (src/lib/db.ts)  SQLite: sessions / tool_calls / llm_usage         │
+│  人格选择 → 问题输入(语音) → 仪式流程 → 3D 翻牌 → 流式解读              │
+│  → 引文联动 → 审校报告 → 分享(PNG / 链接) → 追问                        │
+│  + Agent 状态条（区分"模型慢"与"主动限速"）                            │
+│  + 牌阵面板（对话流 + 顶部时间线同一份状态）                            │
+│  + 知识面板（引文角标点击联动）                                          │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │ SSE (fetch 流, 带 id: seq) + POST /api/answer
+┌────────────────────────────────▼────────────────────────────────────────┐
+│ API 层                                                                   │
+│  /api/interpret POST   发起占卜，返回 SSE 流（支持 Last-Event-ID 续传）   │
+│  /api/answer   POST    唤醒挂起的 HITL（resolve Promise）                 │
+│  /api/share   GET     分享卡 HTML（可传播的 URL）                         │
+│  /api/dashboard GET    聚合观测数据（60s 缓存）                           │
+│  /api/dashboard/events GET  单会话事件时间轴                             │
+│  /api/session/[id] GET 会话状态（刷新恢复 / 追问）                       │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+┌────────────────────────────────▼────────────────────────────────────────┐
+│ Agent 引擎  src/lib/agent/  （tarot-agent.ts 是薄壳 re-export）            │
+│                                                                         │
+│  supervisor.ts   编排中枢（ReAct 循环 + 仪式守卫 + 阶段推进）             │
+│    ├ ritual-machine.ts  仪式状态机（转移表 + 守卫 + 阶段推导）            │
+│    ├ hitl.ts            HITL 等待（唯一阻塞点 + 分级提醒）               │
+│    ├ llm.ts             LLM 调用（failover/熔断/限速/并行择优）           │
+│    ├ subagents.ts       analyst → writer → reviewer（Reflexion）         │
+│    ├ tools/rag.ts       检索执行 + 跨会话缓存 + 投机预检索               │
+│    ├ tools/cards.ts     抽牌 + 扇面生成                                  │
+│    ├ event-log.ts       事件序号 + ring buffer（断点续传）               │
+│    ├ session.ts         会话生命周期 + 快照/恢复 + 启动对账                │
+│    ├ fallback.ts        本地剧本引擎（降级也走完整仪式）                   │
+│    └ helpers.ts         情绪提取/上下文压缩/牌槽/提示构建                 │
+│                                                                         │
+│  llm-providers.ts  provider 管理 + 熔断器 + 并行择优竞速                 │
+│  rag-engine.ts     BM25 ‖ vector(ONNX|hash) → RRF(k=20) → 查询改写        │
+│  vector-engine.ts  ONNX embedding（降级：特征哈希 → 无）                 │
+│  db.ts             SQLite 持久层（六张表 + 事件日志 + 成本聚合）           │
+└────────────────────────────────────────────────────────────────────────────┘
 │    + 启动对账(僵尸会话收敛) + error_reason + prompt_version                 │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -201,31 +224,42 @@ node scripts/debug-ritual.mjs http://localhost:3000 "你的问题"   # 全流程
   "mcpServers": {
     "mystic-tarot": {
       "command": "node",
-      "args": ["/path/to/tarot-ai/mcp-server/index.mjs"]
+      "args": ["tsx", "/path/to/tarot-ai/scripts/mcp-server.mjs"]
     }
   }
 }
 ```
 
-提供 4 个工具：`tarot_draw_cards` / `tarot_search` / `tarot_card_meaning` / `tarot_interpret`
+提供 3 个工具：`draw_cards`（抽牌）/ `interpret_cards`（解读）/ `search_tarot`（典籍检索）
+
+⚠️ 与 Web 前端的关系是**互补**而非替代：
+MCP 工具是**无状态**的（不暴露整场 HITL 仪式），
+让外部 AI 助手能调用"抽牌/解读/检索"这三个原子能力；
+仪式仍由 Web 前端的完整流程承载。
 
 ## 📁 关键文件
 
 | 文件 | 说明 |
 |---|---|
-| `src/lib/tarot-agent.ts` | 多 Agent 引擎：Supervisor 循环 + 三子 Agent 管线 + HITL + 轮次事件 + 看门狗 + Plan-Execute |
-| `src/lib/llm-providers.ts` | 多模型 failover：健康记忆 + 粘性切换 + 启动探活 |
+| `src/lib/agent/` | **Agent 引擎（拆包后）**：`supervisor.ts` 编排中枢 · `ritual-machine.ts` 仪式状态机 · `hitl.ts` HITL 等待 · `llm.ts` LLM 调用 · `subagents.ts` 三子 Agent · `tools/` 工具执行 · `event-log.ts` 事件日志 · `session.ts` 会话生命周期 · `fallback.ts` 降级引擎 · `helpers.ts` 辅助函数 |
+| `src/lib/tarot-agent.ts` | Agent 引擎的薄壳（`export * from "./agent"`，保持旧 import 路径可用） |
+| `src/lib/llm-providers.ts` | 多模型 failover：健康记忆 + 粘性切换 + 启动探活 + **并行择优竞速** |
 | `src/lib/robust-json.ts` | 三层 LLM JSON 解析器（parse → 配平提取 → 字段正则） |
 | `src/lib/prompts.ts` | 全部 system prompts 集中管理（PROMPT_VERSION 版本化） |
-| `src/lib/rag-engine.ts` | BM25 + RRF 融合 + 知识分块 + 引用组装 |
+| `src/lib/rag-engine.ts` | BM25 + 向量 + RRF 融合 + 查询改写 + 跨会话缓存 |
 | `src/lib/vector-engine.ts` | 向量检索：ONNX 模型 + 特征哈希降级（`MODEL_CACHE_DIR` 可配） |
 | `src/lib/query-rewrite.ts` | 查询改写：主题词典补牌名候选（Recall 44.6% → 82.2%） |
 | `src/lib/memory.ts` | 跨会话记忆：主题分类 + 画像摘要注入 + 90 天衰减 |
-| `src/lib/db.ts` | SQLite 持久层（五张表 + 对账 + error_reason + 耗时聚合 + 成本估算） |
-| `src/app/api/interpret/route.ts` | SSE 接口（abort 感知 + 断连标记 + 互斥 409） |
+| `src/lib/personas.ts` | 占卜师人格定义（5 种流派：月影/疗愈/直断/赛特/凯尔特） |
+| `src/lib/mcp-tools.ts` | MCP 工具实现（与 stdio 传输层解耦，可独立测试） |
+| `src/lib/db.ts` | SQLite 持久层（六张表 + 启动对账 + event_log + 单场成本聚合） |
+| `src/app/api/interpret/route.ts` | SSE 接口（abort 感知 + 断连标记 + 互斥 409 + **断点续传**） |
 | `src/app/api/answer/route.ts` | HITL 应答（唤醒挂起流） |
+| `src/app/api/share/route.ts` | 分享卡 HTML（可传播的 URL） |
+| `src/app/api/dashboard/events/route.ts` | 单会话事件时间轴（trace 视图数据源） |
 | `src/app/api/session/[id]/route.ts` | 会话恢复端点（live 状态 / DB 回放 / 404） |
 | `src/app/dashboard/page.tsx` | 观测面板 UI（延迟瀑布 + 成本卡 + 异常分布 + Agent 明细） |
+| `src/components/TraceTimeline.tsx` | 事件 Trace 时间轴（单场占卜的过程可见性） |
 | `src/components/DialogueFlow.tsx` | 统一对话流（承约/呼召/翻牌/解读/收束同区） |
 | `src/components/CardFan.tsx` | 选牌扇面（记录顺序 + 犹豫时长） |
 | `src/components/SubAgentPipeline.tsx` | 子 Agent 生命周期可视化 |
@@ -235,13 +269,15 @@ node scripts/debug-ritual.mjs http://localhost:3000 "你的问题"   # 全流程
 | `src/components/CitedReading.tsx` | 解读 [n] 引文角标（点击跳转知识面板） |
 | `src/components/ShareCard.tsx` | Canvas 分享卡合成（星空 + 牌面 + 摘要） |
 | `src/components/PwaRegister.tsx` | Service Worker 注册（生产环境） |
-| `mcp-server/index.mjs` | MCP Server（stdio，4 工具） |
-| `scripts/eval-agent.mjs` | Agent 评估套件（9 维度断言 + 失败分类 + CI 模式） |
+| `scripts/mcp-server.mjs` | MCP Server（stdio，3 工具） |
+| `scripts/eval-agent.mjs` | Agent 评估套件（分层用例 + 失败分类 + CI 模式） |
 | `scripts/eval-rag.mjs` | 检索评估（Recall@5 / MRR / NDCG@5） |
 | `scripts/rag-golden-set.json` | 51 条标注检索评估集 |
 | `scripts/chaos-test.mjs` | 混沌测试（故障注入断言） |
 | `scripts/classify-errors.mjs` | 错误归因聚类 + 改进建议 |
 | `scripts/prefetch-model.mjs` | 构建期 ONNX 模型预取（Docker） |
+| `scripts/dev/` | 一次性诊断工具（无断言、用完即弃，与回归验证器分层） |
+| `docs/architecture.md` | **整体设计思路与实现解析**（含被实测否决的三个"优化"） |
 | `Dockerfile` / `docker-compose.yml` | 多阶段构建 + 一键起服务 |
 
 ## 🎨 面试讲点
@@ -262,7 +298,14 @@ node scripts/debug-ritual.mjs http://localhost:3000 "你的问题"   # 全流程
 | **鲁棒解析** | LLM 输出的 JSON 不可信（33% 解析失败率实测）。三层解析（parse → 括号配平+归一化 → 字段正则）+ 一次纠偏重试；仍失败则显式"审校未完成"而非伪造"通过"——裁判环节绝不造假 |
 | **Token 治理** | 上下文随轮数线性膨胀（1357→2873 tokens）。历史压缩（最近 4 轮完整，早期工具结果一行摘要）+ RAG 回填瘦身（top-3 紧凑格式，省 30-40%）；给 LLM 的与给用户的信息不对称分流 |
 | **轮次时间轴** | 每轮 SSE `round` 事件（耗时/tokens/工具名），前端条形图可视化。>15s 标黄——把"Agent 慢"从体感变成可定位的数据 |
-| **MCP 协议** | 把内部工具封装为标准 MCP 服务，让 Claude/Cursor 等外部客户端复用同一套塔罗能力 |
+| **MCP 协议** | 把内部工具封装为标准 MCP 服务，让 Claude/Cursor 等外部客户端复用同一套塔罗能力。**工具实现与传输层解耦**（`mcp-tools.ts` vs `mcp-server.mjs`）→ 可独立测试，不用起 stdio 进程 |
+| **仪式状态机** | 核心不变量（承约→呼召→选牌→逐张→综合→收束）**在后端强制**，不靠 prompt。实测 glm-5.3 在 prompt 明确禁止时仍有 32/34 条用例跳过承约 —— prompt 是软约束，代码才是硬约束。守卫不只返回 false，还给**可执行的修复提示**（只说"不行"模型会死循环） |
+| **限流保护的三层** | ① 熔断器（事后跳过坏 provider）② 令牌桶（事前控制节奏）③ 并行择优（主用坏了双路竞速）。**熔断解决"provider 坏了"，限流解决"请求太密"** —— 两回事 |
+| **令牌桶 vs 固定间隔** | 网关配额是「窗口内 N 次」的突发语义，固定间隔只能表达稳态速率。令牌桶能同时表达突发容量与稳态速率：空闲攒额度、持续高频被均摊。**预定时刻写回**（而非实际发出时刻）—— 否则并发调用会同时放行、瞬间打满窗口 |
+| **实测否决三个优化** | ① RAG 并发（净省 3ms，`hybridSearch` 是同步 CPU 计算）② 字段权重进 RRF 融合（重复计数，实测负收益）③ supervisor 流式化（网关流式下不下发思考链，收益≈0）。**结论与数据都写进代码注释**，防止后人重复踩坑 |
+| **指标本身要验证** | 34 条用例曾"全军覆没"（通过率 2%）—— 真因是环境限流 + 降级被误算成质量缺陷。修正分类后真实通过率 99%，并暴露出真正的问题（审校维度 33%）。**指标不可信时，数字再好看都没意义** |
+| **限流治不好先查谁占资源** | 7 条僵尸会话占着网关 4 个并发槽位，最老的躺了 3 天。根因：`restoreSession` 把 `lastActive` 填成 `Date.now()` → 假心跳 → 永久保鲜。修完重启配额立即恢复 |
+| **降级也要像样** | 本地剧本引擎产出**与主路径同构**的事件序列（承约/呼召/逐张翻牌讲牌/收束一个不少）。不只是"能跑"，还得"跑得像样" —— 用户看不到模型时，仪式感仍在 |
 | **检索可量化** | 51 条标注 golden set + Recall@5/MRR/NDCG 评估。改写优化把 Recall 从 **44.6% 拉到 82.2%**（零命中 14→0）——"感觉变好"变成可复现的数字 |
 | **跨会话记忆** | user_profiles 表存主题/情绪轨迹，90 天衰减；承约阶段注入 ≤120 字画像。占卜师从"每次都当陌生人"变成"认识你" |
 | **Plan-Execute** | `AGENT_MODE=plan` 让 supervisor 先出 5-8 步仪轨计划再执行，注入系统提示当决策地图。**关键是失败静默降级 ReAct**——自主性增强不能以牺牲可用性为代价 |
