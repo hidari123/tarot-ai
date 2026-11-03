@@ -66,6 +66,21 @@ jobs:
       - name: 生产构建
         run: npm run build
 
+      # ⚠️ 离线验证（不需要服务、不需要 LLM）
+      #    这些是**纯逻辑**断言：状态机转移表、限流器语义、守卫表覆盖率、
+      #    降级路径同构、SSE 取消通道、断点续传触发条件。
+      #    它们抓的是"看起来对、实际坏"的那类 bug（tsc 和 eslint 都发现不了）。
+      - name: 离线验证套件
+        run: |
+          npx tsx scripts/verify-ritual-machine.mjs
+          npx tsx scripts/verify-hitl-nudge.mjs
+          npx tsx scripts/verify-rate-limiter.mjs
+          npx tsx scripts/verify-rate-concurrency.mjs
+          npx tsx scripts/verify-fallback-parity.mjs
+          npx tsx scripts/verify-phase-guard.mjs
+          npx tsx scripts/verify-sse-cancel.mjs
+          npx tsx scripts/verify-resume-trigger.mjs
+
   # ────────────────────────────────────────────────────────────
   # ② 静态验证：不需要 LLM 的功能回归
   # ────────────────────────────────────────────────────────────
@@ -111,6 +126,19 @@ jobs:
       # 断点续传：断开 → Last-Event-ID 补发 → seq 连续无重复
       - name: SSE 断点续传
         run: node scripts/verify-resume.mjs http://localhost:3000
+
+      # ⚠️ 公网鉴权（P1-④）：面板必须 401 / 正确令牌 200 / 安全头齐全 / 输入截断
+      #    需要 DASHBOARD_TOKEN —— CI 里用一个**固定的测试令牌**（不是真密钥）
+      #    ⚠️ 顺序：必须先写 .env.local（脚本从那里读令牌），再跑测试
+      - name: 提供测试令牌
+        run: |
+          printf 'DASHBOARD_TOKEN=ci-test-token\n' > .env.local
+          printf 'USER_KEY_SALT=ci-test-salt\n' >> .env.local
+
+      - name: API 鉴权与安全头
+        env:
+          DASHBOARD_TOKEN: ci-test-token
+        run: node scripts/verify-api-auth.mjs http://localhost:3000
 
       - name: 上传失败日志
         if: failure()
