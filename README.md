@@ -91,7 +91,7 @@ Supervisor（占卜师编排者，工具调用循环）
 - **前端可取消 SSE**：`AbortController` 打通 → 后端的 `req.signal → client_disconnect → 停止烧 token` 从**死代码**变成真能触发（误点"重新开始"不再白烧 ¥0.22）
 - **断点续传真能触发**：原来 catch 块读的是 state 闭包（启动时刻的空串）→ 恢复分支**一次都进不去**；改用 ref 镜像后修复
 - **原子占用会话**：`tryAcquireSession` 把"检查 busy + 设置 busy"放进同一同步段 —— 原来中间有 await 间隙，两个并发追问会把会话历史搞坏（assistant→tool 配对错位）
-- **运行时状态收敛**：`src/lib/runtime.ts` 单一入口（8 处跨请求状态）—— HMR 重载不再清空限流窗口/熔断状态/SSE 序号/快照脏标记
+- **运行时状态收敛**：`src/lib/runtime.ts` 单一入口（**13 处**跨请求状态：限流桶 / 熔断器 / provider 健康度 / 会话表 / 快照脏标记 / SSE 事件缓冲 / RAG 缓存与 DF 表 / 向量索引 / 面板缓存 / 截断标记）—— HMR 重载不再清空它们；`scripts/verify-runtime-state.mjs` 静态扫描保证不会有新的模块级状态漏网
 - **端到端流程测试** `scripts/verify-e2e-ritual.mjs`：真实跑完整场占卜（自动答 10 次 HITL），抓到了"刷新后正文变空"等静态检查抓不到的真 bug
 
 ### 🎨 交互体验

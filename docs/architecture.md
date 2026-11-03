@@ -1121,6 +1121,26 @@ Next dev 的 HMR 会重新求值模块 → 模块级变量被重置：
 **用工厂函数而不是直接赋值** —— 直接赋值在模块重复求值时会**覆盖**已有状态，
 恰好是要避免的问题。
 
+**最终收敛了 13 处状态**（`scripts/verify-runtime-state.mjs` 静态扫描保证不会有漏网的）：
+
+| 命名空间 | 状态 | HMR 重置的后果 |
+|---|---|---|
+| `llm.buckets` | 限流窗口 | 清空 → 立刻连发 → 429 |
+| `llm.rateStates` | 429 收紧系数 | 丢失 → 收紧失效 |
+| `llm.breaker` | 熔断器 | 丢失 → 已知坏 provider 又被调用 |
+| `llm.truncatedSessions` | 截断标记 | 丢失 → 截断场次被算作"通过" |
+| `providers.health` | provider 健康记忆 | 丢失 → 每次重载重吃超时 |
+| `session.sessions` | 会话表 | 丢失 → 用户会话凭空消失 |
+| `session.dirty` | 快照脏标记 | 丢失 → 会话永远不被落快照 |
+| `eventLog.buffers` | SSE 事件缓冲 | 丢失 → seq 归零 → 断点续传语义失效 |
+| `rag.cache` / `rag.cacheCounters` | 检索缓存与计数 | 丢失 → 命中率统计归零 |
+| `rag.df` | BM25 文档频率表 | 丢失 → 每次重载重算全表 |
+| `vector.state` | 向量索引 + **并发构建防护** | 丢失 → **重复跑全量 ONNX 推理** |
+| `db.dashboardCache` | 面板统计缓存 | 丢失 → 重载后第一个请求又跑全表聚合 |
+
+**判据：模块重算后行为是否改变** —— 不改变的是**常量**（如 `PERSIST_TYPES`、
+`NOISY_TYPES`、初始化用的临时 `seen`），不需要收敛；改变的是**状态**，必须收敛。
+
 **必须诚实说明的边界**：
 
 > `globalThis` **只能解决 HMR 热重载**，**解决不了多进程**。

@@ -120,6 +120,13 @@ export function clearBuffer(sessionId: string): void {
  *    全落库会让 event_log 变成第二个 reading 表（冗余且量大）。
  *    落"结构性事件"就够画时间线了。
  */
+/**
+ * 需要落库的事件类型
+ *
+ * ⚠️ P1-⑥：这里**故意不**收敛到 globalThis ——
+ *   它是**常量配置**（模块重算后行为不变），不是"跨请求的运行时状态"。
+ *   判据：**模块重算后行为是否改变** —— 不改变 → 是常量，不需要收敛。
+ */
 const PERSIST_TYPES = new Set([
   "session", "phase", "tool", "cards", "ask_user", "subagent",
   "review", "card_reveal", "card_reading", "card_flip_ready",

@@ -60,7 +60,14 @@ function extractKeywords(normal: string, reversed: string): string[] {
   return Array.from(new Set(all)).slice(0, 6);
 }
 
-/** 解析并去重（tarot-lab 的 World 有重复条目） */
+/**
+ * 解析并去重（tarot-lab 的 World 有重复条目）
+ *
+ * ⚠️ P1-⑥：这里**故意不**收敛到 globalThis ——
+ *   它是**模块初始化时的一次性临时集合**（构建完就不再变化），
+ *   不是"跨请求的运行时状态"。收敛没有收益，反而让"什么是状态"变得模糊。
+ *   判据：**模块重算后行为是否改变** —— 不改变 → 是常量，不需要收敛。
+ */
 const seen = new Set<string>();
 export const TAROT_CARDS: TarotCard[] = (rawCards as Array<{
   name: string; description: string; normal: string; reversed: string; detail: string; link: string;

@@ -12,6 +12,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { runtimeState } from "./runtime";
 
 const DATA_DIR = join(process.cwd(), "data");
 mkdirSync(DATA_DIR, { recursive: true });
@@ -469,16 +470,30 @@ export interface DashboardStats {
   };
 }
 
-/** 面板统计缓存：9 条全表聚合没必要每个 GET 都跑（60s 内存缓存） */
-let dashboardCache: { at: number; data: DashboardStats } | null = null;
+/**
+ * 面板统计缓存：9 条全表聚合没必要每个 GET 都跑（60s 内存缓存）
+ *
+ * ⚠️ P1-⑥：挂到 globalThis（runtimeState）——
+ *    原来这里是模块级变量，HMR 重载会清空缓存 → 重载后第一个请求
+ *    又要跑一遍全表聚合（better-sqlite3 是同步的 → 阻塞事件循环）。
+ *
+ * ⚠️ 用一层容器（{ cache }）而不是直接持有 cache 引用：
+ *    runtimeState 返回的是 **const 绑定**，不能重新赋值；
+ *    但**属性**可以改 —— `state.cache = {...}`。
+ */
+const dashboardState = runtimeState<{ cache: { at: number; data: DashboardStats } | null }>(
+  "db.dashboardCache",
+  () => ({ cache: null })
+);
 const DASHBOARD_CACHE_MS = 60_000;
 
 export function getDashboardStats(): DashboardStats {
-  if (dashboardCache && Date.now() - dashboardCache.at < DASHBOARD_CACHE_MS) {
-    return dashboardCache.data;
+  const c = dashboardState.cache;
+  if (c && Date.now() - c.at < DASHBOARD_CACHE_MS) {
+    return c.data;
   }
   const data = computeDashboardStats();
-  dashboardCache = { at: Date.now(), data };
+  dashboardState.cache = { at: Date.now(), data };
   return data;
 }
 

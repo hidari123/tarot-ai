@@ -13,6 +13,7 @@
 
 import { TAROT_CARDS, type TarotCard } from "./tarot-cards";
 import { vectorSearch } from "./vector-engine";
+import { runtimeState } from "./runtime";
 
 /* ------------------------------------------------------------------ */
 /* 知识分块                                                             */
@@ -90,12 +91,27 @@ export const KNOWLEDGE_CHUNKS: KnowledgeChunk[] = TAROT_CARDS.flatMap((card) => 
 const K1 = 1.5;
 const B = 0.75;
 
-/** 各 token 的文档频率 DF（出现该 token 的 chunk 数） */
-const DF = new Map<string, number>();
-for (const chunk of KNOWLEDGE_CHUNKS) {
-  const seen = new Set(chunk.tokens);
-  for (const t of seen) DF.set(t, (DF.get(t) ?? 0) + 1);
-}
+/**
+ * 各 token 的文档频率 DF（出现该 token 的 chunk 数）
+ *
+ * ⚠️ P1-⑥：挂到 globalThis（runtimeState）
+ *   原来这里是模块级 Map + 模块顶层的 for 循环初始化。
+ *   HMR 重载会重新求值模块 → **整个 DF 表重新构建**（遍历全部知识块）
+ *   → 每次热重载都白算一遍（不致命，但属于同一类"状态没收敛"）。
+ *   收敛后：DF 只算一次，跨热重载存活。
+ *
+ * ⚠️ 用工厂函数而不是直接赋值：
+ *   直接 `runtimeState(...)` 的返回值在模块重复求值时会被**覆盖** ——
+ *   恰好是要避免的问题（DF 会被清空重建）。
+ */
+const DF = runtimeState<Map<string, number>>("rag.df", () => {
+  const df = new Map<string, number>();
+  for (const chunk of KNOWLEDGE_CHUNKS) {
+    const seen = new Set(chunk.tokens);
+    for (const t of seen) df.set(t, (df.get(t) ?? 0) + 1);
+  }
+  return df;
+});
 
 const N = KNOWLEDGE_CHUNKS.length;
 const AVG_LEN = KNOWLEDGE_CHUNKS.reduce((s, c) => s + c.tokens.length, 0) / N;

@@ -10,6 +10,7 @@
  */
 
 import { KNOWLEDGE_CHUNKS, type ChunkField } from "./rag-engine";
+import { runtimeState } from "./runtime";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -88,22 +89,50 @@ function cosine(a: Float32Array, b: Float32Array): number {
 /* 向量索引（transformers.js 优先，哈希 fallback）                       */
 /* ------------------------------------------------------------------ */
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let pipeline: any = null;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let embedMatrix: any = null;
-let embedMode: "model" | "hash" | "off" = "off";
-let embedDim = 0;
-let building = false;
-/** 模型加载失败标记：失败一次后本进程不再尝试（避免每次检索都卡在下载上） */
-let modelLoadFailed = false;
+/**
+ * 向量引擎的运行时状态（P1-⑥：状态收敛）
+ *
+ * ⚠️ 为什么必须是 globalThis（原来这里是模块级 `let`）：
+ *   Next dev 的 HMR 会重新求值模块 → 这些状态被重置：
+ *     · `state.building`（并发构建防护）→ **重置成 false**
+ *       而上一次构建的 async 任务还在跑 → 重载后的新代码会**再构建一次**
+ *       → 重复跑 ONNX 推理 + 重复写缓存文件（可能写坏）
+ *     · `state.embedMatrix`（已构建的索引）→ 重置成 null
+ *       → 每次热重载后首次检索都要**重建整个索引**（这就是"改一行代码后
+ *         第一次检索要等好几秒"的原因）
+ *     · `state.modelLoadFailed` → 失败标记丢失 → 每次重载都重试下载
+ *
+ * ⚠️ 用一个 state 对象而不是 5 个独立变量：
+ *   保证它们**一起**被复用（HMR 时不会只重置一半）。
+ */
+interface VectorState {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pipeline: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  embedMatrix: any;
+  embedMode: "model" | "hash" | "off";
+  embedDim: number;
+  /** 并发构建防护：正在构建时后续调用直接返回 false，不重复构建 */
+  building: boolean;
+  /** 模型加载失败标记：失败一次后本进程不再尝试（避免每次检索都卡在下载上） */
+  modelLoadFailed: boolean;
+}
+
+const state = runtimeState<VectorState>("vector.state", () => ({
+  pipeline: null,
+  embedMatrix: null,
+  embedMode: "off",
+  embedDim: 0,
+  building: false,
+  modelLoadFailed: false,
+}));
 
 /** 模型加载/嵌入的硬超时（transformers.js 内部 fetch 无超时，会无限挂起） */
 const MODEL_TIMEOUT_MS = Number(process.env.MODEL_TIMEOUT_MS) || 60_000;
 
 async function getPipeline() {
-  if (pipeline) return pipeline;
-  if (modelLoadFailed) throw new Error("模型加载此前已失败，本进程降级哈希向量");
+  if (state.pipeline) return state.pipeline;
+  if (state.modelLoadFailed) throw new Error("模型加载此前已失败，本进程降级哈希向量");
   const { pipeline: createPipeline, env } = await import("@huggingface/transformers");
   env.cacheDir = CACHE_DIR;
   // 本地模型目录（models--org--name/snapshots/main 与 org/name 两种结构都放一份）
@@ -138,11 +167,11 @@ async function getPipeline() {
     modelTimer = setTimeout(() => reject(new Error(`模型加载超时(${MODEL_TIMEOUT_MS}ms)，降级哈希向量`)), MODEL_TIMEOUT_MS);
   });
   try {
-    pipeline = await Promise.race([createPipeline("feature-extraction", MODEL_ID, { dtype: "q8" }), modelTimeout]);
+    state.pipeline = await Promise.race([createPipeline("feature-extraction", MODEL_ID, { dtype: "q8" }), modelTimeout]);
   } finally {
     clearTimeout(modelTimer);
   }
-  return pipeline;
+  return state.pipeline;
 }
 
 /** transformers.js 向量化（均值池化 + L2 归一化），全程带超时保护 */
@@ -172,7 +201,7 @@ async function modelEmbed(texts: string[]): Promise<Float32Array[] | null> {
       clearTimeout(embedTimer);
     }
   } catch {
-    modelLoadFailed = true; // 失败标记：本进程后续直接走哈希
+    state.modelLoadFailed = true; // 失败标记：本进程后续直接走哈希
     return null;
   }
 }
@@ -186,10 +215,10 @@ function chunkText(cardNameZh: string, field: ChunkField, text: string): string 
 /** 惰性构建索引：transformers 模型优先，失败降级哈希向量 */
 async function ensureIndex(): Promise<boolean> {
   if (VECTOR_MODE === "off") return false;
-  if (embedMatrix) return true;
-  if (building) return false;
+  if (state.embedMatrix) return true;
+  if (state.building) return false;
 
-  building = true;
+  state.building = true;
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
     const texts = KNOWLEDGE_CHUNKS.map((c) => chunkText(c.cardNameZh, c.field, c.text));
@@ -204,43 +233,43 @@ async function ensureIndex(): Promise<boolean> {
           if (meta.count === KNOWLEDGE_CHUNKS.length && meta.model === MODEL_ID && meta.mode === "model") {
             const buf = readFileSync(cacheFile);
             const f32 = new Float32Array(buf.buffer, 0, buf.length / 4);
-            embedDim = meta.dim;
-            embedMatrix = [];
+            state.embedDim = meta.dim;
+            state.embedMatrix = [];
             for (let i = 0; i < meta.count; i++) {
-              embedMatrix.push(f32.slice(i * embedDim, (i + 1) * embedDim));
+              state.embedMatrix.push(f32.slice(i * state.embedDim, (i + 1) * state.embedDim));
             }
-            embedMode = "model";
-            building = false;
+            state.embedMode = "model";
+            state.building = false;
             return true;
           }
         }
       } catch { /* 缓存损坏 → 重建 */ }
       const vecs = await modelEmbed(texts);
       if (vecs) {
-        embedDim = vecs[0].length;
-        embedMatrix = vecs;
-        embedMode = "model";
+        state.embedDim = vecs[0].length;
+        state.embedMatrix = vecs;
+        state.embedMode = "model";
         // 持久缓存
         try {
-          const flat = new Float32Array(vecs.length * embedDim);
-          vecs.forEach((v, i) => flat.set(v, i * embedDim));
+          const flat = new Float32Array(vecs.length * state.embedDim);
+          vecs.forEach((v, i) => flat.set(v, i * state.embedDim));
           writeFileSync(cacheFile, Buffer.from(flat.buffer));
-          writeFileSync(metaFile, JSON.stringify({ count: vecs.length, dim: embedDim, model: MODEL_ID, mode: "model" }));
+          writeFileSync(metaFile, JSON.stringify({ count: vecs.length, dim: state.embedDim, model: MODEL_ID, mode: "model" }));
         } catch { /* 缓存写失败不阻断 */ }
-        building = false;
+        state.building = false;
         return true;
       }
     }
 
     // ---- 哈希向量 fallback（零依赖，永不失败） ----
     const vecs = texts.map((t) => hashEmbed(t));
-    embedDim = HASH_DIM;
-    embedMatrix = vecs;
-    embedMode = "hash";
-    building = false;
+    state.embedDim = HASH_DIM;
+    state.embedMatrix = vecs;
+    state.embedMode = "hash";
+    state.building = false;
     return true;
   } catch {
-    building = false;
+    state.building = false;
     return false;
   }
 }
@@ -248,11 +277,11 @@ async function ensureIndex(): Promise<boolean> {
 /** 向量语义检索 top-k */
 export async function vectorSearch(query: string, topK = 5): Promise<VectorHit[]> {
   const ok = await ensureIndex();
-  if (!ok || !embedMatrix) return [];
+  if (!ok || !state.embedMatrix) return [];
 
   try {
     let qVec: Float32Array;
-    if (embedMode === "model") {
+    if (state.embedMode === "model") {
       const vecs = await modelEmbed([query]);
       if (!vecs) return [];
       qVec = vecs[0];
@@ -262,19 +291,19 @@ export async function vectorSearch(query: string, topK = 5): Promise<VectorHit[]
 
     const scored = KNOWLEDGE_CHUNKS.map((chunk, i) => ({
       chunk,
-      score: cosine(qVec, embedMatrix[i]),
+      score: cosine(qVec, state.embedMatrix[i]),
     }))
       // ⚠️ 阈值按模式分开校准：
       //  - hash 模式余弦分布高而密（n-gram 重叠普遍），0.05 只滤纯噪声
       //  - model 模式（all-MiniLM 系）：中文-中文余弦普遍 0.2~0.4，
       //    0.25 会把整通道滤空（"混合检索"退化为 BM25+exact）→ 放宽到 0.15
-      .filter((s) => s.score > (embedMode === "hash" ? 0.05 : 0.15))
+      .filter((s) => s.score > (state.embedMode === "hash" ? 0.05 : 0.15))
       .sort((a, b) => b.score - a.score);
 
     // 兜底：阈值过滤后一条不剩时，取原始 top 分数 ≥0.10 的前 3 条
     // （向量通道不至于整场缺席，RRF 融合仍有第三路信号）
     if (scored.length === 0) {
-      const fallback = KNOWLEDGE_CHUNKS.map((chunk, i) => ({ chunk, score: cosine(qVec, embedMatrix[i]) }))
+      const fallback = KNOWLEDGE_CHUNKS.map((chunk, i) => ({ chunk, score: cosine(qVec, state.embedMatrix[i]) }))
         .filter((s) => s.score > 0.1)
         .sort((a, b) => b.score - a.score)
         .slice(0, 3);
@@ -314,7 +343,7 @@ export async function warmupVectorIndex(): Promise<void> {
  * （走 BM25/哈希降级），但向量通道未就绪需要被观测到。
  */
 export function vectorStatus(): {
-  mode: "model" | "hash" | "off" | "building";
+  mode: "model" | "hash" | "off" | "state.building";
   ready: boolean;
   dim: number;
   chunks: number;
@@ -322,9 +351,9 @@ export function vectorStatus(): {
   modelId: string;
 } {
   return {
-    mode: building && !embedMatrix ? "building" : embedMode,
-    ready: !!embedMatrix,
-    dim: embedDim,
+    mode: state.building && !state.embedMatrix ? "state.building" : state.embedMode,
+    ready: !!state.embedMatrix,
+    dim: state.embedDim,
     chunks: KNOWLEDGE_CHUNKS.length,
     cacheDir: CACHE_DIR,
     modelId: MODEL_ID,
