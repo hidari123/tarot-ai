@@ -193,6 +193,13 @@ const buckets = new Map<string, Bucket>();
  *      模型慢   → "模型仍在思考"
  *      主动限速 → "为避免触发服务端限流，正在控制请求节奏"
  *    onWait(waitMs) 回调让调用方把这个信息透出。
+ *
+ * ⚠️ 自适应收紧（收到 429 后）：
+ *    令牌桶的初始额度是**乐观估计**（burst=4），
+ *    但上游网关的真实窗口可能更严 —— 实测就是如此：
+ *    桶里有 4 个额度 → 前 4 次请求立刻发出 → 全部撞 429。
+ *    所以收到 429 时必须**立刻收紧**：清空桶 + 降低补充速率。
+ *    这是标准的自适应限流（AIMD：加性增、乘性减）。
  */
 async function acquireSlot(
   providerName: string,
@@ -200,7 +207,10 @@ async function acquireSlot(
 ): Promise<void> {
   if (!RATE_ENABLED || RATE_PER_MIN <= 0) return;
 
-  const refillPerMs = RATE_PER_MIN / 60_000;
+  // ⚠️ 用 effectivePerMin（受自适应系数影响）而非固定的 RATE_PER_MIN ——
+  //    撞过 429 之后会自动变保守。
+  const perMin = effectivePerMin();
+  const refillPerMs = perMin / 60_000;
   const now = Date.now();
 
   let bucket = buckets.get(providerName);
@@ -229,18 +239,88 @@ async function acquireSlot(
   await new Promise((r) => setTimeout(r, waitMs));
 }
 
+/**
+ * 收到 429 后的**自适应收紧**（AIMD：乘性减）
+ *
+ * ⚠️ 为什么需要（实测踩到的坑）：
+ *   令牌桶的初始额度 burst=4 是**乐观估计**，
+ *   但上游网关的真实窗口可能更严（实测：桶里有 4 个额度时，
+ *   前 4 个请求立刻发出 → 全部撞 429）。
+ *   也就是说：**乐观的初始额度 = 一开局就撞墙**。
+ *
+ *   收到 429 说明我们的估计偏乐观 → 立刻：
+ *     ① 清空桶（不立刻再发）
+ *     ② 降低补充速率（下次更保守）
+ *   连续收到 429 会持续降低，直到找到能通过的速率。
+ *   （AIMD 的 "Multiplicative Decrease"：越撞越保守）
+ *
+ * ⚠️ 下限为什么是 0.5 而不是更低：
+ *   收紧是为了**避开限流窗口**，不是为了把服务拖死。
+ *   一场完整占卜要打 ~14 次调用 —— 速率降到 1 次/分意味着 14 分钟，
+ *   会撞上 12 分钟的看门狗 deadline。
+ *   所以下限设在"仍能跑完一场占卜"的量级（0.5× → 1.5 次/分 → ~9 分钟）。
+ *   真要更保守，应该调小 LLM_RATE_PER_MIN 本身（显式配置，而非自动降级）。
+ *
+ * ⚠️ 为什么不做成"永久收紧"：
+ *   上游配额可能恢复（换了 key、窗口变了）。
+ *   所以设一个下限，并且**随时间缓慢回升** ——
+ *   由"每次请求时按流逝时间补一点速率"实现（见 effectivePerMin）。
+ */
+let rateScale = 1; // 全局速率系数（1 = 初始速率，越小越保守）
+
+/** 速率系数随时间缓慢回升（每秒 +1%） */
+const SCALE_RECOVERY_PER_SEC = 0.01;
+/** 下限：0.5× ≈ 1.5 次/分 → 一场占卜 ~9 分钟，仍在 12min deadline 内 */
+const SCALE_MIN = 0.5;
+let lastScaleAdjust = Date.now();
+
+/** 当前生效的每分钟请求数（受自适应系数影响） */
+function effectivePerMin(): number {
+  // 缓慢回升
+  const now = Date.now();
+  const elapsedSec = (now - lastScaleAdjust) / 1000;
+  if (elapsedSec > 0 && rateScale < 1) {
+    rateScale = Math.min(1, rateScale + elapsedSec * SCALE_RECOVERY_PER_SEC);
+    lastScaleAdjust = now;
+  }
+  return Math.max(1, RATE_PER_MIN * rateScale);
+}
+
+/** 收到 429 → 收紧速率 */
+export function tightenOnRateLimit(): void {
+  const before = rateScale;
+  rateScale = Math.max(SCALE_MIN, rateScale * 0.5);
+  lastScaleAdjust = Date.now();
+  // 清空桶：不立刻再发
+  for (const b of buckets.values()) {
+    b.tokens = 0;
+  }
+  console.error(
+    `[llm-rate] 收到 429，速率收紧 ${before.toFixed(2)}× → ${rateScale.toFixed(2)}×` +
+    `（${Math.max(1, Math.round(RATE_PER_MIN * rateScale))} 次/分）`
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* 测试钩子（让验证脚本与实现同源，避免"复制算法"的漂移风险）            */
 /* ------------------------------------------------------------------ */
-
-/** 当前速率限制配置（只读快照） */
-export function rateConfig(): { enabled: boolean; perMin: number; burst: number } {
-  return { enabled: RATE_ENABLED, perMin: RATE_PER_MIN, burst: RATE_BURST };
+/** 当前生效的每分钟请求数（受自适应系数影响） */
+export function rateConfig(): {
+  enabled: boolean; perMin: number; burst: number; scale: number; effectivePerMin: number;
+} {  return {
+    enabled: RATE_ENABLED, perMin: RATE_PER_MIN, burst: RATE_BURST,
+    scale: rateScale,
+    // ⚠️ 不取整 —— 取整会让"显示的速率"与"实际等待时间"不一致
+    //    （比如真实是 1.5 次/分，显示成 2 次/分 → 断言与实际行为脱节）
+    effectivePerMin: Math.round(effectivePerMin() * 100) / 100,
+  };
 }
 
-/** 清空所有令牌桶（测试隔离用） */
+/** 清空所有令牌桶 + 重置自适应系数（测试隔离用） */
 export function resetBucketsForTest(): void {
   buckets.clear();
+  rateScale = 1;
+  lastScaleAdjust = Date.now();
 }
 
 /**
@@ -328,6 +408,9 @@ async function rawCall(
       const errText = await res.text().catch(() => res.statusText);
       db.logLLMUsage(sessionId ?? null, agent, p.name, 0, 0, Date.now() - t0, false);
       if (sessionId) db.logTiming(sessionId, `llm_${agent}`, Date.now() - t0, `${p.name} fail`);
+      // ⚠️ 429 → 自适应收紧速率（见 tightenOnRateLimit 的说明）：
+      //    我们的初始额度是乐观估计，撞到 429 说明偏快 → 立刻变保守。
+      if (res.status === 429) tightenOnRateLimit();
       throw new Error(`LLM 调用失败(${res.status}): ${errText.slice(0, 200)}`);
     }
     const json = await res.json();
@@ -520,6 +603,8 @@ async function* tryStreamOnce(
   if (!res.ok || !res.body) {
     const errText = await res.text().catch(() => res.statusText);
     db.logLLMUsage(sessionId ?? null, agent, p.name, 0, 0, Date.now() - t0, false);
+    // ⚠️ 429 → 自适应收紧（同非流式路径）
+    if (res.status === 429) tightenOnRateLimit();
     const err = new Error(`LLM 流式调用失败(${res.status}): ${errText.slice(0, 200)}`);
     onFail(err);
     if (isFailoverError(err, res.status)) { markFailed(p); breaker.recordFailure(p.name); }

@@ -22,7 +22,7 @@
  */
 
 import {
-  acquireSlotForTest, resetBucketsForTest, rateConfig,
+  acquireSlotForTest, resetBucketsForTest, rateConfig, tightenOnRateLimit,
 } from "../src/lib/agent/llm.ts";
 
 const cfg = rateConfig();
@@ -111,6 +111,68 @@ const check = (label, ok, detail = "") => {
     "不同 provider 互不干扰（各自独立配额）",
     !blocked.granted && other.granted,
     `p5 阻塞=${!blocked.granted} · p6 放行=${other.granted}`
+  );
+}
+
+/* ---- ⑥ 自适应收紧（收到 429 后）---- */
+{
+  resetBucketsForTest();
+  const before = rateConfig();
+
+  // 先用掉额度
+  for (let i = 0; i < before.burst; i++) await acquireSlotForTest("p1", 0);
+
+  // 收到 429 → 收紧
+  tightenOnRateLimit();
+  const after = rateConfig();
+
+  check(
+    "429 后速率系数下降（乘性减）",
+    after.scale < before.scale,
+    `${before.scale.toFixed(2)}× → ${after.scale.toFixed(2)}×`
+  );
+  check(
+    "429 后实际每分钟请求数下降",
+    after.effectivePerMin < before.effectivePerMin,
+    `${before.effectivePerMin} → ${after.effectivePerMin} 次/分`
+  );
+
+  // 桶被清空：不立刻再发
+  const afterReset = await acquireSlotForTest("p1", 0);
+  check(
+    "429 后桶被清空（不立刻再发）",
+    !afterReset.granted,
+    afterReset.granted ? "竟然立即放行了" : `需等 ${afterReset.waitMs}ms`
+  );
+
+  // 连续 429 → 继续收紧，但有下限
+  for (let i = 0; i < 10; i++) tightenOnRateLimit();
+  const floor = rateConfig();
+  check(
+    "连续 429 不会降到下限以下",
+    floor.scale >= 0.5,
+    `scale=${floor.scale.toFixed(3)}（下限 0.5）`
+  );
+  // ⚠️ 计算"跑完一场占卜要多久"必须按**真实令牌桶语义**：
+  //    前 burst 次用突发额度（立即），剩下的每个令牌要等 refillPerSec 秒。
+  //    ⚠️ 关键：refillPerSec = perMin/60（个/秒），
+  //    所以等待秒数 = remainingCalls / refillPerSec = remainingCalls * 60 / perMin。
+  //    （之前误把秒当分钟，算出"400 分钟"这种荒谬数字）
+  const remainingCalls = 14 - floor.burst;
+  const refillPerSec = (cfg.perMin * floor.scale) / 60;
+  const waitMinutes = remainingCalls / refillPerSec / 60;
+  check(
+    "收紧后仍能跑完一场占卜（14 次调用 < 12min deadline）",
+    waitMinutes < 12,
+    `剩余 ${remainingCalls} 次 × ${(60 / refillPerSec).toFixed(0)}s/次 ≈ ${waitMinutes.toFixed(1)} 分钟`
+  );
+
+  // 恢复：reset 后回到初始速率
+  resetBucketsForTest();
+  check(
+    "reset 后回到初始速率",
+    rateConfig().scale === 1,
+    `scale=${rateConfig().scale}`
   );
 }
 
