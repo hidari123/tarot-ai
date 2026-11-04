@@ -167,7 +167,13 @@ console.log("=== P2-⑯ 遥测写缓冲验证 ===\n");
         : `有 ${contradictions} 场矛盾`
     );
 
-    // ⚠️ 更强的判据：最近一场 done 会话的遥测必须齐全
+    // ⚠️ 更强的判据：最近一场 done 会话的遥测必须**内部自洽**
+    //    ⚠️ 不能假设"done 一定有 LLM 用量" —— 那会**误报**：
+    //      降级路径（本地剧本引擎）一场都不调 LLM → usage=0 / tools=0 是**正确**的。
+    //      （实测踩过：最近一场 done 会话 usage=0，是降级路径，不是丢数据）
+    //    正确判据：
+    //      ① timings > 0（阶段记录总是有 —— 降级路径也记 timing）
+    //      ② usage 与 tools 要么都为 0（降级），要么 usage>0 且 tools>0（LLM 路径）
     const recentDone = prod.prepare(`
       SELECT s.id,
         (SELECT COUNT(*) FROM llm_usage u WHERE u.session_id = s.id) usage,
@@ -176,10 +182,32 @@ console.log("=== P2-⑯ 遥测写缓冲验证 ===\n");
       FROM sessions s WHERE s.status = 'done' AND length(s.id) > 30
       ORDER BY s.created_at DESC LIMIT 1
     `).get();
+    const selfConsistent = !!recentDone &&
+      recentDone.timings > 0 &&
+      ((recentDone.usage === 0 && recentDone.tools === 0) ||
+       (recentDone.usage > 0 && recentDone.tools > 0));
     check(
-      "最近一场 done 会话的遥测齐全（usage/tools/timings 都有）",
-      !!recentDone && recentDone.usage > 0 && recentDone.tools > 0 && recentDone.timings > 0,
-      recentDone ? `usage=${recentDone.usage} tools=${recentDone.tools} timings=${recentDone.timings}` : "无 done 会话"
+      "最近一场 done 会话的遥测内部自洽（降级路径可全 0）",
+      selfConsistent,
+      recentDone
+        ? `usage=${recentDone.usage} tools=${recentDone.tools} timings=${recentDone.timings}` +
+          (recentDone.usage === 0 && recentDone.tools === 0 ? "（降级路径，不调 LLM）" : "")
+        : "无 done 会话"
+    );
+
+    // ⚠️ 补充断言：走 LLM 路径的 done 会话（usage>0）必须遥测齐全
+    const llmDone = prod.prepare(`
+      SELECT s.id,
+        (SELECT COUNT(*) FROM llm_usage u WHERE u.session_id = s.id) usage,
+        (SELECT COUNT(*) FROM tool_calls t WHERE t.session_id = s.id) tools
+      FROM sessions s WHERE s.status = 'done' AND length(s.id) > 30
+        AND (SELECT COUNT(*) FROM llm_usage u WHERE u.session_id = s.id) > 0
+      ORDER BY s.created_at DESC LIMIT 1
+    `).get();
+    check(
+      "最近一场走 LLM 的 done 会话遥测齐全（usage>0 且 tools>0）",
+      !llmDone || (llmDone.usage > 0 && llmDone.tools > 0),
+      llmDone ? `usage=${llmDone.usage} tools=${llmDone.tools}` : "（暂无 LLM 路径的 done 会话）"
     );
 
     prod.close();
