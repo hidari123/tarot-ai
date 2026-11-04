@@ -104,15 +104,9 @@ console.log("=== P2-⑯ 遥测写缓冲验证 ===\n");
       process.exit(fail === 0 ? 0 : 2);
     }
 
-    const before = {
-      tool: db.prepare("SELECT COUNT(*) c FROM tool_calls").get().c,
-      usage: db.prepare("SELECT COUNT(*) c FROM llm_usage").get().c,
-      timing: db.prepare("SELECT COUNT(*) c FROM session_timings").get().c,
-    };
-
-    // ⚠️ 注意：logXXX 写的是模块内的 db（生产库），
-    //    所以这里只验证"调用不抛异常 + flush 不抛异常"，
-    //    数据完整性用**直接调用 flushTelemetry 的实现**来验证。
+    // ⚠️ 注意：logXXX 写的是模块内的 db（**生产库**），
+    //    所以临时库只用来验证"语句本身能跑通"；
+    //    数据完整性用**生产库的内部一致性**来验证（见下）。
     try {
       logLLMUsage("test-sess", "supervisor", "test-model", 100, 50, 10, true);
       logToolCall("test-sess", 1, "supervisor", "test_tool", { a: 1 }, "ok", 5);
