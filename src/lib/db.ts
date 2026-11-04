@@ -112,6 +112,17 @@ CREATE TABLE IF NOT EXISTS session_timings (
 );
 CREATE INDEX IF NOT EXISTS idx_timings_session ON session_timings(session_id);
 
+-- 运势缓存（2026-11-04 C 方向）：年运/流年/四季的 **LLM 一次性生成**结果
+-- ⚠️ 为什么需要这张表：年运一年只更新一次，但每天都会被访问
+--   → 第一次生成后缓存全年 → 后续访问零 LLM 成本、零延迟。
+-- ⚠️ 为什么放这里（而不是运行时建表）：跟其他表一起建，
+--   避免首次请求时才建表（并发下会 SQLITE_BUSY）。
+CREATE TABLE IF NOT EXISTS fortune_cache (
+  cache_key TEXT PRIMARY KEY,
+  payload_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
 -- P2-⑨/P2-㉑（第二轮优化分析 2026-11）：会话消息剥离成**独立 append-only 表**
 -- ⚠️ 为什么：state_json 每 10 秒**全量重写**整个会话快照（实测平均 6750 字节、
 --    最大 25212 字节），而其中 **51.8% 是 messages**（实测样本 200 场）。
@@ -1118,5 +1129,46 @@ export function getEventTypeCounts(): Array<{ type: string; count: number }> {
     ).all() as Array<{ type: string; count: number }>;
   } catch {
     return [];
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 运势缓存（2026-11-04 C 方向：年运/流年/四季的 LLM 一次性生成缓存）  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 通用 SQL 执行（供 fortune 模块建表用）
+ *
+ * ⚠️ 为什么暴露 raw exec：
+ *   fortune_cache 是**运势模块专属**的表，不属于会话/日志域 ——
+ *   放在 db.ts 里会让 db.ts 继续膨胀（它已经有 1100+ 行）。
+ *   → 单独一个模块建表，但底层句柄还是 db.ts 的单例（避免两个连接）。
+ *
+ * ⚠️ 安全：只接受模块内部调用，不接受用户输入拼接。
+ */
+export function execRaw(sql: string): void {
+  db.exec(sql);
+}
+
+/** 读运势缓存行 */
+export function readFortuneCacheRow(cacheKey: string): { payload_json: string } | undefined {
+  return db
+    .prepare(`SELECT payload_json FROM fortune_cache WHERE cache_key = ?`)
+    .get(cacheKey) as { payload_json: string } | undefined;
+}
+
+/** 写运势缓存行 */
+export function writeFortuneCacheRow(cacheKey: string, payloadJson: string, createdAt: number): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO fortune_cache (cache_key, payload_json, created_at) VALUES (?, ?, ?)`
+  ).run(cacheKey, payloadJson, createdAt);
+}
+
+/** 运势缓存条目数（诊断用） */
+export function fortuneCacheCount(): number {
+  try {
+    return (db.prepare(`SELECT COUNT(*) c FROM fortune_cache`).get() as { c: number }).c;
+  } catch {
+    return 0;
   }
 }

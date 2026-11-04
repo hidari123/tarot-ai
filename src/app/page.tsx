@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { motion } from "framer-motion";
 import StardustCursor from "@/components/StardustCursor";
 import AgentTrace, { type ToolCall, type RoundInfo } from "@/components/AgentTrace";
@@ -1727,6 +1728,41 @@ export default function TarotApp() {
       </motion.p>
 
       <div className="h-8" />
+
+      {/* ---------- 运势入口（2026-11-04 C 方向）----------
+          ⚠️ 竞品对标：Tarot Run 的顶栏有「每日塔罗」，Tarotap 有 5 种运势。
+          ⚠️ 为什么放在副标题下（而不是右上角）：
+            右上是音乐按钮（固定不动），这里是**内容流**的一部分 ——
+            用户刚进站、正准备提问，此时看到"今天也有牌"能降低"必须提问才能用"的门槛。 */}
+      {stage === "input" && (
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.25, duration: 0.6 }}
+          className="w-full max-w-xl z-10 -mt-2 mb-6"
+        >
+          <div className="flex items-center gap-2 flex-wrap justify-center">
+            <Link
+              href="/daily"
+              className="group inline-flex items-center gap-2 px-3.5 py-2 rounded-full border border-purple-400/25 bg-purple-950/25 backdrop-blur-sm hover:border-purple-400/50 hover:bg-purple-900/30 transition-all"
+            >
+              <Icon name="moon" size={14} className="text-purple-300/70 group-hover:text-purple-200" />
+              <span className="text-[11px] tracking-[0.15em] text-purple-200/70 group-hover:text-purple-100">
+                今日之牌
+              </span>
+            </Link>
+            <Link
+              href="/fortune"
+              className="group inline-flex items-center gap-2 px-3.5 py-2 rounded-full border border-white/8 bg-white/[0.03] backdrop-blur-sm hover:border-purple-400/30 hover:bg-purple-900/20 transition-all"
+            >
+              <Icon name="orbit" size={14} className="text-purple-300/50 group-hover:text-purple-200" />
+              <span className="text-[11px] tracking-[0.15em] text-purple-300/55 group-hover:text-purple-100">
+                运势专区
+              </span>
+            </Link>
+          </div>
+        </motion.div>
+      )}
 
       {/* ---------- 输入阶段 ---------- */}
       {stage === "input" && (
