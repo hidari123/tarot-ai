@@ -1,21 +1,46 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { motion } from "framer-motion";
 import StardustCursor from "@/components/StardustCursor";
 import AgentTrace, { type ToolCall, type RoundInfo } from "@/components/AgentTrace";
 import KnowledgePanel, { type RagHitView } from "@/components/KnowledgePanel";
 import CitedReading from "@/components/CitedReading";
-import ShareCardButton from "@/components/ShareCard";
 import CardSpread, { type SpreadCard } from "@/components/CardSpread";
 import CardPreviewModal, { type PreviewCard } from "@/components/CardPreviewModal";
 import DialogueFlow, { type FlowEntry } from "@/components/DialogueFlow";
 import CardFan, { type FanCard } from "@/components/CardFan";
 import ReviewCard, { type ReviewData } from "@/components/ReviewCard";
-import SubAgentPipeline, { type SubAgentEvent } from "@/components/SubAgentPipeline";
 import AmbienceToggle, { useAmbiencePhase } from "@/components/AmbienceToggle";
 import ClosingPanel from "@/components/ClosingPanel";
 import Icon, { type IconName } from "@/components/icons";
+
+/* ------------------------------------------------------------------ */
+/* 代码分割（P2-⑯）                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ⚠️ P2-⑯（第二轮优化分析 2026-11 ⑯）：这两个组件是**点开才用**的，
+ *   但原来静态 import → 它们的代码进了**首屏 bundle**：
+ *   · ShareCard —— Canvas 渲染逻辑 ~190 行（还带一套画布绘制工具函数）
+ *   · SubAgentPipeline —— 流水线可视化
+ *
+ * ⚠️ 用 `next/dynamic` 拆出去 → 首屏 JS 变小，首屏渲染更快。
+ * ⚠️ `ssr: false` 的原因：这两个组件都依赖浏览器 API
+ *   （Canvas / document.fonts），服务端渲染没有意义。
+ * ⚠️ 类型用 `import type` 单独引入 —— dynamic 拿不到类型。
+ */
+import type { SubAgentEvent } from "@/components/SubAgentPipeline";
+
+const ShareCardButton = dynamic(
+  () => import("@/components/ShareCard").then((m) => m.default),
+  { ssr: false, loading: () => null }
+);
+const SubAgentPipeline = dynamic(
+  () => import("@/components/SubAgentPipeline").then((m) => m.default),
+  { ssr: false, loading: () => null }
+);
 import { unlockAmbience, playSfx } from "@/lib/audio/ambient";import { parseAgentEvent } from "@/lib/agent/schema";
 
 /* ---------------- 类型 ---------------- */
@@ -474,6 +499,12 @@ export default function TarotApp() {
     teller: string | null;
   }>({ reading: "", card: null, scroll: null, teller: null });
   const flushScheduledRef = useRef(false);
+  /**
+   * ⚠️ P2-㉒：rAF 的句柄 —— 组件卸载后必须 cancel。
+   *   原来的 requestAnimationFrame(...) 没有句柄 → 卸载后仍会触发
+   *   → flushDeltaBuffer 里的 setState 打到已卸载的组件（React 警告 + 泄漏）。
+   */
+  const flushRafRef = useRef<number | null>(null);
 
   const flushDeltaBuffer = useCallback(() => {
     flushScheduledRef.current = false;
@@ -513,8 +544,15 @@ export default function TarotApp() {
   const scheduleDeltaFlush = useCallback(() => {
     if (flushScheduledRef.current) return;
     flushScheduledRef.current = true;
-    requestAnimationFrame(() => flushDeltaBuffer());
+    flushRafRef.current = requestAnimationFrame(() => flushDeltaBuffer());
   }, [flushDeltaBuffer]);
+
+  // ⚠️ P2-㉒：卸载时取消待执行的 rAF（否则 setState 打到已卸载组件）
+  useEffect(() => {
+    return () => {
+      if (flushRafRef.current != null) cancelAnimationFrame(flushRafRef.current);
+    };
+  }, []);
 
   /**
    * 回答对话流中的 ask 条目：条目转 settled（用户气泡），并发送 API。
@@ -1721,6 +1759,9 @@ export default function TarotApp() {
                 className="w-full px-5 py-4 pr-12 text-lg rounded-2xl bg-purple-950/30 backdrop-blur-md border border-purple-500/30 text-purple-50 placeholder-purple-300/40 focus:outline-none focus:border-purple-400/70 focus:shadow-[0_0_24px_rgba(168,85,247,0.25)] transition-all"
                 style={{ fontFamily: "'Ma Shan Zheng', serif" }}
                 placeholder="在此写下你的困惑…"
+                // ⚠️ P2-⑮：placeholder 不是可访问名称 —— 屏幕阅读器读不到。
+                //   加 aria-label 让输入框有真正的名字。
+                aria-label="写下你的问题"
                 value={question}
                 onChange={(e) => { setQuestion(e.target.value); setError(""); }}
                 onKeyDown={(e) => e.key === "Enter" && startDivination()}
@@ -1796,6 +1837,7 @@ export default function TarotApp() {
                   className="flex-1 max-w-xs px-3.5 py-2 rounded-xl bg-purple-950/40 border border-purple-500/30 text-purple-50 placeholder-purple-300/40 focus:outline-none focus:border-purple-400/60 text-sm"
                   style={{ fontFamily: "'Ma Shan Zheng', serif" }}
                   placeholder="继续问点什么…"
+                  aria-label="追问占卜师"
                   value={followup}
                   onChange={(e) => setFollowup(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && sendFollowup()}
@@ -1924,6 +1966,7 @@ export default function TarotApp() {
                 onKeyDown={(e) => e.key === "Enter" && sendInterjection()}
                 maxLength={120}
                 placeholder="想补充点什么？占卜师会听到…"
+                aria-label="插话补充"
                 className="flex-1 px-4 py-2.5 rounded-xl bg-purple-950/25 border border-purple-500/20 text-purple-50 placeholder-purple-300/30 focus:outline-none focus:border-purple-400/50 transition-all text-sm"
               />
               <button
@@ -2003,6 +2046,7 @@ export default function TarotApp() {
                   className="flex-1 px-5 py-3.5 rounded-2xl bg-purple-950/30 backdrop-blur-md border border-purple-500/30 text-purple-50 placeholder-purple-300/40 focus:outline-none focus:border-purple-400/70 transition-all"
                   style={{ fontFamily: "'Ma Shan Zheng', serif" }}
                   placeholder="还有困惑？继续追问占卜师…"
+                  aria-label="继续追问"
                   value={followup}
                   onChange={(e) => setFollowup(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && sendFollowup()}

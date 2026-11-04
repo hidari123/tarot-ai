@@ -283,6 +283,18 @@ ${reading}
       revision: "",
       parseLevel: 0,
       retried,
+      /**
+       * P2-③（第二轮优化分析 2026-11 ③）：**审校解析失败**也要打 truncated 标记。
+       * ⚠️ 为什么（这是我上一轮的漏网）：
+       *   上一轮只修了 supervisor.ts 的"审校不可用降级路径"，
+       *   漏了这里"审校解析失败"的降级路径 —— 两者是同一个病：
+       *   **根本没审校，却产出 pass: true**。
+       * ⚠️ 后果：不打这个标记 → dashboard 的"审校通过率"把解析失败的会话
+       *   也算进分母 → 指标继续失真（假绿灯）。
+       * ⚠️ 注意：这里的 truncated 语义是"本次审校结论不可信"，
+       *   与"正文被截断"的场景共用同一个通道（都是"不计入分母"）。
+       */
+      truncated: true,
     };
     yield { type: "review", review: { ...failed } };
     yield {

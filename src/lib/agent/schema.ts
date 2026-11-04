@@ -73,6 +73,17 @@ export const ReviewSchema = z.object({
   rewritten: z.boolean().optional(),
   parseLevel: z.number().optional(),
   retried: z.boolean().optional(),
+  /**
+   * P2-④（第二轮优化分析 2026-11 ④）：truncated —— "本次审校结论不可信"。
+   * ⚠️ 为什么必须在这里声明：
+   *   前端用 `parseAgentEvent`（走 zod）解析事件，
+   *   **zod 会剥离 schema 里没声明的字段** →
+   *   不声明的话，前端永远拿不到"未经完整审校"这个信息。
+   * ⚠️ 两种触发场景（共用同一个"不计入通过率分母"的通道）：
+   *   ① 正文被截断 → reviewer 看到的是半截正文
+   *   ② 审校输出解析失败 → 根本没审校，却产出 pass: true
+   */
+  truncated: z.boolean().optional(),
 });
 
 /* ------------------------------------------------------------------ */

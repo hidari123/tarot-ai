@@ -30,6 +30,19 @@ export default function CardFan({
   const [dwell, setDwell] = useState<Record<string, number>>({});
   const hoverStart = useRef<Record<string, number>>({});
   const confirmedRef = useRef(false); // 防止选满后重复触发确认
+  /**
+   * ⚠️ P2-㉒：确认延时器的句柄（卸载时清理）。
+   *   原来的 setTimeout(650) 没有句柄 → 组件卸载后仍会触发 onConfirm
+   *   → 在用户已经离开的情况下回调父组件。
+   */
+  const confirmTimer = useRef<number | null>(null);
+
+  // 卸载时清掉待触发的确认
+  useEffect(() => {
+    return () => {
+      if (confirmTimer.current != null) window.clearTimeout(confirmTimer.current);
+    };
+  }, []);
 
   const pick = (id: string) => {
     if (selected.includes(id) || confirmedRef.current) return;
@@ -39,7 +52,7 @@ export default function CardFan({
       confirmedRef.current = true;
       const ids = next.join(",");
       const dwells = next.map((i) => dwell[i] ?? 0).join(",");
-      setTimeout(() => onConfirm(`${ids}|${dwells}`), 650); // 等翻牌动画
+      confirmTimer.current = window.setTimeout(() => onConfirm(`${ids}|${dwells}`), 650); // 等翻牌动画
     }
   };
 

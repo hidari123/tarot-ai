@@ -10,8 +10,50 @@
 
 ---
 
-## 一、方法论：这一轮怎么找问题
+---
 
+## ✅ 实施状态（2026-11-04 已全部落地）
+
+本文 §三 的 **22 项全部已实现**，并由 `scripts/verify-round2.mjs`（63 条断言）
+守卫、接入 CI 离线套件。**离线套件现为 439/439 全绿**。
+
+### 实测效果（改前 → 改后）
+
+| 项 | 改前 | 改后 | 说明 |
+|---|---|---|---|
+| `state_json` 平均体积 | 6,732 B | **3,033 B** | −55%（messages 剥离到 append-only 表） |
+| `state_json` 最大体积 | 25,212 B | **12,221 B** | −51% |
+| 快照里 messages 占比 | 51.8% | **0.1%** | 只写新增，不再全量重写 |
+| `sessions` 索引 | 3 个 | **4 个** | 新增 `idx_sessions_share_token`（分享链接不再全表扫） |
+| 每日清理覆盖 | 4 张表 | **6 张表** | 补 `session_timings` / `user_profiles` |
+| 客户端异常 | **整页白屏** | 路由级 + 根级错误边界 | 有重试 / 回首页出口 |
+| 首屏 bundle | 含 Canvas 分享卡 | 已动态分割 | ShareCard / SubAgentPipeline 懒加载 |
+| 死依赖 | `@fontsource/noto-serif-sc` | 已移除 | Canvas 原本静默回退到 sans-serif |
+| 动效降级 | 仅 StardustCursor | **全站** | CSS 媒体查询 + MotionConfig |
+
+### 关键决策记录
+
+- **⑨ 快照写放大**：实测显示 messages 只占 51.8%，完整版"增量写"需要重构快照协议
+  （风险高）→ 选了更小的等价改造：把 messages 搬到 `session_messages`（append-only），
+  `state_json` 只留状态 —— **写入量直接降一半**，且协议不用变。
+  另附一次性迁移，把 332 场存量会话的 messages 也剥离掉。
+- **⑧ 预检索命中率 0%**：没有简单删掉预检索（它有"保证 `[n]` 编号连续"的真实价值），
+  而是修好**缓存 key 设计** —— 改成柔性查找（牌名子串匹配 + top_k 降级命中）。
+- **⑩ busy 所有权**：确认 `runAgent` **只有一个调用点**（api/interpret 路由），
+  路由层已做原子占用 → supervisor 里的重复写入是纯冗余 → 直接删除。
+- **⑬ JSON 兜底**：实测当前 556 场**没有脏数据**（解析失败 0 场），
+  但这是"还没发生"而不是"不会发生" —— 防御性修复照做。
+
+### 实施中修正的两处判断
+
+- ⑮ a11y 里的 `slot.reveal = { narrative, meaning, question }` **不是** tool 结果回显，
+  它是存进 session 状态供前端展示 —— 断言最初写得太宽，误报了。
+- 错误边界里不能用 `redirect()`（服务端 API），`global-error.tsx` 又不在 Router 上下文里
+  → 路由级用 `router.push()`，根级用 `location.href` + 显式 lint 豁免。
+
+---
+
+## 一、方法论：这一轮怎么找问题
 ### 1.1 三条来源
 
 | 来源 | 手段 | 产出 |

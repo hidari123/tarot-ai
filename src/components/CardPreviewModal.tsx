@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 /**
@@ -29,19 +29,61 @@ export default function CardPreviewModal({ card, onClose }: {
   card: PreviewCard | null;
   onClose: () => void;
 }) {
-  // Esc 关闭
+  /**
+   * ⚠️ P2-⑮（第二轮优化分析 2026-11 ⑮）：模态框的**焦点管理**。
+   *   原来：打开模态框后焦点仍在背景元素上 →
+   *   ① 键盘用户 Tab 会跑到**背景里**（模态框没有焦点陷阱）
+   *   ② 屏幕阅读器不知道这里弹出了一个对话框
+   *   ③ Esc 关闭后焦点**不回到**原来的牌 → 键盘用户"丢失了位置"
+   * ⚠️ 修法：打开时聚焦到模态框 → Tab 锁在框内 → 关闭时焦点还原。
+   */
+  const dialogRef = useRef<HTMLDivElement>(null);
+  /** 打开前的焦点元素（关闭时还原） */
+  const prevFocusRef = useRef<HTMLElement | null>(null);
+
+  // Esc 关闭 + 焦点管理
   useEffect(() => {
     if (!card) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      // ⚠️ 焦点陷阱：Tab 不能跑到模态框外面
+      if (e.key === "Tab") {
+        const focusables = dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        );
+        if (!focusables || focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement as HTMLElement | null;
+        if (e.shiftKey && (active === first || !dialogRef.current?.contains(active))) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     window.addEventListener("keydown", onKey);
     // 背景滚动锁定
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    // ⚠️ 记住打开前的焦点，关闭后还原
+    prevFocusRef.current = document.activeElement as HTMLElement | null;
+    // 把焦点移进模态框
+    const t = window.setTimeout(() => {
+      const target = dialogRef.current?.querySelector<HTMLElement>("button");
+      (target ?? dialogRef.current)?.focus();
+    }, 0);
     return () => {
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
+      window.clearTimeout(t);
+      // ⚠️ 焦点还原到打开前的元素（键盘用户不丢位置）
+      prevFocusRef.current?.focus?.();
     };
   }, [card, onClose]);
 
@@ -56,12 +98,17 @@ export default function CardPreviewModal({ card, onClose }: {
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-6"
         >
           <motion.div
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${card.nameZh} 牌面预览`}
+            tabIndex={-1}
             initial={{ scale: 0.88, y: 16, opacity: 0 }}
             animate={{ scale: 1, y: 0, opacity: 1 }}
             exit={{ scale: 0.92, y: 10, opacity: 0 }}
             transition={{ duration: 0.28, ease: [0.4, 0.1, 0.2, 1] }}
             onClick={(e) => e.stopPropagation()}
-            className="relative w-full max-w-sm"
+            className="relative w-full max-w-sm outline-none"
           >
             {/* 大牌面 */}
             {/* ⚠️ aspect-ratio 内联兜底（防 dev 增量缓存不生成任意值类） */}

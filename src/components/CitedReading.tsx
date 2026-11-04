@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 
 /**
@@ -126,13 +126,27 @@ function BodyText({ text, maxCite, activeCite, onCite }: {
 export default function CitedReading({ text, maxCite, streaming }: CitedReadingProps) {
   const paragraphs = useMemo(() => splitParagraphs(text), [text]);
   const [activeCite, setActiveCite] = useState<number | null>(null);
+  /**
+   * ⚠️ P2-㉒（第二轮优化分析 2026-11 ㉒）：定时器要在 unmount 时清理。
+   *   原来的 `window.setTimeout(..., 2500)` **没有句柄** → 组件卸载后
+   *   定时器仍会触发 → setState on unmounted component（React 警告 + 内存泄漏）。
+   */
+  const clearTimer = useRef<number | null>(null);
+
+  // 卸载时清掉待触发的定时器
+  useEffect(() => {
+    return () => {
+      if (clearTimer.current != null) window.clearTimeout(clearTimer.current);
+    };
+  }, []);
 
   /** 点击角标：广播高亮事件（page.tsx 监听并滚动 KnowledgePanel） */
   const handleCiteClick = (n: number) => {
     if (n < 1 || n > maxCite) return; // 越界引文（模型幻觉）不可点击
     setActiveCite(n);
     // 2.5s 后取消激活态
-    window.setTimeout(() => setActiveCite((c) => (c === n ? null : c)), 2500);
+    if (clearTimer.current != null) window.clearTimeout(clearTimer.current);
+    clearTimer.current = window.setTimeout(() => setActiveCite((c) => (c === n ? null : c)), 2500);
     // 派发自定义事件，由外层路由到 KnowledgePanel
     window.dispatchEvent(new CustomEvent("tarot:highlight-cite", { detail: { n } }));
   };

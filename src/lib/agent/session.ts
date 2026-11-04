@@ -57,7 +57,13 @@ function reconcileOnBoot(): void {
     const rows = db.listRecoverableSessions(0);
     for (const row of rows) {
       try {
-        const snap = JSON.parse(row.state_json) as SessionSnapshot;
+        /**
+         * ⚠️ P2-⑨：用 `loadSessionState` 而不是直接 JSON.parse(state_json) ——
+         *   消息已被剥离到 `session_messages`（append-only 表），
+         *   直接解析 state_json 会**丢掉全部历史消息** → 恢复出来的会话是空的。
+         *   loadSessionState 会把 messages 拼回来（对上层透明）。
+         */
+        const snap = db.loadSessionState(row.id) as SessionSnapshot | null;
         if (!snap?.id) continue;
         // ⚠️ 只恢复"还在 TTL 内"的会话 —— 超过 30 分钟的恢复出来也没意义
         if (Date.now() - (snap.lastActive ?? 0) > SESSION_TTL) continue;

@@ -58,11 +58,24 @@ const MAX_BUFFER = 500;
 /** 会话缓冲 TTL（超过就清理，避免内存泄漏） */
 const BUFFER_TTL_MS = 30 * 60 * 1000;
 
-/** 取（或建）会话缓冲 */
+/**
+ * 取（或建）会话缓冲
+ *
+ * ⚠️ P2-⑫（第二轮优化分析 2026-11 ⑫）：新建缓冲时，nextSeq **不能**从 1 开始。
+ *   场景：进程重启 → 内存 buffer 全丢 → 用户刷新页面 → 恢复会话
+ *   → 新建 buffer 时 nextSeq=1 → 新事件 seq 与 `event_log` 里**已落库**的
+ *   seq **重复** → `Last-Event-ID` 语义失效（断点续传会补发重复事件）。
+ * ⚠️ 修法：用 DB 里的 `max(seq)` 初始化 nextSeq（断号续号，不重号）。
+ */
 function getBuffer(sessionId: string): SessionBuffer {
   let b = buffers.get(sessionId);
   if (!b) {
-    b = { events: [], nextSeq: 1 };
+    // ⚠️ 查库拿已落库的最大 seq（+1 = 下一个可用 seq）
+    let resumeFrom = 1;
+    try {
+      resumeFrom = db.getMaxEventSeq(sessionId) + 1;
+    } catch { /* 查库失败 → 退回 1（退化行为：与之前一致，不崩） */ }
+    b = { events: [], nextSeq: resumeFrom };
     buffers.set(sessionId, b);
   }
   return b;

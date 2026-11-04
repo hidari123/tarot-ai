@@ -57,9 +57,74 @@ const CACHE_TTL_MS = Number(process.env.RAG_CACHE_TTL_MS) || 10 * 60 * 1000;
 /** 缓存容量上限（防止无限增长） */
 const CACHE_MAX = Number(process.env.RAG_CACHE_MAX) || 200;
 
-/** 归一化查询（缓存 key） */
+/**
+ * 归一化查询（缓存 key）
+ *
+ * ⚠️ P2-⑧（第二轮优化分析 2026-11 ⑧）：key 里带 top_k 是**设计缺陷**。
+ *   实测：预取写的是 `5|权杖七`，模型实际检索用的是 `10|权杖七 复合 前任`
+ *   —— **query 和 top_k 都不匹配** → 预取命中率 **0%**（实测 0/60）。
+ * ⚠️ 但 key 里去掉 top_k 也不对：不同 top_k 的结果集不同（k=5 是 k=10 的子集）。
+ *   → 修法见 `readCacheFlexible`：命中时按请求的 k **裁剪**结果。
+ */
 function cacheKey(query: string, k: number): string {
   return `${k}|${query.replace(/\s+/g, " ").trim().toLowerCase()}`;
+}
+
+/**
+ * 查缓存（**允许 top_k 降级命中**）—— P2-⑧ 的核心修复。
+ *
+ * ⚠️ 为什么需要：
+ *   预取用牌名（"权杖七"）、用 k=5；模型检索用改写后的长 query、用 k=10。
+ *   两者**永远不可能**命中同一个 key —— 实测命中率 0%。
+ *   但预取的**内容**是有效的：它检索的就是这张牌的知识。
+ *
+ * ⚠️ 修法（两层）：
+ *   ① **牌名子串匹配**：如果请求的 query 里**包含**某个已缓存条目的牌名，
+ *      就把那个缓存条目当作候选（裁剪到请求的 k）。
+ *   ② **同 query 不同 k**：同一条 query 用不同 top_k 存过 → 取更大的那份再裁剪。
+ *
+ * ⚠️ 语义说明：命中的是"同一张牌的知识"，**内容等价**（知识库按牌切分），
+ *   只是 query 表述不同 —— 这正是预取的设计意图。
+ */
+function readCacheFlexible(query: string, k: number): RagHit[] | null {
+  // ① 直接命中
+  const direct = readCache(cacheKey(query, k));
+  if (direct) return direct;
+
+  // ② 同一 query、不同 top_k → 取最大的那份再裁剪
+  const normalized = query.replace(/\s+/g, " ").trim().toLowerCase();
+  const prefix = `${normalized}`;
+  let best: RagHit[] | null = null;
+  for (const [key, entry] of ragCache) {
+    if (Date.now() - entry.at > CACHE_TTL_MS) continue;
+    const sep = key.indexOf("|");
+    if (sep < 0) continue;
+    if (key.slice(sep + 1) !== prefix) continue;
+    if (!best || entry.hits.length > best.length) best = entry.hits;
+  }
+  if (best && best.length > 0) {
+    const sliced = best.slice(0, k);
+    cacheCounters.hits++;
+    return sliced;
+  }
+
+  // ③ 牌名子串匹配：query 里包含某个已缓存条目的牌名
+  //    （预取存的是"权杖七"，模型检索是"权杖七 复合 前任" → 命中）
+  for (const [key, entry] of ragCache) {
+    if (Date.now() - entry.at > CACHE_TTL_MS) continue;
+    const sep = key.indexOf("|");
+    if (sep < 0) continue;
+    const cachedQuery = key.slice(sep + 1);
+    if (!cachedQuery || cachedQuery.length < 2) continue;
+    if (!normalized.includes(cachedQuery)) continue;
+    // ⚠️ 命中：取该条缓存里属于这张牌的结果，裁剪到 k
+    const sliced = entry.hits.slice(0, k);
+    if (sliced.length > 0) {
+      cacheCounters.hits++;
+      return sliced;
+    }
+  }
+  return null;
 }
 
 /**
@@ -175,8 +240,10 @@ export async function execRagSearch(
   const k = Math.min(Math.max(topK || 5, 1), 10);
 
   // ---- 跨会话缓存（P1-③）----
+  // ⚠️ P2-⑧：用**柔性查找**（允许 top_k 降级 + 牌名子串匹配）——
+  //    原来的精确 key 查找让预取命中率实测 0%（0/60）。
   const key = cacheKey(query, k);
-  let currentHits = readCache(key);
+  let currentHits = readCacheFlexible(query, k);
   let fromCache = false;
   if (currentHits) {
     fromCache = true;
@@ -191,7 +258,7 @@ export async function execRagSearch(
   if (currentHits.length === 0 && origQuery && query !== origQuery) {
     try { db.logTiming(session.id, "rag_zero_retry", 0, `改写「${origQuery.slice(0, 16)}」零命中，回退原查询`); } catch { /* ignore */ }
     const origKey = cacheKey(origQuery, k);
-    currentHits = readCache(origKey) ?? await hybridSearch(origQuery, k);
+    currentHits = readCacheFlexible(origQuery, k) ?? await hybridSearch(origQuery, k);
     writeCache(origKey, currentHits);
   }
 
@@ -238,10 +305,29 @@ export async function prefetchForCard(
 ): Promise<void> {
   try {
     const rewritten = rewriteQueryLocal(cardNameZh, TAROT_CARDS.map((c) => c.nameZh));
-    const key = cacheKey(rewritten, topK);
-    if (readCache(key)) return; // 已有缓存，不必再算
-    const hits = await hybridSearch(rewritten, topK);
-    writeCache(key, hits);
+    // ⚠️ P2-⑧：按**多个 top_k** 各存一份。
+    //   实测模型实际传的 top_k 分布里 **10 占 55.8%**、5 占 30% 左右 ——
+    //   预取只存 k=5 的话，模型用 k=10 时依然要重算。
+    //   存两份的代价 = 一次额外的向量检索（~100~400ms），
+    //   但**省掉**的是后续那次完整检索 —— 净收益为正。
+    const ks = Array.from(new Set([topK, 5, 10]));
+    let hits: RagHit[] | null = null;
+    for (const k of ks) {
+      const key = cacheKey(rewritten, k);
+      const cached = readCache(key);
+      if (cached && cached.length > 0) {
+        hits = cached;
+        continue; // 这一档已有缓存
+      }
+      if (!hits) {
+        // ⚠️ 只真正检索一次（用最小的 k），其它档位从这份结果切出来
+        const computed = await hybridSearch(rewritten, Math.max(...ks));
+        hits = computed;
+        for (const k2 of ks) writeCache(cacheKey(rewritten, k2), computed.slice(0, k2));
+        break;
+      }
+    }
+    if (!hits || hits.length === 0) return;
     // ⚠️ 同时把命中写进 session.ragHits —— 保证本场的 [n] 编号连续
     //    （引文闭环：知识面板的编号必须与正文里的 [n] 一致）。
     //    去重按 chunkId，与 execRagSearch 的逻辑一致。

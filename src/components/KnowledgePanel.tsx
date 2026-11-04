@@ -36,17 +36,26 @@ export default function KnowledgePanel({ hits }: { hits: RagHitView[] }) {
   /* 监听 CitedReading 派发的引文高亮事件
      （依赖用 hits 引用而非 hits.length：同长度不同内容的更新会拿到过期闭包） */
   useEffect(() => {
+    /**
+     * ⚠️ P2-㉒：定时器句柄要在卸载时清理 ——
+     *   原来的 setTimeout(2500) 没有句柄 → 卸载后仍触发 → setState on unmounted。
+     */
+    let clearTimer: number | null = null;
     const onHighlight = (e: Event) => {
       const n = (e as CustomEvent<{ n: number }>).detail?.n;
       if (typeof n === "number" && n >= 1 && n <= hits.length) {
         setHighlightIdx(n - 1);
         const row = rowRefs.current[n - 1];
         row?.scrollIntoView({ behavior: "smooth", block: "center" });
-        window.setTimeout(() => setHighlightIdx((h) => (h === n - 1 ? null : h)), 2500);
+        if (clearTimer != null) window.clearTimeout(clearTimer);
+        clearTimer = window.setTimeout(() => setHighlightIdx((h) => (h === n - 1 ? null : h)), 2500);
       }
     };
     window.addEventListener("tarot:highlight-cite", onHighlight);
-    return () => window.removeEventListener("tarot:highlight-cite", onHighlight);
+    return () => {
+      window.removeEventListener("tarot:highlight-cite", onHighlight);
+      if (clearTimer != null) window.clearTimeout(clearTimer);
+    };
   }, [hits]);
 
   if (hits.length === 0) return null;

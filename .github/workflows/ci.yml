@@ -91,6 +91,10 @@ jobs:
           npx tsx scripts/verify-ux-fixes.mjs
           # ⚠️ SVG 图标集（2026-11-04）：断言 emoji 已清零 + 图标名类型有效
           npx tsx scripts/verify-icons.mjs
+          # ⚠️ 第二轮优化（2026-11-04，docs/optimization-analysis-2026-11.md 的 22 项）：
+          #    索引 / 内存清理 / 审校标记 / 错误边界 / prompt 瘦身 /
+          #    快照写入量 / 缓存命中 / a11y / 代码分割 / 动效降级
+          npx tsx scripts/verify-round2.mjs
 
   # ────────────────────────────────────────────────────────────
   # ② 静态验证：不需要 LLM 的功能回归

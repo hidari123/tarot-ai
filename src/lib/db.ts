@@ -111,6 +111,22 @@ CREATE TABLE IF NOT EXISTS session_timings (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_timings_session ON session_timings(session_id);
+
+-- P2-⑨/P2-㉑（第二轮优化分析 2026-11）：会话消息剥离成**独立 append-only 表**
+-- ⚠️ 为什么：state_json 每 10 秒**全量重写**整个会话快照（实测平均 6750 字节、
+--    最大 25212 字节），而其中 **51.8% 是 messages**（实测样本 200 场）。
+--    messages 只增不减 → 每 10 秒重写一次越来越大的历史 → 纯粹的写放大。
+-- ⚠️ 剥离后：state_json 只存"状态"（牌/检索/情绪/阶段…），
+--    messages 走 append-only 表 → **只写新增的那几条**，永不重写历史。
+-- ⚠️ 附加收益：恢复会话时不需要反序列化一大坨 JSON。
+CREATE TABLE IF NOT EXISTS session_messages (
+  session_id TEXT NOT NULL,
+  idx INTEGER NOT NULL,          -- 会话内消息序号（追加顺序）
+  msg_json TEXT NOT NULL,        -- 单条消息的 JSON
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, idx)
+);
+CREATE INDEX IF NOT EXISTS idx_session_messages_session ON session_messages(session_id, idx);
 `);
 
 // ---- 数据保留：90 天 TTL（观测数据无限膨胀会让面板全表聚合线性变慢） ----
@@ -125,6 +141,14 @@ if (!gClean.__tarotDbCleanTimer__) {
       db.prepare(`DELETE FROM sessions WHERE created_at < ?`).run(cutoff);
       // P2-⑦：事件日志同样要清理（一场占卜 ~20 条结构性事件，量比 tool_calls 大）
       db.prepare(`DELETE FROM event_log WHERE created_at < ?`).run(cutoff);
+      // P2-⑤（第二轮优化分析 2026-11 ⑤）：这两张表**原本漏了** → 无限增长。
+      // ⚠️ session_timings 的危害更直接：dashboard 冷缓存时
+      //    `getStageAggregates` 会对它**全表 GROUP BY** —— 表越大越慢。
+      //    实测 3819 行且每场占卜持续新增。
+      db.prepare(`DELETE FROM session_timings WHERE created_at < ?`).run(cutoff);
+      // ⚠️ user_profiles 用 last_active 而非 created_at 判断新旧
+      //    （它是"用户画像"，按最后活跃时间保留才合理）。
+      db.prepare(`DELETE FROM user_profiles WHERE last_active < ?`).run(cutoff);
     } catch { /* 清理失败不阻断 */ }
   }, 24 * 60 * 60 * 1000); // 每天一次
   gClean.__tarotDbCleanTimer__.unref?.();
@@ -153,7 +177,87 @@ try {
   if (!cols.some((c) => c.name === "share_token")) {
     db.exec(`ALTER TABLE sessions ADD COLUMN share_token TEXT NOT NULL DEFAULT ''`);
   }
+  // P2-①（第二轮优化分析 2026-11 ①）：share_token 索引 —— **原本缺失**
+  // ⚠️ 为什么重要：分享链接是**公网入口**，`getSessionByShareToken` 按
+  //    share_token 查询 —— 没有索引就是**全表扫 sessions**。
+  //    而 better-sqlite3 是**同步**的 → 直接阻塞事件循环 → 拖慢所有并发 SSE 流。
+  //    sessions 表会一直增长（实测 498 行且持续涨）→ 越往后越慢。
+  // ⚠️ 必须放在**迁移之后**建索引：share_token 是 ALTER TABLE 加出来的列，
+  //    在建表语句里写索引会因为那时列还不存在而失败。
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_share_token ON sessions(share_token)`);
+  } catch { /* 索引创建失败不阻断（查询仍可退化到全表扫） */ }
 } catch { /* 迁移失败不阻断 */ }
+
+/* ------------------------------------------------------------------ */
+/* 一次性迁移：把存量快照的 messages 剥离到 session_messages 表        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ⚠️ P2-⑨（第二轮优化分析 2026-11 ⑨）：**存量**数据也要瘦身。
+ *
+ * ⚠️ 背景：新逻辑（saveSessionState 剥离 messages）只对**之后写入**的快照生效；
+ *    而库里已有的 300+ 场会话，state_json 里仍然塞着全部历史消息
+ *    （实测平均 6750 字节、messages 占 51.8%）。
+ *    这些存量快照继续被读写，就是持续的成本。
+ *
+ * ⚠️ 为什么必须做（不只是省空间）：
+ *   `loadSessionState` 的兼容逻辑是"老快照里带 messages → 迁移到新表"，
+ *   但那是**读取时**的懒迁移 —— 只有真正被恢复的会话才会被迁移。
+ *   而**已完成**的会话（占绝大多数）永远不会被恢复 → 永远保持臃肿。
+ *
+ * ⚠️ 一次性执行：把每场的 messages 写进 session_messages，然后从 state_json 移除。
+ *   ⚠️ 用标记避免重复跑（globalThis + 一个 DB 标记）。
+ */
+function migrateLegacySnapshots(): void {
+  try {
+    // ⚠️ 只在进程内跑一次
+    const g = globalThis as unknown as { __tarotSnapshotMigrated__?: boolean };
+    if (g.__tarotSnapshotMigrated__) return;
+    g.__tarotSnapshotMigrated__ = true;
+
+    const rows = db.prepare(
+      `SELECT id, state_json FROM sessions WHERE state_json != ''`
+    ).all() as Array<{ id: string; state_json: string }>;
+
+    let migrated = 0;
+    const insertMsg = db.prepare(
+      `INSERT OR REPLACE INTO session_messages (session_id, idx, msg_json, created_at) VALUES (?, ?, ?, ?)`
+    );
+    const updateSnap = db.prepare(`UPDATE sessions SET state_json = ? WHERE id = ?`);
+    const now = Date.now();
+
+    for (const row of rows) {
+      let snap: Record<string, unknown>;
+      try {
+        snap = JSON.parse(row.state_json) as Record<string, unknown>;
+      } catch { continue; }
+      const msgs = snap.messages;
+      if (!Array.isArray(msgs) || msgs.length === 0) continue;
+      // ⚠️ 已经有迁移过的消息 → 跳过（幂等）
+      const existing = db.prepare(
+        `SELECT COUNT(*) c FROM session_messages WHERE session_id = ?`
+      ).get(row.id) as { c: number };
+      if (existing.c > 0) continue;
+
+      const tx = db.transaction(() => {
+        for (let i = 0; i < msgs.length; i++) {
+          insertMsg.run(row.id, i, JSON.stringify(msgs[i]), now);
+        }
+        delete snap.messages;
+        updateSnap.run(JSON.stringify(snap), row.id);
+      });
+      tx();
+      migrated++;
+    }
+    if (migrated > 0) {
+      console.error(`[db-migrate] 剥离存量快照的 messages：${migrated} 场`);
+    }
+  } catch (e) {
+    console.error("[db-migrate] 快照迁移失败:", e instanceof Error ? e.message : e);
+  }
+}
+migrateLegacySnapshots();
 
 /* ---------------- 写入 API ---------------- */
 
@@ -292,15 +396,92 @@ function safeParse<T>(s: string, fallback: T): T {
  * ⚠️ 写入频率是权衡：每次事件都写太频繁（SQLite 写放大），
  *   什么都不写又失去意义 —— 用"脏标记 + 定时/关键点落库"折中。
  */
+/**
+ * 保存会话快照（进程重启后恢复用）。
+ *
+ * ⚠️ P2-⑨/P2-㉑（第二轮优化分析 2026-11）：**messages 剥离**。
+ *   原来整个快照（含全部历史消息）每 10 秒被**全量重写**一次。
+ *   实测：平均 6750 字节/次、最大 25212 字节，其中 51.8% 是 messages。
+ *   messages 只增不减 → 写得越多、每次写得越大 → 纯写放大。
+ *
+ * ⚠️ 现在的做法：
+ *   · state_json 只存**状态**（牌/检索/情绪/阶段/正文…）→ 体积腰斩且不再增长
+ *   · messages 走 `session_messages`（append-only）→ **只写新增的那几条**
+ *   · 读取时（loadSessionState）再拼回去 → 对上层完全透明
+ *
+ * ⚠️ 兼容性：**老快照里仍然带着 messages**（字段还在）→
+ *   剥离时如果发现 state 里有 messages，就把它迁到新表并从 state_json 移除。
+ *   这样老数据也能正常恢复，且迁移是**一次性**的。
+ */
 export function saveSessionState(id: string, state: unknown): void {
   try {
+    let payload = state as Record<string, unknown>;
+    // ⚠️ 如果传进来的对象带 messages → 剥离到 append-only 表
+    if (payload && Array.isArray(payload.messages)) {
+      const msgs = payload.messages as unknown[];
+      const rest = { ...payload };
+      delete rest.messages;
+      appendSessionMessages(id, msgs);
+      payload = rest;
+    }
     db.prepare(`UPDATE sessions SET state_json = ? WHERE id = ?`)
-      .run(JSON.stringify(state), id);
+      .run(JSON.stringify(payload), id);
   } catch { /* 快照失败不阻断主线 */ }
 }
 
 /**
+ * 追加会话消息到 append-only 表（只写新增部分）。
+ *
+ * ⚠️ 幂等：同一批消息重复调用不会产生重复行 ——
+ *   先查表里已有的最大 idx，从那里接着写。
+ *   （快照是周期性落的，同一批消息可能被反复提交）
+ */
+export function appendSessionMessages(id: string, messages: unknown[]): void {
+  if (!Array.isArray(messages) || messages.length === 0) return;
+  try {
+    const row = db.prepare(
+      `SELECT MAX(idx) AS m FROM session_messages WHERE session_id = ?`
+    ).get(id) as { m: number | null } | undefined;
+    // ⚠️ 表里已有的条数（= 下一个可用 idx）
+    const existing = (row?.m ?? -1) + 1;
+    // ⚠️ 若表里已有 N 条而这次提交 M 条（M < N，说明是**旧批次**重复提交）→ 跳过
+    if (existing >= messages.length) return;
+    const stmt = db.prepare(
+      `INSERT OR REPLACE INTO session_messages (session_id, idx, msg_json, created_at)
+       VALUES (?, ?, ?, ?)`
+    );
+    const now = Date.now();
+    for (let i = existing; i < messages.length; i++) {
+      stmt.run(id, i, JSON.stringify(messages[i]), now);
+    }
+  } catch { /* 追加失败不阻断（快照仍会写，只是恢复时 messages 不全） */ }
+}
+
+/**
+ * 读取某会话的全部消息（按序号还原）。
+ */
+export function getSessionMessages(id: string): unknown[] {
+  try {
+    const rows = db.prepare(
+      `SELECT msg_json FROM session_messages WHERE session_id = ? ORDER BY idx`
+    ).all(id) as Array<{ msg_json: string }>;
+    const out: unknown[] = [];
+    for (const r of rows) {
+      try { out.push(JSON.parse(r.msg_json)); } catch { /* 跳过单条坏数据 */ }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * 读取会话快照（进程重启后恢复用）。
+ *
+ * ⚠️ P2-⑨：会把 append-only 表里的 messages **拼回**快照对象，
+ *    让上层（restoreSession）感知不到这次剥离。
+ * ⚠️ 兼容老快照：老数据的 state_json 里本来就有 messages →
+ *    此时以**新表**为准（若新表有数据），否则回落到老字段。
  *
  * @returns 快照对象；不存在/解析失败返回 null
  */
@@ -310,7 +491,19 @@ export function loadSessionState(id: string): unknown | null {
       | { state_json: string }
       | undefined;
     if (!row?.state_json) return null;
-    return JSON.parse(row.state_json);
+    const snap = JSON.parse(row.state_json) as Record<string, unknown>;
+    // ⚠️ 老快照里带 messages → 迁移到新表（一次性），并从快照里移除
+    if (Array.isArray(snap.messages)) {
+      const legacy = snap.messages as unknown[];
+      delete snap.messages;
+      if (getSessionMessages(id).length === 0) {
+        appendSessionMessages(id, legacy);
+      }
+    }
+    // ⚠️ 拼回新表里的 messages
+    const msgs = getSessionMessages(id);
+    if (msgs.length > 0) snap.messages = msgs;
+    return snap;
   } catch {
     return null;
   }
@@ -712,7 +905,10 @@ function computeDashboardStats(): DashboardStats {
     })),
     recentSessions: recent.map((r) => ({
       id: r.id, question: r.question, persona: r.persona, status: r.status,
-      reading: r.reading, cards: JSON.parse(r.cards_json), createdAt: r.created_at,
+      // ⚠️ P2-⑬（第二轮优化分析 2026-11 ⑬）：改用 safeParse ——
+      //   原来这里是裸 JSON.parse → **一张脏数据就让整个 dashboard 500**。
+      //   （同文件早就有 safeParse，只是这里没用上）
+      reading: r.reading, cards: safeParse(r.cards_json, []), createdAt: r.created_at,
       errorReason: r.error_reason || undefined,
       cost: costById.get(r.id) ?? { tokens: 0, estCny: 0, llmCalls: 0 },
     })),
@@ -736,7 +932,8 @@ export function getSessionReading(id: string): { reading: string; question: stri
   const row = db.prepare(`SELECT reading, question, cards_json FROM sessions WHERE id = ?`).get(id) as
     { reading: string; question: string; cards_json: string } | undefined;
   if (!row) return null;
-  return { reading: row.reading, question: row.question, cards: JSON.parse(row.cards_json) };
+  // ⚠️ P2-⑬：safeParse 兜底 —— 一张脏数据不该让分享页/历史页 500
+  return { reading: row.reading, question: row.question, cards: safeParse(row.cards_json, []) };
 }
 
 /* ---------------- 用户画像（方向①：跨会话记忆） ---------------- */
@@ -870,6 +1067,28 @@ export function logEvent(sessionId: string, seq: number, type: string, payloadJs
   try {
     stmtInsertEvent.run({ sessionId, seq, type, payloadJson, createdAt });
   } catch { /* 落库失败不阻断 */ }
+}
+
+/**
+ * 取某会话已落库的**最大 seq**（断点续传续号用）。
+ *
+ * ⚠️ P2-⑫（第二轮优化分析 2026-11 ⑫）：进程重启后内存 buffer 会丢，
+ *    恢复会话时如果 nextSeq 从 1 重来 → 新事件的 seq 会与 `event_log`
+ *    里**已落库**的 seq 重复 → `Last-Event-ID` 语义失效
+ *    （断点续传补发的 seq 会与客户端已收到的冲突）。
+ * ⚠️ 所以恢复时要用 DB 里的 max(seq) 初始化 nextSeq。
+ *
+ * ⚠️ 走索引 idx_event_log_session(session_id, seq) → 不全表扫。
+ */
+export function getMaxEventSeq(sessionId: string): number {
+  try {
+    const row = db.prepare(
+      `SELECT MAX(seq) AS m FROM event_log WHERE session_id = ?`
+    ).get(sessionId) as { m: number | null } | undefined;
+    return row?.m ?? 0;
+  } catch {
+    return 0;
+  }
 }
 
 /** 某会话的事件时间线（dashboard 事件流视图） */

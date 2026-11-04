@@ -34,6 +34,7 @@ import { execDrawCards } from "./tools/cards";
 import { runAnalyst, runWriter, runReviewer, type ReviewResult } from "./subagents";
 import { generateEcho } from "./echo";
 import { runLocalFallback } from "./fallback";
+import { clearTruncated } from "./truncation";
 import {
   canEnter, advancePhase, RITUAL_PHASE_LABEL, completedPhases, TOOL_PHASE_REQUIREMENT,
 } from "./ritual-machine";
@@ -80,11 +81,22 @@ export async function* runAgent(
   question: string,
   opts?: { followup?: string }
 ): AsyncGenerator<AgentEvent> {
-  // ⚠️ 并发互斥：同一会话同时只允许一个生成器推进。
-  // 挂在 pendingAsk 时（历史末尾是未配对的 tool_calls），并发 interpret 会把
-  // user 消息插到 tool 响应之前 → 下一次 callLLM 直接 400 协议错位。
-  // 路由层负责在入口检查 busy（409），这里兜底设置并在 finally 释放。
-  session.busy = true;
+  /**
+   * ⚠️⚠️ P2-⑩（第二轮优化分析 2026-11 ⑩）：**busy 的所有权归路由层**。
+   *
+   * ⚠️ 原来的问题：busy 标志有**两个写入点**：
+   *   ① 路由层 `tryAcquireSession`（原子占用）
+   *   ② 这里 `session.busy = true`（重复占用）
+   *   → 所有权不唯一 → **释放时机不确定**：
+   *      supervisor 的 finally 释放了，路由层的 finally 又释放一次（幂等，无害），
+   *      但反过来"路由已释放、supervisor 还在跑"的窗口就存在了。
+   *
+   * ⚠️ 修法：这里**不再写** busy —— 占用与释放都只在 `tryAcquireSession` /
+   *   `releaseSession`（session.ts）这一对里发生。
+   * ⚠️ 这里的 `session.busy = true` 曾是"兜底设置"，
+   *   但 runAgent **只有一个调用点**（api/interpret 路由），而那个路由
+   *   已经在入口做了原子占用 —— 所以这里确实是纯粹的重复。
+   */
   try {
   // provider 选择：会话内粘住上次成功的（风格一致），失败自动切换
   const all = buildProviders();
@@ -102,8 +114,14 @@ export async function* runAgent(
   if (session.messages.length === 0) {
     session.messages.push({ role: "system", content: buildSystemPrompt(session) });
     session.messages.push({ role: "user", content: `我想占卜：${question}` });
-    // 记录 prompt 版本，便于后续版本效果对比
-    try { db.updateSessionPromptVersion(session.id, PROMPT_VERSION); } catch (e) { dbLog("记录 prompt 版本失败", e); }
+    /**
+     * ⚠️ P2-⑪（第二轮优化分析 2026-11 ⑪）：**原来这里写了一次 PROMPT_VERSION**，
+     *   紧接着下面又写 `${PROMPT_VERSION}/${agentMode}` → 前者被**完全覆盖**。
+     *   → 白写一次 DB（多一次 UPDATE），而且版本口径可能错
+     *   （如果两次写入之间有并发读，会读到不带 agentMode 的版本）。
+     *   → 修法：只在**唯一**的位置记录版本（下面 agentMode 确定之后那处）。
+     *   ⚠️ 这里**不能删掉记录动作** —— 否则 prompt 版本对比就失效了。
+     */
   } else if (opts?.followup) {
     session.messages.push({ role: "user", content: `（追问）${opts.followup}` });
     session.messages.push({
@@ -148,9 +166,22 @@ export async function* runAgent(
     yield { type: "phase", phase: "analyze", label: `仪轨已定：${planSteps.length} 步（Plan-Execute 模式）` };
   }
 
-  // 轮次上限：逐张解读模式下轮次翻倍
-  // 承约1 + 呼召1 + 选牌1 + 检索2 + (翻牌+解读)×3 + 综合1 + 收束1 ≈ 14 轮
-  const MAX_ROUNDS = Number(process.env.MAX_ROUNDS) || 22;
+  /**
+   * ⚠️ P2-⑭（第二轮优化分析 2026-11 ⑭）：轮次上限**按牌数动态计算**。
+   *
+   * ⚠️ 原来固定 22 —— 但仪式需要的轮次随牌数变化：
+   *   承约1 + 呼召1 + 选牌1 + 检索2 + (翻牌+解读)×N + 综合1 + 收束1
+   *   → N=3 时约 14 轮，N=5 时就接近 20 轮。
+   * ⚠️ 实测：`max_rounds` 失败的会话平均 **19.0 次工具调用**
+   *   —— 说明模型经常撞墙（不是模型笨，是预算给少了）。
+   *
+   * ⚠️ 修法：`牌数 × 2 + 固定 8`（固定部分覆盖承约/呼召/选牌/检索/综合/收束）。
+   * ⚠️ env 覆盖仍然优先（运维需要固定值时用它），且下限不低于原来的 22
+   *   —— 宁可多给一点预算，也不要让一场占卜因为轮次不够而失败。
+   */
+  const BASE_ROUNDS = Number(process.env.MAX_ROUNDS) || 22;
+  const cardCount = Math.max(1, session.drawnCards?.length ?? 3);
+  const MAX_ROUNDS = Math.max(BASE_ROUNDS, cardCount * 2 + 8);
   let round = 0;
   // 模型跳过工具直接回答的纠偏计数（首答模式防行为漂移）
   let noToolRetries = 0;
@@ -597,7 +628,11 @@ export async function* runAgent(
         const answer = await closingWait;
         // 超时/断开：以"未回应"收尾落库（不再无限挂起，也不拿哨兵值当用户回答）
         if (isHitlGone(answer)) {
-          session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ closing, question, userAnswer: "（用户未回应，已收束）" }) });
+          /**
+           * P2-⑦：closing / question 是**模型自己写在 arguments 里**的，
+           *   这里只回传**新增信息**（用户的回应）→ 实测重复率从 71% 降到 0。
+           */
+          session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ saved: true, userAnswer: "（用户未回应，已收束）" }) });
           const finalReading = buildFinalReading(session);
           db.updateSessionReading(session.id, finalReading);
           const lastReview = (session as unknown as { __lastReview?: ReviewResult | null }).__lastReview ?? null;
@@ -608,7 +643,8 @@ export async function* runAgent(
           yield { type: "done" };
           return;
         }
-        session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ closing, question, userAnswer: answer }) });
+        // ⚠️ P2-⑦：closing / question 已在 arguments 里 → 只回传新增信息
+        session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ saved: true, userAnswer: answer }) });
         yield { type: "tool", tool: { name, args, resultSummary: `收束完成，用户回应：${answer.slice(0, 40)}`, durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, `收束｜${answer.slice(0, 50)}`, Date.now() - t0);
         roundToolNames.push(name);
@@ -826,9 +862,17 @@ export async function* runAgent(
           session.messages.push({
             role: "tool",
             tool_call_id: tc.id,
+            /**
+             * P2-⑦（第二轮优化分析 2026-11 ⑦）：**不回显 narrative/meaning/question**。
+             * ⚠️ 为什么：这三个字段是**模型自己写在 tool_calls.arguments 里**的，
+             *    工具结果再抄一遍 = 纯重复（实测重复率 55%~66%）。
+             * ⚠️ 成本放大效应：prompt 是**累积**的 —— 第 k 轮省下的每个字，
+             *    后续每一轮都要再省一次。实测单场累计浪费 ≈ 10,078 字 ≈ 4,031 tokens
+             *    ≈ 单场 supervisor 消耗的 16%。
+             * ⚠️ 只返回**新增信息**：翻了什么牌 + 用户的回答。
+             */
             content: JSON.stringify({
               card: `${pos}·${drawn.card.nameZh}`,
-              narrative, meaning, question,
               userAnswer: "（用户未回应）",
             }),
           });
@@ -844,9 +888,9 @@ export async function* runAgent(
         session.messages.push({
           role: "tool",
           tool_call_id: tc.id,
+          // ⚠️ P2-⑦：同上方 —— 不回显 narrative/meaning/question（模型已写在 arguments 里）
           content: JSON.stringify({
             card: `${pos}·${drawn.card.nameZh}`,
-            narrative, meaning, question,
             userAnswer: answer,
           }),
         });
@@ -1213,7 +1257,13 @@ export async function* runAgent(
         session.messages.push({
           role: "tool",
           tool_call_id: tc.id,
-          content: JSON.stringify({ contract: session.contractQuestion, scope, userConfirmed: confirmed }),
+          /**
+           * P2-⑦：不回显 contract（模型已写在 arguments 里）→ 实测重复率从 54% 降到 0。
+           * ⚠️ 保留 userConfirmed —— **用户的确认是新信息**（模型无从得知）。
+           * ⚠️ 保留 scope —— 它是**牌阵范围**（模型传的），但很短且是流程关键状态，
+           *    留着能让模型确认"我承诺的是这个范围"；如需极致压缩可再删。
+           */
+          content: JSON.stringify({ scope, userConfirmed: confirmed }),
         });
         yield { type: "tool", tool: { name, args, resultSummary: `承约确认：${session.contractQuestion}`, durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, `承约：${session.contractQuestion}`, Date.now() - t0);
@@ -1272,8 +1322,9 @@ export async function* runAgent(
           session.messages.push({
             role: "tool",
             tool_call_id: tc.id,
+            // ⚠️ P2-⑦：同上方 —— 不回显 questions（模型已写在 arguments 里）
             content: JSON.stringify({
-              invocation: questions.map((q) => ({ q, a: "" })),
+              answers: [],
               note: "用户未回应呼召",
             }),
           });
@@ -1294,8 +1345,15 @@ export async function* runAgent(
         session.messages.push({
           role: "tool",
           tool_call_id: tc.id,
+          /**
+           * P2-⑦：questions 是**模型自己写的**（在 arguments 里）→ 不回显。
+           * ⚠️ 只回传**新增信息**：用户对每个问题的回答。
+           * ⚠️ 保持 q/a 的**配对结构** —— 模型需要知道"哪个答案对应哪个问题"，
+           *    否则无法把回答串进后续解读。这里用**序号**代替完整问题文本，
+           *    既保留了配对语义，又省掉了整段问题的字数。
+           */
           content: JSON.stringify({
-            invocation: questions.map((q, i) => ({ q, a: session.invocation?.answers[i] ?? "" })),
+            answers: session.invocation.answers.map((a, i) => ({ i, a })),
           }),
         });
         yield { type: "tool", tool: { name, args, resultSummary: `三问呼召：${session.invocation.answers.length} 个回答`, durationMs: Date.now() - t0 } };
@@ -1580,11 +1638,19 @@ export async function* runAgent(
   } finally {
     // 退出路径统一补齐 tool_call 响应（保持协议配对）
     flushPendingToolResponses();
-    session.busy = false; // 释放并发锁（允许后续追问）
+    // ⚠️ P2-⑩：这里**不再**释放 busy —— 所有权归路由层（releaseSession）。
+    //   重复释放虽然幂等，但会让"占用/释放"的对称性只存在于一半路径里，
+    //   以后加新调用点时极易漏掉其中一边。
   }
   } finally {
-    // runAgent 外层：无论从哪条路径退出（含 localFallback）都释放锁
-    session.busy = false;
+    // runAgent 外层：无论从哪条路径退出（含 localFallback）都收尾
+    // ⚠️ P2-⑩：busy 的释放同样交给路由层（见 api/interpret/route.ts 的 finally）。
+    // P2-②（第二轮优化分析 2026-11 ②）：清除截断标记 —— **原本零调用点**。
+    // ⚠️ 后果：`truncatedSessions` 这个 Set 只 add 不 delete →
+    //    每场占卜加一条、从不移除 → 进程级内存**单调增长**（纯泄漏）。
+    //    占卜是高频操作，几周后就是几十 MB 的常驻内存。
+    // ⚠️ 放在最外层 finally：无论正常结束 / 异常 / 降级路径都要清。
+    try { clearTruncated(session.id); } catch { /* 清理失败不阻断 */ }
     // P1-④：退出前把最终状态落快照（进程重启后可恢复）
     try {
       db.saveSessionState(session.id, snapshotSession(session));

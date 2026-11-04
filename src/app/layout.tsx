@@ -4,6 +4,7 @@ import "@fontsource/cinzel/600.css";
 import "@fontsource/ma-shan-zheng/400.css";
 import "./globals.css";
 import PwaRegister from "@/components/PwaRegister";
+import MotionProvider from "@/components/MotionProvider";
 
 export const metadata: Metadata = {
   title: "Mystic Tarot · AI 塔罗占卜",
@@ -55,7 +56,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
      */
     <html lang="zh-CN" className="h-full antialiased">
       <body className="flex flex-col">
-        {children}
+        {/* ⚠️ P2-⑳：动效降级包在最外层 —— framer-motion 的 JS 动画
+            也跟随系统的 prefers-reduced-motion 设置 */}
+        <MotionProvider>
+          {children}
+        </MotionProvider>
         <PwaRegister />
       </body>
     </html>

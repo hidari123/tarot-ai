@@ -86,7 +86,43 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number,
   return lines;
 }
 
+/**
+ * ⚠️ P2-⑲（第二轮优化分析 2026-11 ⑲）：Canvas 字体栈。
+ *
+ * ⚠️ 原来的问题：Canvas 里写的是 `'Noto Serif SC'` / `'Noto Sans SC'`，
+ *   但 **package.json 里列了 @fontsource/noto-serif-sc，layout.tsx 却从未 import**
+ *   → 这两个字体在浏览器里**根本不存在** → Canvas **静默回退**到 sans-serif
+ *   → 分享卡的字体与设计完全不符（而且没有任何报错，很难发现）。
+ *
+ * ⚠️ 修法：
+ *   ① 字体栈只用**必定存在**的：项目实际加载的 'Ma Shan Zheng' + 系统中文 sans
+ *      （PingFang SC / Microsoft YaHei / Noto Sans CJK —— 绝大多数系统都有）
+ *   ② 绘制前 **await document.fonts.ready** ——
+ *      Canvas 的 ctx.font 是**同步**的，字体没加载完就画会画出回退字体。
+ */
+const FONT_SERIF = "'Ma Shan Zheng', 'Songti SC', 'SimSun', serif";
+const FONT_SANS =
+  "'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Source Han Sans SC', 'Hiragino Sans GB', sans-serif";
+
+/**
+ * 等待网页字体加载完成（Canvas 绘制必须同步使用已加载的字体）。
+ *
+ * ⚠️ 最多等 1.5s —— 字体 CDN 挂了也不能让"保存图片"按钮永远转圈。
+ */
+async function ensureFontsReady(): Promise<void> {
+  try {
+    if (!("fonts" in document)) return;
+    await Promise.race([
+      document.fonts.ready,
+      new Promise((r) => setTimeout(r, 1500)),
+    ]);
+  } catch { /* 字体 API 不可用 → 直接画（会回退，但不阻断） */ }
+}
+
 export async function renderShareCard(data: ShareCardData): Promise<Blob | null> {
+  // ⚠️ P2-⑲：先等字体加载完再画（否则中文全是回退字体）
+  await ensureFontsReady();
+
   const canvas = document.createElement("canvas");
   canvas.width = W;
   canvas.height = H;
@@ -98,11 +134,11 @@ export async function renderShareCard(data: ShareCardData): Promise<Blob | null>
   /* ---- 标题 ---- */
   ctx.textAlign = "center";
   ctx.fillStyle = "rgba(233, 213, 255, 0.95)";
-  ctx.font = "600 52px 'Ma Shan Zheng', 'Noto Serif SC', serif";
+  ctx.font = `600 52px ${FONT_SERIF}`;
   ctx.fillText("✦ 命运之卷 ✦", W / 2, 140);
 
   /* ---- 问题 ---- */
-  ctx.font = "400 34px 'Noto Sans SC', sans-serif";
+  ctx.font = `400 34px ${FONT_SANS}`;
   ctx.fillStyle = "rgba(196, 181, 253, 0.85)";
   const q = ellipsize(ctx, `「${data.question}」`, W - 200);
   ctx.fillText(q, W / 2, 210);
@@ -144,7 +180,7 @@ export async function renderShareCard(data: ShareCardData): Promise<Blob | null>
       roundRect(ctx, x, cardY, cardW, cardH, 10);
       ctx.fill();
       ctx.fillStyle = "rgba(233, 213, 255, 0.7)";
-      ctx.font = "400 30px 'Noto Serif SC', serif";
+      ctx.font = `400 30px ${FONT_SERIF}`;
       ctx.textAlign = "center";
       ctx.fillText(c.nameZh.slice(0, 2), x + cardW / 2, cardY + cardH / 2);
     }
@@ -153,10 +189,10 @@ export async function renderShareCard(data: ShareCardData): Promise<Blob | null>
     // 牌名 + 位置
     ctx.textAlign = "center";
     ctx.fillStyle = "rgba(253, 230, 138, 0.95)";
-    ctx.font = "500 30px 'Noto Serif SC', serif";
+    ctx.font = `500 30px ${FONT_SERIF}`;
     ctx.fillText(c.nameZh + (c.reversed ? "·逆" : ""), x + cardW / 2, cardY + cardH + 52);
     ctx.fillStyle = "rgba(196, 181, 253, 0.6)";
-    ctx.font = "400 24px 'Noto Sans SC', sans-serif";
+    ctx.font = `400 24px ${FONT_SANS}`;
     ctx.fillText(c.pos, x + cardW / 2, cardY + cardH + 86);
   }
 
@@ -168,7 +204,7 @@ export async function renderShareCard(data: ShareCardData): Promise<Blob | null>
   // 文案较长时缩小字号；行数上限 8（LLM 总结 80~150 字通常 2~4 行，余量充足）
   const summaryLen = data.summary.length;
   const fontPx = summaryLen > 200 ? 26 : summaryLen > 120 ? 28 : 32;
-  ctx.font = `400 ${fontPx}px 'Noto Sans SC', sans-serif`;
+  ctx.font = `400 ${fontPx}px ${FONT_SANS}`;
   const lineH = fontPx + 20;
   const maxLines = 8;
 
@@ -177,7 +213,7 @@ export async function renderShareCard(data: ShareCardData): Promise<Blob | null>
 
   /* ---- 落款 ---- */
   ctx.textAlign = "center";
-  ctx.font = "400 26px 'Noto Sans SC', sans-serif";
+  ctx.font = `400 26px ${FONT_SANS}`;
   ctx.fillStyle = "rgba(147, 129, 199, 0.55)";
   const brand = data.personaName ? `${data.personaName} · Mystic Tarot AI` : "Mystic Tarot AI";
   ctx.fillText(brand, W / 2, H - 90);
@@ -206,6 +242,14 @@ export default function ShareCardButton({ data }: { data: ShareCardData }) {
   /** 预览弹窗：先看到图，再决定是否下载 */
   const [preview, setPreview] = useState<string | null>(null);
   const previewUrlRef = useRef<string | null>(null);
+  /**
+   * ⚠️ P2-㉒：状态复位定时器的句柄（卸载时清理）。
+   *   原来的 setTimeout(2500) 没有句柄 → 卸载后仍触发 → setState on unmounted。
+   * ⚠️ 必须声明在**所有 useCallback 之前** ——
+   *   React 19 的 `react-hooks/immutability` 规则禁止在 hook 之后
+   *   修改"传给 hook 的值"，ref 也不例外（声明在后面就会被判为违规）。
+   */
+  const resetTimer = useRef<number | null>(null);
   const [downloaded, setDownloaded] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
 
@@ -262,7 +306,8 @@ export default function ShareCardButton({ data }: { data: ShareCardData }) {
     a.download = `mystic-tarot-${(data.sessionId ?? Date.now()).toString().slice(0, 8)}.png`;
     a.click();
     setDownloaded(true);
-    setTimeout(() => setDownloaded(false), 2500);
+    if (resetTimer.current != null) window.clearTimeout(resetTimer.current);
+    resetTimer.current = window.setTimeout(() => setDownloaded(false), 2500);
   }, [data.sessionId]);
 
   /** 关闭预览：释放 blob URL，避免内存泄漏 */
@@ -272,10 +317,11 @@ export default function ShareCardButton({ data }: { data: ShareCardData }) {
     setPreview(null);
   }, []);
 
-  /** 组件卸载时释放 */
+  /** 组件卸载时释放（blob URL + 定时器） */
   useEffect(() => {
     return () => {
       if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+      if (resetTimer.current != null) window.clearTimeout(resetTimer.current);
     };
   }, []);
 
@@ -329,7 +375,8 @@ export default function ShareCardButton({ data }: { data: ShareCardData }) {
         document.body.removeChild(ta);
       }
       setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
+      if (resetTimer.current != null) window.clearTimeout(resetTimer.current);
+      resetTimer.current = window.setTimeout(() => setCopied(false), 2500);
     } catch {
       setError("复制失败 —— 可手动访问 " + shareUrl);
     }
@@ -369,6 +416,11 @@ export default function ShareCardButton({ data }: { data: ShareCardData }) {
           onClick={closePreview}
         >
           <div
+            // ⚠️ P2-⑮：模态框语义（role=dialog + aria-modal）——
+            //   屏幕阅读器要能识别出"这是一个对话框"
+            role="dialog"
+            aria-modal="true"
+            aria-label="分享卡预览"
             className="relative max-w-[90vw] max-h-[85vh] flex flex-col items-center gap-4"
             onClick={(e) => e.stopPropagation()}
           >
