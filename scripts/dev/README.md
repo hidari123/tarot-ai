@@ -46,8 +46,30 @@
 |---|---|
 | `fix-sse-parsing.mjs` | 批量把验证脚本的 SSE 单行解析改成多行帧解析（P1-③D 加 `id:` 字段后的一次性迁移） |
 
+### 数据体检（2026-11-04 公网化改造后新增）
+> 这批脚本回答的是"**改造之后，瓶颈跑到哪去了**"——
+> 上一轮的清单打完后，必须重新用数据定位新热点，而不是凭感觉列点。
+
+| 脚本 | 回答什么问题 |
+|---|---|
+| `health-check.mjs` | **综合体检**：会话终态 / 失败原因 / token 消耗结构 / 单场分布 / 审校重写率 / 耗时分布 / 降级触发 / 表增长 |
+| `prompt-histogram.mjs` | supervisor 的 prompt token 分桶分布；短 prompt 调用是什么；单场 prompt 序列 |
+| `message-structure.mjs` | 单场占卜的 message 结构（每条消息的角色/长度/工具）；轮次分布 |
+| `prompt-composition.mjs` | 逐轮模拟 `trimHistory` 后的 prompt 规模（压缩效果） |
+| `prompt-breakdown.mjs` | **prompt 精确构成**：system / user / assistant 正文 / tool 结果 / tool_calls 参数 各占多少 |
+| `tool-args.mjs` | 模型实际传给工具的参数长什么样（`reveal_card` 的 narrative/meaning 等） |
+| `dup-content.mjs` | **tool 结果是否重复了 arguments 里的内容**（逐工具算重复率） |
+| `dup-cost.mjs` | 重复内容的**累积** token 成本（第 k 轮省 d 字 → 后续每轮都省） |
+| `prefetch-waste.mjs` | 投机预检索的缓存命中率实测；`hybridSearch` 是否同步阻塞 |
+| `cache-key-design.mjs` | 缓存 key 把 `top_k` 混进去的设计代价量化 |
+| `fix-effect.mjs` | 改造前 vs 改造后的会话终态对比；abort 修复的效果（早退出比例） |
+| `telemetry-check.mjs` | 遥测落库内部一致性检查（判据：有无"有 usage 没 tools"的矛盾） |
+
 ## 使用约定
 
 1. **用完即弃**：诊断完如果结论已写进代码注释，脚本可以删
 2. **不写死数据路径**：统一用相对路径 `data/tarot.db`，别硬编码绝对路径
 3. **不做断言**：这些脚本只输出信息，退出码恒为 0 —— 需要断言请写 `verify-*`
+4. **import TS 模块的要用 tsx 跑**：
+   `prompt-composition` / `prompt-breakdown` / `prefetch-waste` / `cache-key-design`
+   → `npx tsx scripts/dev/<name>.mjs`（其余用 `node` 即可）
