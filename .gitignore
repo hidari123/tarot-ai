@@ -59,3 +59,7 @@ scripts/dev/.out/
 # 妯″瀷缂撳瓨锛圖ocker 鏋勫缓鏃朵細閲嶆柊棰勫彇锛屼笉鍏ヤ粨搴擄級
 /.model-cache
 /.cache
+
+# 提交信息临时文件（脚本生成，用完即删）
+COMMIT_EDITMSG.tmp
+
