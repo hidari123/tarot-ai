@@ -51,6 +51,28 @@
 - 错误边界里不能用 `redirect()`（服务端 API），`global-error.tsx` 又不在 Router 上下文里
   → 路由级用 `router.push()`，根级用 `location.href` + 显式 lint 豁免。
 
+### 端到端验证（真实跑一场占卜）
+
+`scripts/dev/e2e-smoke.mjs` 跑完整一场占卜（220 个 SSE 事件、15 次工具调用、
+10 次 HITL 交互、3 张牌、review + done 全部正常），随后校验新链路：
+
+| 检查项 | 结果 |
+|---|---|
+| 快照剥离 | ✓ `state_json` 内无 messages，37 条落在 `session_messages` |
+| 消息完整性 | ✓ 37 条全部可解析，解析失败 0 |
+| **协议配对**（assistant→tool） | ✓ **错位 0 处** ← ⑦ tool 瘦身没破坏协议 |
+| 状态字段 | ✓ 25 个字段齐全（3 张牌 / 3 条解读 / 45 条检索 / reading / ritualPhase） |
+| seq 续号 | ✓ 最大 seq = 220，与 SSE 事件数一致 ← ⑫ 生效 |
+
+### 本轮未做的两项（明确记录，避免"以为做完了"）
+
+- **⑰ zod 完整版进客户端 bundle + 每事件一次 safeParse**：
+  这项需要把 schema 拆成"服务端版 / 前端轻量 type guard"两份，
+  属于**跨模块重构**且收益依赖真实流量测量 → 本轮不做，留作独立一轮。
+- **⑱ StardustCursor 永久 rAF**：
+  组件内**已经**检查了 `prefers-reduced-motion`；但"空闲时仍每帧 clearRect"是真实开销。
+  本轮只做了 ⑳ 的全局降级，未改它的 rAF 生命周期 → 同样留作独立一轮。
+
 ---
 
 ## 一、方法论：这一轮怎么找问题
