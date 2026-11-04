@@ -21,6 +21,24 @@ import type { AgentSession } from "../types";
 /** 单场占卜的检索预算（防死循环） */
 const RAG_BUDGET = 3;
 
+/**
+ * 该会话的检索预算（按模式）
+ *
+ * ⚠️ 2026-11-04 双模式：快速模式的预算是 2（深度模式仍是 3）。
+ *
+ * ⚠️ 实测踩到的坑：快速模式第一次跑出时，工具序列是
+ *   rag_search ×3 + reveal_card ×3 + interpret_card ×1
+ *   → 共 11 轮 → **撞了 max_rounds**。
+ *   根因之一就是检索用了 3 次（模型一张牌查一次）。
+ * ⚠️ 修法：
+ *   · 预算降到 2（省 1 轮）
+ *   · system prompt 明确要求"一次 rag_search 查所有牌"（省 2 轮）
+ *   → 两者叠加，快速模式的检索从 3 轮降到 1 轮。
+ */
+export function ragBudgetFor(session: { mode?: string }): number {
+  return session.mode === "quick" ? 2 : RAG_BUDGET;
+}
+
 /* ------------------------------------------------------------------ */
 /* 跨会话查询缓存（P1-③）                                              */
 /* ------------------------------------------------------------------ */
@@ -226,9 +244,11 @@ export async function execRagSearch(
   // ---- 预算硬拦截（超预算后不再放行新查询，防"换词重试"绕过查重）----
   // 实测：money 用例连续 12 轮 rag_search，每次换个查询词，查重拦不住。
   // 超预算后一律返回负反馈（不管牌是否讲完——检索预算与翻牌进度无关）。
-  if (session.ragCallCount >= RAG_BUDGET) {
+  // ⚠️ 2026-11-04 双模式：预算按模式（快速模式 2 次，深度模式 3 次）
+  const budget = ragBudgetFor(session);
+  if (session.ragCallCount >= budget) {
     return {
-      summary: `⚠️ 检索预算已用尽（${session.ragCallCount}/${RAG_BUDGET} 次）。累计 ${session.ragHits.length} 条资料足够支撑解读：继续 reveal_card/interpret_card 讲牌，全部讲完后调用 write_reading。不要再检索。`,
+      summary: `⚠️ 检索预算已用尽（${session.ragCallCount}/${budget} 次）。累计 ${session.ragHits.length} 条资料足够支撑解读：继续 reveal_card/interpret_card 讲牌，全部讲完后调用 write_reading。不要再检索。`,
       currentHits: [],
       allHits: session.ragHits,
       duplicate: true,
@@ -273,7 +293,7 @@ export async function execRagSearch(
     }
   }
 
-  const budgetNote = session.ragCallCount >= RAG_BUDGET
+  const budgetNote = session.ragCallCount >= ragBudgetFor(session)
     ? "（已达检索预算上限，请立即 write_reading）"
     : "";
   const zeroNote = currentHits.length === 0

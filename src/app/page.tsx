@@ -13,6 +13,7 @@ import DialogueFlow, { type FlowEntry } from "@/components/DialogueFlow";
 import CardFan, { type FanCard } from "@/components/CardFan";
 import ReviewCard, { type ReviewData } from "@/components/ReviewCard";
 import AmbienceToggle, { useAmbiencePhase } from "@/components/AmbienceToggle";
+import { DEFAULT_MODE, MODE_PROFILES, type DivinationMode } from "@/lib/agent/divination-mode";
 import ClosingPanel from "@/components/ClosingPanel";
 import Icon, { type IconName } from "@/components/icons";
 
@@ -332,6 +333,12 @@ const STAGE_GONG_PHASES = ["invocation", "card_selection", "synthesis", "closing
 export default function TarotApp() {
   const [question, setQuestion] = useState("");
   const [persona, setPersona] = useState<PersonaView | null>(null);
+  /**
+   * ⚠️ 2026-11-04 双模式：占卜模式（快速一问 / 深度解读）
+   * ⚠️ 默认「快速」—— 降低首次体验门槛（用户平均只花 45 秒），
+   *   深度模式留给愿意等的人。
+   */
+  const [mode, setMode] = useState<DivinationMode>(DEFAULT_MODE);
   const [personas, setPersonas] = useState<PersonaView[]>([]);
   const [stage, setStage] = useState<"input" | "drawing" | "reading">("input");
   const [sessionId, setSessionId] = useState("");
@@ -1439,7 +1446,7 @@ export default function TarotApp() {
       const res = await fetch("/api/interpret", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q, persona: persona?.id, userKey: getUserKey() }),
+        body: JSON.stringify({ question: q, persona: persona?.id, userKey: getUserKey(), mode }),
         signal: ctrl.signal,
       });
       await consumeStream(res);
@@ -1473,7 +1480,7 @@ export default function TarotApp() {
       streamAbortRef.current = null;
       setStreaming(false);
     }
-  }, [question, persona, consumeStream, streaming, resumeStream, abortStream]);
+  }, [question, persona, mode, consumeStream, streaming, resumeStream, abortStream]);
 
   /* HITL 应答（选牌扇面 / 随机代抽等仍在流外的交互）。
      ⚠️ 提交锁：双击选项/按钮会双发 POST，第二次 409 报错干扰用户 */
@@ -1751,6 +1758,41 @@ export default function TarotApp() {
                 </motion.button>
               ))}
             </div>
+          </div>
+
+          {/* ---------- 占卜模式切换（2026-11-04 双模式）----------
+            ⚠️ 为什么放在输入框**上方**（而不是占卜开始后）：
+              用户在**提问之前**就该知道这次会得到什么 ——
+              "快速一问 vs 深度解读"是两种不同的**产品**，不是同一个东西的快慢版。
+              放在后面就变成了"已经开始了才告诉我会等很久"（预期错配）。 */}
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <span className="text-[11px] tracking-[0.2em] text-purple-300/40">占卜方式</span>
+            {(Object.keys(MODE_PROFILES) as DivinationMode[]).map((m) => {
+              const p = MODE_PROFILES[m];
+              const active = mode === m;
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMode(m)}
+                  aria-pressed={active}
+                  title={`${p.tagline} · 约 ${p.estSeconds[0]}~${p.estSeconds[1]} 秒`}
+                  className={`px-3 py-1.5 rounded-full text-xs tracking-[0.15em] border transition-all ${
+                    active
+                      ? "border-purple-400/60 bg-purple-500/20 text-purple-100 shadow-[0_0_16px_rgba(168,85,247,0.28)]"
+                      : "border-white/10 bg-white/[0.03] text-purple-300/50 hover:text-purple-200/80 hover:border-purple-400/30"
+                  }`}
+                >
+                  {p.label}
+                  <span className="ml-1.5 text-[10px] opacity-55">
+                    {p.estSeconds[0]}~{p.estSeconds[1]}s
+                  </span>
+                </button>
+              );
+            })}
+            <span className="text-[10px] text-purple-300/30 ml-1">
+              {MODE_PROFILES[mode].tagline}
+            </span>
           </div>
 
           <div className="flex flex-col sm:flex-row gap-3">

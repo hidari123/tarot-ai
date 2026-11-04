@@ -30,6 +30,8 @@
  *   而一张 30 行的转移表足够，且更好读。
  */
 
+import { requiredPhases, type DivinationMode } from "./divination-mode";
+
 /* ------------------------------------------------------------------ */
 /* 状态定义                                                            */
 /* ------------------------------------------------------------------ */
@@ -113,6 +115,12 @@ export const TOOL_PHASE_REQUIREMENT: Record<string, RitualPhase> = {
   reveal_card: "per_card",
   /** 讲牌：需要已翻牌（牌面必须先揭示才能解读） */
   interpret_card: "per_card",
+  /**
+   * 讲牌（批量版，快速模式专用）
+   * ⚠️ 2026-11-04：与 interpret_card 同样的前置（已翻牌）
+   *   —— 批量工具也必须建立在"牌已揭示"之上，否则模型会凭空讲牌。
+   */
+  interpret_all_cards: "per_card",
   /** 综合：需要逐张解读完成 */
   write_reading: "synthesis",
   /** 收束：需要综合完成 */
@@ -136,7 +144,8 @@ export const TOOL_PHASE_REQUIREMENT: Record<string, RitualPhase> = {
  *   card_selection → contract 同理（用户想改问题）
  */
 const ALLOWED_TRANSITIONS: Record<RitualPhase, RitualPhase[]> = {
-  contract: ["contract", "invocation"],       // 可重复承约（幂等守卫另管）
+  // ⚠️ contract → card_selection 是**快速模式**的路径（跳过呼召三问）
+  contract: ["contract", "invocation", "card_selection"], // 可重复承约（幂等守卫另管）
   invocation: ["invocation", "contract", "card_selection"], // 可回退重做承约
   card_selection: ["card_selection", "contract", "invocation", "per_card"],
   per_card: ["per_card", "card_selection", "synthesis"],   // 可回退重新选牌
@@ -145,7 +154,16 @@ const ALLOWED_TRANSITIONS: Record<RitualPhase, RitualPhase[]> = {
   done: ["done"],                              // 终态
 };
 
-/** 转移是否合法 */
+/**
+ * 转移是否合法
+ *
+ * ⚠️ 为什么**不**按模式收紧（比如"快速模式禁止进入 invocation"）：
+ *   转移表表达的是"流程上可达"，而"该不该走这一步"由**守卫的前置集合**决定
+ *   （见 canEnter + requiredPhases）。
+ *   如果这里按模式收紧，快速模式一旦模型误调 invoke_three_questions，
+ *   守卫会给出"非法转移"而不是"这个模式不需要这一步"—— 提示会误导模型。
+ *   → 模式相关的拦截统一放在 canEnter 与 supervisor 的工具分发层。
+ */
 export function canTransition(from: RitualPhase, to: RitualPhase): boolean {
   return ALLOWED_TRANSITIONS[from]?.includes(to) ?? false;
 }
@@ -183,20 +201,29 @@ export interface GuardResult {
  *     - completed：哪些阶段已经**完成**
  *   完成情况由调用方根据实际进度推导（承约定稿了？呼召拿到答案了？牌抽了？）。
  *
+ * ⚠️⚠️ mode 参数（2026-11-04 双模式）：
+ *   快速模式跳过呼召 → `invocation` 永远不会出现在 completed 里。
+ *   如果这里检查**全部**前置，选牌会被**永久拦截**（守卫死锁）。
+ *   → 按模式过滤前置集合（见 divination-mode.ts 的 requiredPhases）。
+ *   ⚠️ 默认 "deep" → 老会话（无 mode 字段）行为完全不变。
+ *
  * @param current 当前正在进行的阶段
  * @param target  目标阶段
  * @param completed 已完成的阶段集合（用于判断前置是否齐备）
  * @param ctx     上下文（用于生成具体提示）
+ * @param mode    占卜模式（决定哪些阶段是必需的）
  */
 export function canEnter(
   current: RitualPhase,
   target: RitualPhase,
   completed: Set<RitualPhase> = new Set(),
-  ctx: { toolName?: string } = {}
+  ctx: { toolName?: string } = {},
+  mode: DivinationMode = "deep"
 ): GuardResult {
-  // 目标阶段的前置阶段（按顺序）
+  // 目标阶段的前置阶段（按顺序）—— ⚠️ 只保留**该模式要求**的前置
   const targetIdx = phaseIndex(target);
-  const prerequisites = RITUAL_ORDER.slice(0, targetIdx);
+  const required = requiredPhases(mode);
+  const prerequisites = RITUAL_ORDER.slice(0, targetIdx).filter((p) => required.has(p));
 
   // 找出第一个未完成的前置阶段
   const missing = prerequisites.find((p) => !completed.has(p));
@@ -228,7 +255,7 @@ export function canEnter(
     return {
       ok: false,
       missing: current,
-      hint: `${tool} 暂时不能进行：当前处于「${RITUAL_PHASE_LABEL[current]}」阶段，不能直接进入「${RITUAL_PHASE_LABEL[target]}」。${nextActionHint(current)}`,
+      hint: `${tool} 暂时不能进行：当前处于「${RITUAL_PHASE_LABEL[current]}」阶段，不能直接进入「${RITUAL_PHASE_LABEL[target]}」。${nextActionHint(current, mode)}`,
     };
   }
 
@@ -365,8 +392,25 @@ export function advancePhase(
  *
  * ⚠️ 用在"轮次逼近上限"这类需要催模型的场合 ——
  *   比笼统的"请继续"具体得多，模型更不容易跑偏。
+ *
+ * ⚠️ mode（2026-11-04 双模式）：快速模式不需要呼召 ——
+ *   如果在这里提示"请调用 invoke_three_questions"，
+ *   模型会去调用一个**守卫不要求**、用户也不想要的工具 → 多问一轮，破坏体验。
  */
-export function nextActionHint(phase: RitualPhase): string {
+export function nextActionHint(phase: RitualPhase, mode: DivinationMode = "deep"): string {
+  if (mode === "quick") {
+    const quickHints: Record<RitualPhase, string> = {
+      contract: "现在应该先调用 establish_contract 与用户确认问题。",
+      // ⚠️ 快速模式：跳过呼召，直接选牌
+      invocation: "现在是快速模式 —— 不要调用 invoke_three_questions，直接进入选牌。",
+      card_selection: "现在应该调用 offer_card_selection 让用户亲手选牌。",
+      per_card: "现在应该把已翻开的牌一次讲完（可一次传多张牌给 interpret_card）。",
+      synthesis: "现在应该调用 write_reading 做最终综合。",
+      closing: "现在应该调用 close_reading 做收束。",
+      done: "仪式已完成，等待用户后续追问。",
+    };
+    return quickHints[phase];
+  }
   const hints: Record<RitualPhase, string> = {
     contract: "现在应该先调用 establish_contract 与用户确认问题。",
     invocation: "现在应该调用 invoke_three_questions 请用户回答三问。",

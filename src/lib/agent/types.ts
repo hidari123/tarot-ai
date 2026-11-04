@@ -259,6 +259,15 @@ export interface AgentSession {
    */
   ritualPhase?: import("./ritual-machine").RitualPhase;
   /**
+   * 占卜模式（2026-11-04 双模式：快速一问 / 深度解读）
+   *
+   * ⚠️ 决定仪式路径的**子集**：
+   *   · 快速模式跳过呼召三问（HITL 交互 10 次 → 3 次）
+   *   · 快速模式一次讲完 3 张（不逐张翻、不逐张提问）
+   * ⚠️ 老会话没有这个字段 → 按 "deep" 处理（保持原行为）。
+   */
+  mode?: import("./divination-mode").DivinationMode;
+  /**
    * P2-⑨：综合（synthesis）是否已完成
    *
    * ⚠️ 为什么需要这个独立标记（守卫表引入后暴露的真 bug）：

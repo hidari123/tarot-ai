@@ -28,13 +28,14 @@ import { buildProviders, pickProvider, type LLMProvider } from "../llm-providers
 import { callLLM, type CallResult } from "./llm";
 import { waitUserAnswer, isHitlGone, nudgeText } from "./hitl";
 import { markSessionDirty, snapshotSession } from "./session";
-import { TOOLS } from "./tools/definitions";
-import { execRagSearch, prefetchForCard, RAG_BUDGET } from "./tools/rag";
+import { toolsForMode } from "./tools/definitions";
+import { execRagSearch, prefetchForCard, ragBudgetFor } from "./tools/rag";
 import { execDrawCards } from "./tools/cards";
 import { runAnalyst, runWriter, runReviewer, type ReviewResult } from "./subagents";
 import { generateEcho } from "./echo";
 import { runLocalFallback } from "./fallback";
 import { clearTruncated } from "./truncation";
+import { modeProfile } from "./divination-mode";
 import {
   canEnter, advancePhase, RITUAL_PHASE_LABEL, completedPhases, TOOL_PHASE_REQUIREMENT,
 } from "./ritual-machine";
@@ -181,7 +182,24 @@ export async function* runAgent(
    */
   const BASE_ROUNDS = Number(process.env.MAX_ROUNDS) || 22;
   const cardCount = Math.max(1, session.drawnCards?.length ?? 3);
-  const MAX_ROUNDS = Math.max(BASE_ROUNDS, cardCount * 2 + 8);
+  /**
+   * ⚠️ 2026-11-04 双模式：轮次上限按模式走。
+   *
+   * ⚠️ 快速模式省轮次的**真正来源**（不是压低上限）：
+   *   · 跳过呼召三问（省 1 轮工具调用 + 1 轮 LLM）
+   *   · 一次 interpret_card 讲完 3 张（省 2 轮 LLM 往返）
+   *   → 实际轮次从 ~14 降到 ~8
+   * ⚠️ 上限本身仍保留"按牌数算"的下限 —— 它是**安全网**，
+   *   不是"目标值"。压得太低会让 5 张牌的快速占卜撞墙（max_rounds 失败）。
+   * ⚠️ 深度模式保持旧行为（不低于 BASE_ROUNDS=22）。
+   */
+  const modeProfile_ = modeProfile(session.mode ?? "deep");
+  const MAX_ROUNDS = Math.max(
+    modeProfile_.maxRounds,
+    cardCount * 2 + 8,
+    // ⚠️ 深度模式保持旧行为（不低于 22）
+    session.mode === "quick" ? 0 : BASE_ROUNDS
+  );
   let round = 0;
   // 模型跳过工具直接回答的纠偏计数（首答模式防行为漂移）
   let noToolRetries = 0;
@@ -332,23 +350,63 @@ export async function* runAgent(
       // ---- 临期强制收尾（防 max_rounds 死循环撞墙）----
       // 轮次接近上限时注入"必须立即收尾"指令（只注入到本次调用，不污染会话历史）
       // 注意：逐张解读模式下不能过早催促——还有牌没讲完时催促会导致模型乱来。
-      const LATE_ROUND = Math.max(10, MAX_ROUNDS - 6); // 留 6 轮缓冲
+      /**
+       * ⚠️ 2026-11-04 双模式：快速模式的流程更短，催促点必须**提前**。
+       *
+       * ⚠️ 实测踩到的坑：原来 `Math.max(10, MAX_ROUNDS - 6)` 的下限是 10。
+       *   快速模式 MAX_ROUNDS=14 → LATE_ROUND=10，
+       *   但流程需要 11 轮（10 次工具 + 1 次收尾）→ **在第 14 轮撞墙**，
+       *   而且撞墙时 `perCardPending` 为 true → 催促指令根本没注入 → 模型不知道要收尾。
+       *
+       * ⚠️ 修法：下限按模式走 —— 快速模式的下限是 6（它的正常流程只需 ~6 轮）。
+       */
+      const LATE_ROUND =
+        session.mode === "quick"
+          ? Math.max(6, MAX_ROUNDS - 4)
+          : Math.max(10, MAX_ROUNDS - 6); // 留 6 轮缓冲
       const perCardPending = session.cardReadings.filter((r) => r.reading).length < session.drawnCards.length;
-      const needWrapUp = (round >= LATE_ROUND || session.ragCallCount > RAG_BUDGET) && !perCardPending;
+      /**
+       * ⚠️ 2026-11-04：催促条件也要看模式 ——
+       *   快速模式下"还有牌没讲"不代表还有**多轮**要跑
+       *   （一张一次讲完 = 1 轮），所以不能因为 perCardPending 就一直不催促。
+       */
+      const needWrapUp =
+        (round >= LATE_ROUND || session.ragCallCount > ragBudgetFor(session)) &&
+        (session.mode === "quick" ? round >= LATE_ROUND + 2 : !perCardPending);
       // ---- 检索工具动态下架（防"预算拒绝后无限重试"死循环）----
       // 实测：预算耗尽后模型仍连撞 16 次 rag_search 直到 deadline。
       // 工具响应里的"不要再检索"劝不住它——必须在下一轮直接不给这个工具。
       // ⚠️ 与 execRagSearch 的拦截条件保持一致（>= 而非 >）：
       //    第 3 次检索成功后 ragCallCount=3，第 4 次起被拦截（count 不再增长），
       //    所以下架判定必须用 >=，否则永远差一次不触发。
-      const ragBanned = session.ragCallCount >= RAG_BUDGET;
-      const availableTools = ragBanned ? TOOLS.filter((t) => t.function.name !== "rag_search") : TOOLS;
+      // ⚠️ 2026-11-04 双模式：预算按模式（快速模式 2 次）—— 见 ragBudgetFor
+      // ⚠️ 2026-11-04 双模式：工具集按模式取
+      //   快速模式用 QUICK_MODE_TOOLS —— interpret_card 被换成 interpret_all_cards
+      //   （给模型"没有单张选项" → 它才会一次讲完，见 tools/definitions.ts 的说明）
+      const modeTools = toolsForMode(session.mode ?? "deep");
+      const ragBanned = session.ragCallCount >= ragBudgetFor(session);
+      const availableTools = ragBanned
+        ? modeTools.filter((t) => t.function.name !== "rag_search")
+        : modeTools;
       if (needWrapUp && session.drawnCards.length > 0) {
+        /**
+         * ⚠️ 2026-11-04：催促内容必须**区分状态** ——
+         *   牌还没讲完时催"立即 write_reading"会被守卫拦住（write_reading
+         *   要求所有牌都有解读正文）→ 模型被反复弹回 → 死循环。
+         */
+        const revealedCount = session.cardReadings.filter((r) => r.reveal).length;
+        const allRevealed = revealedCount >= session.drawnCards.length;
+        const wrapUpText =
+          session.mode === "quick"
+            ? allRevealed
+              ? "牌都已揭示但还没讲完 —— 请**立刻**用一次 interpret_card 传 card_indexes + readings 把所有牌一次讲完，下一轮调用 write_reading。"
+              : "请**立刻**用一次 reveal_card 传 card_indexes 把所有牌一次揭示，再用一次 interpret_card 一次讲完，下一轮调用 write_reading。"
+            : "本轮必须调用 write_reading 启动解读管线，不得再调用任何检索或提问工具。";
         trimmed = [
           ...trimmed,
           {
             role: "system" as const,
-            content: `⚠️ 流程即将到达轮次上限（当前第 ${round} 轮，检索已 ${session.ragCallCount} 次）。你手里已有 ${session.drawnCards.length} 张牌与检索结果，信息完全足够。本轮必须调用 write_reading 启动解读管线，不得再调用任何检索或提问工具。`,
+            content: `⚠️ 流程即将到达轮次上限（当前第 ${round} 轮，检索已 ${session.ragCallCount} 次）。你手里已有 ${session.drawnCards.length} 张牌与检索结果，信息完全足够。${wrapUpText}`,
           },
         ];
       } else if (ragBanned) {
@@ -535,12 +593,38 @@ export async function* runAgent(
        * ================================================================ */
       {
         const required = TOOL_PHASE_REQUIREMENT[name];
+        /**
+         * ⚠️ 2026-11-04 快速模式：呼召工具**本身**就该被拦住。
+         *
+         * ⚠️ 为什么不能只靠 canEnter 的前置过滤：
+         *   canEnter 只检查"目标阶段的前置是否完成"——
+         *   快速模式里 invocation 不在 requiredPhases 里 →
+         *   invoke_three_questions 的 required="invocation" 会因为
+         *   "前置（contract）已完成"而**放行**（它检查的是 invocation 的前置，
+         *   不是 invocation 本身）。
+         *   → 必须在这里显式拦：这个模式不需要这一步。
+         */
+        const mode = session.mode ?? "deep";
+        if (mode === "quick" && name === "invoke_three_questions") {
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              error: "快速模式不需要三问呼召",
+              hint: "现在是「快速一问」模式 —— 不要调用 invoke_three_questions。请直接调用 offer_card_selection 让用户选牌。",
+            }),
+          });
+          roundToolNames.push(`${name}(拦截)`);
+          db.logToolCall(session.id, seq, "supervisor", name, args, "守卫拦截：快速模式不需要呼召", Date.now() - t0);
+          continue;
+        }
         if (required) {
           const guard = canEnter(
             session.ritualPhase ?? "contract",
             required,
             completedPhases(session),
-            { toolName: name }
+            { toolName: name },
+            mode
           );
           if (!guard.ok) {
             session.messages.push({
@@ -712,16 +796,104 @@ export async function* runAgent(
 
       /* ---- B1：逐张翻牌（翻牌闸门 → 念牌 → 确认问题）---- */
       if (name === "reveal_card") {
+        /**
+         * ⚠️ 2026-11-04 快速模式：支持一次揭示**多张**牌。
+         *
+         * ⚠️ 为什么（实测发现的真实瓶颈）：
+         *   快速模式第一次跑出时，工具序列是
+         *   reveal_card ×3 + interpret_card ×1 = 4 轮 → 加上检索与前置共 11 轮
+         *   → **撞了 max_rounds**（14 轮上限）。
+         *   每一次工具调用 = 一轮 LLM 往返 = 一次完整 prompt。
+         *   → 揭示多张牌：省 2 轮 ≈ 省 10k tokens ≈ 省 ¥0.16/场。
+         *
+         * ⚠️ 深度模式完全不用这个参数（行为零变化）。
+         */
+        const revealIdxs: number[] = Array.isArray(args.card_indexes)
+          ? (args.card_indexes as unknown[])
+              .map((v) => Number(v))
+              .filter((n) => Number.isFinite(n))
+              .map((n) => Math.max(0, Math.min(n, session.drawnCards.length - 1)))
+          : [];
+
+        if (revealIdxs.length > 0 && !modeProfile(session.mode ?? "deep").perCardGated) {
+          /** 快速模式：一次揭示多张（每张仍各自下发 card_reveal） */
+          const revealed: string[] = [];
+          for (const i of revealIdxs) {
+            const d = session.drawnCards[i];
+            if (!d) continue;
+            const sl = ensureCardSlot(session, i);
+            if (sl.reveal) continue; // 幂等：已揭示的不重复
+            const posNames = ["过去", "当下", "未来"];
+            const pos = session.drawnCards.length === 1 ? "核心指引" : (posNames[i] ?? `第${i + 1}张`);
+            const narrative = String(args.narrative ?? "").trim() || d.card.description || "";
+            const meaning = String(args.meaning ?? "").trim() || (d.reversed ? d.card.reversed : d.card.upright);
+            sl.pos = pos;
+            sl.reveal = {
+              narrative,
+              meaning,
+              question: String(args.question ?? "这张牌对你来说，是什么意思？").trim(),
+              options: ["是这样", "其实不太像", "我说不上来"],
+            };
+            sl.flipped = true;
+            if (!sl.answer) sl.answer = "（快速模式未逐张确认）";
+            (session.flippedCardIdx ??= []).push(i);
+            revealed.push(`${pos}·${d.card.nameZh}`);
+            yield {
+              type: "card_reveal",
+              cardReveal: {
+                cardIndex: i,
+                total: session.drawnCards.length,
+                id: d.card.id,
+                nameZh: d.card.nameZh,
+                image: d.card.image,
+                reversed: d.reversed,
+                pos,
+                narrative,
+                meaning,
+              },
+            };
+          }
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({ revealed }),
+          });
+          yield {
+            type: "tool",
+            tool: { name, args, resultSummary: `揭示 ${revealed.length} 张牌`, durationMs: Date.now() - t0 },
+          };
+          db.logToolCall(session.id, seq, "supervisor", name, args, `揭示 ${revealed.length} 张牌`, Date.now() - t0);
+          roundToolNames.push(name);
+          continue;
+        }
+
         const idx = Math.max(0, Math.min(Number(args.card_index) || 0, session.drawnCards.length - 1));
         const drawn = session.drawnCards[idx];
         if (!drawn) {
           session.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ error: "还没有抽牌" }) });
           continue;
         }
+        /**
+         * ⚠️⚠️ 快速模式（2026-11-04 双模式）：**跳过两道闸门**
+         *
+         * ⚠️ 为什么快速模式不等用户翻牌、不等确认回答：
+         *   HITL 交互次数是"用户感知到的仪式成本"的核心。
+         *   深度模式：承约 + 呼召 + 选牌 + 3×(翻牌 + 确认) + 收束 = 10 次交互
+         *   快速模式目标：承约 + 选牌 + 收束 = 3 次交互
+         *   → 每张牌省下 2 次等待 = 省 6 次 = 用户等待时间从 ~80s 降到 ~45s
+         *
+         * ⚠️ 保留什么（不能全砍）：
+         *   · 牌面叙述仍然下发（card_reveal）—— 用户要看到牌
+         *   · 用户仍会亲手选牌（offer_card_selection）—— 那是"选"的仪式感
+         *   · confirm 问题仍然生成并存进 slot —— 供后续解读参考
+         *     （回答统一为"（快速模式未逐张确认）"）
+         */
+        const quickMode = !modeProfile(session.mode ?? "deep").perCardGated;
+
         // ⚠️ 幂等守卫：同一张牌不重复念牌/重问（模型偶发重复调用，
         // 会覆盖用户已给的确认回答）
         const existingSlot = session.cardReadings.find((r) => r.cardId === drawn.card.id);
-        if (existingSlot?.reveal && existingSlot.answer) {
+        if (existingSlot?.reveal && existingSlot.answer && !quickMode) {
           session.messages.push({
             role: "tool",
             tool_call_id: tc.id,
@@ -766,6 +938,49 @@ export async function* runAgent(
 
         const posNames = ["过去", "当下", "未来"];
         const pos = session.drawnCards.length === 1 ? "核心指引" : (posNames[idx] ?? `第${idx + 1}张`);
+
+        /* ---- 快速模式：不等待，直接揭示牌面 ----
+         * ⚠️ 与深度模式的差异只有"等不等用户"：
+         *   · 深度：翻牌闸门（等用户点牌）→ 确认问题（等用户回答）→ 讲牌
+         *   · 快速：直接揭示 → 记为"未逐张确认" → 等模型一次讲完
+         * ⚠️ 为什么仍然发 card_reveal：用户必须看到牌（这是占卜的基本体验）。
+         */
+        if (quickMode) {
+          const quickSlot = ensureCardSlot(session, idx);
+          quickSlot.pos = pos;
+          quickSlot.reveal = { narrative, meaning, question, options: qOptions };
+          quickSlot.flipped = true;
+          // ⚠️ 快速模式没有逐张确认 → answer 记为占位（让 interpret_card 的守卫通过）
+          if (!quickSlot.answer) quickSlot.answer = "（快速模式未逐张确认）";
+          (session.flippedCardIdx ??= []).push(idx);
+          yield {
+            type: "card_reveal",
+            cardReveal: {
+              cardIndex: idx,
+              total: session.drawnCards.length,
+              id: drawn.card.id,
+              nameZh: drawn.card.nameZh,
+              image: drawn.card.image,
+              reversed: drawn.reversed,
+              pos,
+              narrative,
+              meaning,
+            },
+          };
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            // ⚠️ P2-⑦：不回显 narrative/meaning/question（模型已写在 arguments 里）
+            content: JSON.stringify({ card: `${pos}·${drawn.card.nameZh}`, revealed: true }),
+          });
+          yield {
+            type: "tool",
+            tool: { name, args, resultSummary: `揭示 ${pos}·${drawn.card.nameZh}`, durationMs: Date.now() - t0 },
+          };
+          db.logToolCall(session.id, seq, "supervisor", name, args, `揭示 ${drawn.card.nameZh}`, Date.now() - t0);
+          roundToolNames.push(name);
+          continue;
+        }
 
         /* ---- 闸门 1/2：等用户亲手翻牌 ----
          * ⚠️ 牌面内容（narrative/meaning/question）此时**不下发**——
@@ -901,7 +1116,102 @@ export async function* runAgent(
       }
 
       /* ---- B2：讲透这一张牌 ---- */
-      if (name === "interpret_card") {
+      if (name === "interpret_card" || name === "interpret_all_cards") {
+        /**
+         * ⚠️ 2026-11-04 快速模式：一次讲**多张**牌。
+         *
+         * ⚠️ 两种入口（同一套逻辑）：
+         *   · interpret_card —— 深度模式专用（单张）
+         *   · interpret_all_cards —— 快速模式专用（required 只有数组）
+         *     给模型"没有单张选项" → 它才会一次讲完（见 tools/definitions.ts）
+         *
+         * ⚠️ 为什么需要多张（而不是让模型连续调用 3 次）：
+         *   每一次工具调用 = 一轮 LLM 往返 = 一次完整 prompt（~5k tokens）。
+         *   3 张牌分 3 次 = 3 轮；一次讲完 = 1 轮。
+         *   → 快速模式省 2 轮 ≈ 省 10k tokens ≈ 省 ¥0.16/场。
+         */
+        const multiIdx: number[] = Array.isArray(args.card_indexes)
+          ? (args.card_indexes as unknown[])
+              .map((v) => Number(v))
+              .filter((n) => Number.isFinite(n))
+              .map((n) => Math.max(0, Math.min(n, session.drawnCards.length - 1)))
+          : [];
+        const multiTexts: string[] = Array.isArray(args.readings)
+          ? (args.readings as unknown[]).map((v) => String(v ?? "").trim())
+          : [];
+        const isMulti = multiIdx.length > 0 && multiTexts.length === multiIdx.length;
+
+        if (isMulti) {
+          /**
+           * ⚠️ 快速模式：一次讲完多张牌
+           * ⚠️ 守卫：每张牌都必须已揭示（reveal_card 走过）——
+           *   否则模型可能在没翻牌的情况下讲牌（跳步）。
+           */
+          const notRevealed = multiIdx.filter((i) => {
+            const sl = session.cardReadings.find((r) => r.cardId === session.drawnCards[i]?.card.id);
+            return !sl?.reveal;
+          });
+          if (notRevealed.length > 0) {
+            session.messages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: JSON.stringify({
+                error: `第 ${notRevealed.map((i) => i + 1).join("、")} 张牌尚未揭示`,
+                hint: `必须先调用 reveal_card 揭示每张牌，再调用 interpret_card 讲牌。`,
+              }),
+            });
+            roundToolNames.push("interpret_card(拦截)");
+            continue;
+          }
+          // 逐张落库 + 流式输出（正文仍然逐张流出，前端体验一致）
+          for (let k = 0; k < multiIdx.length; k++) {
+            const i = multiIdx[k];
+            const txt = multiTexts[k];
+            if (!txt) continue;
+            const sl = ensureCardSlot(session, i);
+            if (sl.reading) continue; // 幂等：已讲过的不覆盖
+            sl.reading = txt;
+            for (const evt of chunkDelta(txt)) yield evt;
+            yield { type: "delta", delta: "\n\n" };
+            yield { type: "card_reading", cardReading: { cardIndex: i } };
+          }
+          // ⚠️ P2-⑦：不回显正文（模型已写在 arguments 里）
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              interpreted: multiIdx.map((i) => session.cardReadings.find((r) => r.cardId === session.drawnCards[i]?.card.id)?.nameZh).filter(Boolean),
+            }),
+          });
+          yield {
+            type: "tool",
+            tool: {
+              name,
+              args,
+              resultSummary: `解读 ${multiIdx.length} 张牌`,
+              durationMs: Date.now() - t0,
+            },
+          };
+          db.logToolCall(session.id, seq, "supervisor", name, args, `解读 ${multiIdx.length} 张牌`, Date.now() - t0);
+          roundToolNames.push(name);
+          continue;
+        }
+
+        // ⚠️ interpret_all_cards 必须走多张分支（它的 schema 只有数组参数）
+        //   如果模型没传数组 → 明确报错，别静默落到单张逻辑（会得到乱七八糟的结果）
+        if (name === "interpret_all_cards") {
+          session.messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              error: "缺少 card_indexes 或 readings",
+              hint: "请传 card_indexes=[0,1,2] 与对应的 readings 数组（顺序一致），一次讲完所有已揭示的牌。",
+            }),
+          });
+          roundToolNames.push("interpret_all_cards(拦截)");
+          continue;
+        }
+
         const idx = Math.max(0, Math.min(Number(args.card_index) || 0, session.drawnCards.length - 1));
         const text = String(args.reading || "").trim();
         if (!text) {
@@ -1267,8 +1577,20 @@ export async function* runAgent(
         });
         yield { type: "tool", tool: { name, args, resultSummary: `承约确认：${session.contractQuestion}`, durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, `承约：${session.contractQuestion}`, Date.now() - t0);
-        // P1-⑩：推进阶段（承约 → 呼召）
-        session.ritualPhase = advancePhase(session.id, session.ritualPhase ?? "contract", "invocation");
+        /**
+         * P1-⑩：推进阶段（承约 → 呼召）
+         * ⚠️ 2026-11-04 快速模式：承约完**直接进选牌**（跳过呼召三问）。
+         *   这是快速模式省下 3 次 HITL 交互的关键一跳。
+         */
+        const contractMode = session.mode ?? "deep";
+        session.ritualPhase = advancePhase(
+          session.id,
+          session.ritualPhase ?? "contract",
+          contractMode === "quick" ? "card_selection" : "invocation"
+        );
+        if (contractMode === "quick") {
+          yield { type: "phase", phase: "wait_user", label: "快速一问 · 直接为你抽牌" };
+        }
         roundToolNames.push(name);
         continue;
       }

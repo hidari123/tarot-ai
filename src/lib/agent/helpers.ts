@@ -275,7 +275,29 @@ export function trimHistory(
 export function buildSystemPrompt(session: AgentSession): string {
   // 方向①：跨会话画像注入（占卜师"认识你"——承约阶段自然关联上次困惑）
   const memory = session.userKey ? buildMemoryContext(session.userKey) : "";
-  return buildSupervisorPrompt(session.persona) + (memory ? `\n\n${memory}` : "");
+  /**
+   * ⚠️ 2026-11-04 双模式：把"这次是快速/深度"告诉占卜师。
+   *
+   * ⚠️ 为什么必须显式告诉模型（而不是只靠工具守卫）：
+   *   守卫只能**拦**（模型调了不该调的工具 → 报错 → 重试），
+   *   但拦不住模型"嘴上说快速、实际啰嗦"——
+   *   比如它仍然问三问、仍然逐张停顿、仍然写很长。
+   *   → 工具守卫保证**流程**，system prompt 保证**表达**。
+   */
+  const mode = session.mode ?? "deep";
+  const modeNote =
+    mode === "quick"
+      ? "\n\n【本次是「快速一问」模式】用户选择了更快的节奏，请严格遵守：\n" +
+        "· **不要**调用 invoke_three_questions（三问呼召）—— 直接承约后选牌。\n" +
+        "· 检索要**合并**：一次 rag_search 查所有需要的牌（query 里用空格分隔牌名，top_k 传 8~10），不要一张牌查一次。\n" +
+        "· 翻牌要**一次翻完**：用一次 reveal_card 传 card_indexes（数组）把所有牌一次揭示，不要一张一张翻。\n" +
+        "· 讲牌要**一次讲完**：用一次 interpret_card 传 card_indexes（数组）+ readings（数组）。\n" +
+        "· 不要再停下来等用户逐张确认（快速模式不等）。\n" +
+        "· 文案保持**紧凑有力**——每张牌 3~5 句就够，不要长篇大论（用户选了快速模式）。\n" +
+        "· 仍然要有仪式感与共情，但不要冗长。\n" +
+        "· ⚠️ 轮次预算有限 —— 检索1次 + 揭示1次 + 讲牌1次 + 综合 + 收束，就该结束了。"
+      : "";
+  return buildSupervisorPrompt(session.persona) + (memory ? `\n\n${memory}` : "") + modeNote;
 }
 export async function buildPlanSteps(
   config: LLMProvider | null,

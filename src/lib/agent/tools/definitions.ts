@@ -8,6 +8,8 @@
  *   模型行为漂移的问题 —— 删掉任何一条都可能让占卜流程退化。
  */
 
+import type { DivinationMode } from "../divination-mode";
+
 export const TOOLS = [
   {
     type: "function",
@@ -159,10 +161,11 @@ export const TOOLS = [
     function: {
       name: "reveal_card",
       description:
-        "【逐张解读 · 翻牌】翻到牌阵中的**下一张**牌，先**念牌**：客观描述牌面画面 + 典籍牌意 + 向用户提一个**针对性的确认问题**。\n" +
-        "这一步只讲这一张牌，不涉及其他牌。用户回答后再调用 interpret_card 讲透它。\n" +
-        "【必须严格按顺序】一次只翻一张（card_index=0 → 1 → 2），不能跳步——\n" +
+        "【翻牌 · 念牌】翻到牌阵中的牌，先**念牌**：客观描述牌面画面 + 典籍牌意 + 向用户提一个**针对性的确认问题**。\n" +
+        "【逐张翻（深度模式）】一次只翻一张（card_index=0 → 1 → 2），不能跳步——\n" +
         "用户会亲手点开每一张牌，你必须等这一张被翻开并得到回答后，才能翻下一张。\n" +
+        "【一次翻多张（快速模式）】传 card_indexes（数组）一次揭示所有牌 ——\n" +
+        "快速模式下用户选了紧凑节奏，请一次翻完，不要一张一张翻（每翻一张都是一轮往返，会超时）。\n" +
         "【确认问题必须可回答】形式是二选一或三选一，选项要贴着用户的原话与情绪，\n" +
         "例如「你在这件事上，更像是『已经麻木了』还是『其实不甘心』？」——不要问空泛的「你觉得呢」。\n" +
         "【牌意必须带引文编号】meaning 引用典籍牌意时用 [n] 标注（对应 rag_search 返回的编号，如「新的开始、冒险 [3]」），\n" +
@@ -170,7 +173,12 @@ export const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          card_index: { type: "number", description: "第几张牌（从 0 开始）" },
+          card_index: { type: "number", description: "第几张牌（从 0 开始）—— 逐张翻时用" },
+          card_indexes: {
+            type: "array",
+            items: { type: "number" },
+            description: "一次性揭示多张牌的索引数组（快速模式用）",
+          },
           narrative: { type: "string", description: "牌面画面描述（40~70 字），客观说画面里有什么" },
           meaning: { type: "string", description: "典籍牌意（30~50 字），用【n】标注引用" },
           question: { type: "string", description: "向用户提的确认问题（20~40 字），要具体、可回答" },
@@ -191,16 +199,28 @@ export const TOOLS = [
     function: {
       name: "interpret_card",
       description:
-        "【逐张解读 · 讲透这一张】结合用户对确认问题的回答，把**这一张牌**讲透（100~150 字）：\n" +
-        "牌意如何落在这个用户的处境上、用户在确认问题里的反应说明了什么。\n" +
-        "只讲当前这一张牌，不要提前讲后面的牌。讲完后可以继续 reveal_card 翻下一张。\n" +
+        "【讲透牌面】把牌讲透（100~150 字/张）：牌意如何落在这个用户的处境上、用户的反应说明了什么。\n" +
         "【必须带引文】引用典籍牌意时用「典籍所载：… [n]」标注（n 对应 rag_search 返回的编号）——\n" +
-        "没有引文标注的解读会被审校打回。",
+        "没有引文标注的解读会被审校打回。\n" +
+        "【⚠️ 快速模式下必须一次讲完所有牌】如果牌阵里有 3 张牌已揭示，\n" +
+        "请用**一次**调用传 card_indexes=[0,1,2] + readings=[解读1,解读2,解读3]，\n" +
+        "**不要**为每张牌分别调用一次 —— 每次调用都是一轮往返，会导致流程超时。\n" +
+        "（只有深度模式才逐张调用）",
       parameters: {
         type: "object",
         properties: {
-          card_index: { type: "number", description: "第几张牌（从 0 开始）" },
-          reading: { type: "string", description: "这一张牌的完整解读（100~150 字）" },
+          card_index: { type: "number", description: "第几张牌（从 0 开始）—— 逐张讲时用；批量讲时填第一张" },
+          reading: { type: "string", description: "这一张牌的完整解读（100~150 字）—— 逐张讲时用" },
+          card_indexes: {
+            type: "array",
+            items: { type: "number" },
+            description: "⚠️ 快速模式：一次讲多张牌时的索引数组，如 [0,1,2]",
+          },
+          readings: {
+            type: "array",
+            items: { type: "string" },
+            description: "⚠️ 快速模式：一次讲多张牌时的解读数组，如 [解读1,解读2,解读3]，顺序与 card_indexes 对应",
+          },
         },
         required: ["card_index", "reading"],
       },
@@ -249,3 +269,59 @@ export const TOOLS = [
     },
   },
 ];
+
+/**
+ * 快速模式专用工具：一次讲完所有牌（2026-11-04 双模式）
+ *
+ * ⚠️⚠️ 为什么要有这个**独立工具**，而不是让 interpret_card 支持数组参数：
+ *   实测（2026-11-04）：给 interpret_card 加 card_indexes/readings 数组参数后，
+ *   模型**依然逐张调用**（3 张牌 = 3 次调用 = 3 轮往返）→ 快速模式撞 max_rounds。
+ *   根因：interpret_card 的 schema 里 `required: ["card_index", "reading"]`
+ *   强烈暗示"单张用法"，而模型对可选参数天然保守。
+ *
+ * ⚠️ 解法：**给快速模式换一组工具**（availableTools 本来就是动态的）：
+ *   快速模式下 interpret_card **不可用**，只给 interpret_all_cards ——
+ *   它的 required 只有数组 → 模型没有"单张"的选项。
+ *   ⚠️ 深度模式的 interpret_card 行为**完全不变**（零风险）。
+ */
+export const QUICK_MODE_TOOLS = [
+  ...TOOLS.filter((t) => t.function.name !== "interpret_card"),
+  {
+    type: "function" as const,
+    function: {
+      name: "interpret_all_cards",
+      description:
+        "【⚠️ 快速模式 · 一次讲完所有牌】把所有已揭示的牌一次讲透。\n" +
+        "⚠️ **必须用这个工具一次讲完所有牌** —— 逐张调用会超时。\n" +
+        "【内容要求】每张牌 100~150 字：牌意如何落在这个用户的处境上、用户的反应说明了什么。\n" +
+        "【必须带引文】引用典籍牌意时用「典籍所载：… [n]」标注（n 对应 rag_search 返回的编号）——\n" +
+        "没有引文标注的解读会被审校打回。\n" +
+        "【长度】快速模式 —— 每张 3~5 句就够，**不要长篇大论**（用户选了紧凑节奏）。",
+      parameters: {
+        type: "object",
+        properties: {
+          card_indexes: {
+            type: "array",
+            items: { type: "number" },
+            description: "所有已揭示牌的索引，如 [0,1,2]",
+          },
+          readings: {
+            type: "array",
+            items: { type: "string" },
+            description: "每张牌的解读正文，顺序与 card_indexes 一一对应",
+          },
+        },
+        required: ["card_indexes", "readings"],
+      },
+    },
+  },
+];
+
+/**
+ * 按模式取工具集
+ *
+ * ⚠️ 快速模式用 QUICK_MODE_TOOLS（interpret_card 被换成 interpret_all_cards）。
+ */
+export function toolsForMode(mode: DivinationMode): typeof TOOLS {
+  return mode === "quick" ? (QUICK_MODE_TOOLS as unknown as typeof TOOLS) : TOOLS;
+}

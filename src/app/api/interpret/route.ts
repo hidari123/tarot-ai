@@ -8,6 +8,7 @@ import {
 } from "@/lib/tarot-agent";
 import { validateAgentEvent } from "@/lib/agent/schema";
 import { recordEvent, eventsSince, persistEvent } from "@/lib/agent/event-log";
+import { resolveMode } from "@/lib/agent/divination-mode";
 import { failSession } from "@/lib/db";
 import {
   clampText, LIMITS, deriveUserKey, withSecurityHeaders, badRequest, checkBodySize,
@@ -51,6 +52,11 @@ export async function POST(req: Request) {
     userKey?: string;
     /** 断点续传：只要后端补发事件，不推进流程 */
     resume?: boolean;
+    /**
+     * 占卜模式（2026-11-04 双模式）："quick" | "deep"
+     * ⚠️ 客户端可控 → 用 resolveMode 宽容解析（非法值退回默认，不报错）
+     */
+    mode?: string;
   };
   try {
     body = await req.json();
@@ -105,7 +111,10 @@ export async function POST(req: Request) {
     // ⚠️ P1-④：userKey **服务端派生**（客户端传的只作区分维度）
     //    审计实测：客户端可指定任意 userKey → 读写他人的跨会话画像。
     const userKey = deriveUserKey(req, body.userKey);
-    session = createSession(question, body.persona, userKey);
+    // 2026-11-04：占卜模式（快速/深度）—— resolveMode 宽容解析，
+    //   非法值退回默认模式，不报错、不中断占卜。
+    const mode = resolveMode(body.mode);
+    session = createSession(question, body.persona, userKey, mode);
   }
 
   // 把客户端断开信号注入会话：HITL 等待中的 Promise 可被取消（防生成器/内存泄漏）

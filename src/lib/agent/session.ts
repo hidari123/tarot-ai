@@ -18,6 +18,7 @@ import { generateSessionId } from "../api-auth";
 import { runtimeState } from "../runtime";
 import type { AgentSession } from "./types";
 import { derivePhase, type RitualPhase } from "./ritual-machine";
+import { DEFAULT_MODE, type DivinationMode } from "./divination-mode";
 
 /**
  * 内存会话表 —— globalThis 单例。
@@ -164,7 +165,12 @@ if (!gTimer.__tarotCleanTimer__) {
 }
 
 /** 创建新会话（同时落库一条 running 记录） */
-export function createSession(question: string, personaId?: string, userKey?: string): AgentSession {
+export function createSession(
+  question: string,
+  personaId?: string,
+  userKey?: string,
+  mode: DivinationMode = DEFAULT_MODE
+): AgentSession {
   cleanExpired();
   // ⚠️ P1-④：会话 id 改为 **192bit 全随机**（不再是"时间戳 + 6 位随机"）
   //   旧格式 `sess_${Date.now().toString(36)}_${random6}` 的问题：
@@ -184,6 +190,8 @@ export function createSession(question: string, personaId?: string, userKey?: st
     userKey,
     // P1-⑩：新会话一律从"承约"开始（仪式第一站）
     ritualPhase: "contract",
+    // 2026-11-04 双模式：占卜模式（快速/深度）
+    mode,
   };
   sessions.set(id, session);
   db.insertSession(id, question, persona.id, []);
@@ -268,6 +276,11 @@ export interface SessionSnapshot {
   scopeNote?: string;
   /** P1-⑩：仪式阶段（老会话没有 → 恢复时 derivePhase 反推） */
   ritualPhase?: RitualPhase;
+  /**
+   * 占卜模式（2026-11-04 双模式）
+   * ⚠️ 老会话没有 → 恢复时按 "deep" 处理（保持原行为）
+   */
+  mode?: DivinationMode;
   invocationAnswers?: string[];
   /** 三问呼召的完整问答对（P1-⑩ 推导仪式阶段时需要） */
   invocation?: { questions: string[]; answers: string[] };
@@ -308,6 +321,8 @@ export function snapshotSession(s: AgentSession): SessionSnapshot {
     scopeNote: s.scopeNote,
     // P1-⑩：仪式阶段进快照（老会话没有 → 恢复时从其它字段推导）
     ritualPhase: s.ritualPhase,
+    // 2026-11-04：占卜模式进快照（恢复后必须保持同一模式，否则仪式路径会变）
+    mode: s.mode,
     invocationAnswers: s.invocationAnswers,
     interjections: s.interjections,
     pendingInterjections: s.pendingInterjections,
@@ -371,6 +386,10 @@ export function restoreSession(snap: SessionSnapshot): AgentSession | null {
         cardReadings: snap.cardReadings,
       }),
       invocationAnswers: snap.invocationAnswers,
+      // 2026-11-04：占卜模式 —— 老会话没有 → 按 "deep" 处理（保持原行为）
+      // ⚠️ 不能用 DEFAULT_MODE（quick）：老会话是**深度**仪式产生的，
+      //    按 quick 恢复会让它跳过已经完成的阶段。
+      mode: snap.mode ?? "deep",
       interjections: snap.interjections ?? [],
       pendingInterjections: snap.pendingInterjections ?? [],
       userKey: snap.userKey,

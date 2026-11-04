@@ -86,7 +86,12 @@ console.log("【① P0 数据层】（索引 / 清理 / 内存泄漏）");
 
   // ⑭ MAX_ROUNDS 动态
   check("MAX_ROUNDS 按牌数动态计算", /cardCount \* 2 \+ 8/.test(supCode));
-  check("MAX_ROUNDS 有下限（不小于原值 22）", /Math\.max\(BASE_ROUNDS/.test(supCode));
+  // ⚠️ 2026-11-04 双模式：深度模式保留下限 22（安全网），
+  //   快速模式用更小的上限 —— 但仍不低于按牌数算出的值。
+  check("深度模式 MAX_ROUNDS 有下限（不小于原值 22）",
+    /session\.mode === "quick" \? 0 : BASE_ROUNDS/.test(supCode) &&
+    /Math\.max\(\s*modeProfile_\.maxRounds/.test(supCode),
+    "快速模式用更小的上限；深度模式保持 ≥22");
 
   // ⑦ tool 结果不回显 arguments
   // ⚠️ 判据要精确：只查 **tool 消息的 content** 里有没有回显，
