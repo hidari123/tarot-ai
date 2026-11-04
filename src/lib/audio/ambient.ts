@@ -170,6 +170,23 @@ const LAYER_PARAMS: Record<AmbienceLayer, LayerParams> = {
 };
 
 /* ══════════════════════════════════════════════════════════════
+ * 音色常量
+ * ══════════════════════════════════════════════════════════════ */
+
+/**
+ * ⚠️ 乐句的音色（2026-11-04）
+ *
+ * ⚠️ 为什么是 **sine** 而不是 triangle：
+ *   三角波的谐波结构（基频 + 奇次谐波）非常像**簧片乐器**
+ *   （长笛 / 单簧管 / 萨克斯）→ 用户一听就喊"长笛，很吵"。
+ *   正弦波只有基频 → 干净、柔和、空灵。
+ *   ⚠️ 代价：纯正弦略闷 → 用**两个微失谐的正弦**叠出一点空气感。
+ */
+const ARP_WAVE: OscillatorType = "sine";
+/** 微失谐（cents）—— 小到人耳几乎无拍频，但音色不呆板 */
+const ARP_DETUNE = 3;
+
+/* ══════════════════════════════════════════════════════════════
  * 音名 → 频率
  * ══════════════════════════════════════════════════════════════ */
 
@@ -466,33 +483,57 @@ function playArpNote(
   if (!ctx || !st.dry) return;
 
   const freq = noteToFreq(pitch, octaveOffset);
-  const osc = ctx.createOscillator();
-  osc.type = "triangle";
-  osc.frequency.value = freq;
 
+  /**
+   * ⚠️⚠️ 2026-11-04 重做（用户反馈："长笛一样的声音，很吵，叮——————"）
+   *
+   * ⚠️ 那个"叮——————"是三重叠加造成的：
+   *   ① **三角波**的谐波结构像簧片乐器（长笛/单簧管）→ 一听就是"长笛"
+   *   ② **sustain 段持续**（gain×0.45）+ **release 长达 1.4s** → 音被"拉长"
+   *   ③ **失谐泛音层**（±4~7 cents）→ 拍频产生"金属颤音" → 更吵
+   *
+   * ⚠️ 修法：
+   *   ① 三角波 → **正弦波**（只有基频，没有刺耳谐波）
+   *      ⚠️ 代价是偏闷 → 用**两个正弦微失谐**叠一点"空气感"（±3 cents，
+   *         人耳几乎听不出拍频，但音色不呆板）
+   *   ② 包络改成**"拨弦式"**：快速 attack → 快速衰减 → **几乎无 sustain**
+   *      → 每个音是"点"出来的，不是"拉"出来的 → 不再有"叮————"
+   *   ③ release 大幅缩短（1.4s → 0.5s）
+   *
+   * ⚠️ 目标：**神秘、柔和、有起伏**。
+   *    神秘感来自**混响 + 稀疏音型**，不是来自响亮的长音。
+   */
   const g = ctx.createGain();
-  // ⚠️ ADSR：attack 0.02s（不"啪"）/ decay 0.35s / sustain / release
-  const attack = 0.02;
-  const decay = 0.35;
-  const sustainLevel = gainValue * 0.45;
-  const release = Math.min(1.4, dur * 0.9);
+  const attack = 0.015;
+  const decay = 0.28;
+  // ⚠️ sustain 压到几乎为零 → "点"出来的音，不是"拉"出来的音
+  const sustainLevel = gainValue * 0.06;
+  const release = 0.5;
 
   g.gain.setValueAtTime(0.0001, when);
   g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gainValue), when + attack);
   g.gain.exponentialRampToValueAtTime(Math.max(0.0001, sustainLevel), when + attack + decay);
-  g.gain.setValueAtTime(Math.max(0.0001, sustainLevel), when + dur);
-  g.gain.exponentialRampToValueAtTime(0.0001, when + dur + release);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + attack + decay + release);
 
-  // ⚠️ 轻微低通：削掉三角波的尖锐高频，听起来更"柔"
+  // ⚠️ 轻微低通：给正弦波加一点"空气"，同时削掉任何尖锐成分
   const lp = ctx.createBiquadFilter();
   lp.type = "lowpass";
-  lp.frequency.value = 3200;
+  lp.frequency.value = 2400;
+  lp.Q.value = 0.5;
 
-  osc.connect(lp);
+  // ⚠️ 两个微失谐的正弦叠加（±3 cents）—— 比三角波柔，但不死板
+  for (const det of [-ARP_DETUNE, ARP_DETUNE]) {
+    const osc = ctx.createOscillator();
+    osc.type = ARP_WAVE;
+    osc.frequency.value = freq;
+    osc.detune.value = det;
+    osc.connect(lp);
+    osc.start(when);
+    osc.stop(when + attack + decay + release + 0.05);
+  }
+
   lp.connect(g);
   connectBoth(st, g, 0.6);
-  osc.start(when);
-  osc.stop(when + dur + release + 0.05);
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -537,14 +578,16 @@ function buildLayer(layer: AmbienceLayer): void {
   // 泛音层：比主音高两个八度 + 轻微失谐 → "微光"的晃动感
   if (p.shimmerGain > 0.001) {
     const shimmerVoices: { osc: OscillatorNode; gain: GainNode }[] = [];
-    const detunes = [0, 4, -5, 7];
+    // ⚠️ 2026-11-04：失谐从 ±4~7 降到 ±2（原来拍频太明显 → "金属颤音"很吵）
+    const detunes = [0, 2, -2];
     for (let i = 0; i < 3; i++) {
       const osc = st.ctx.createOscillator();
       const gain = st.ctx.createGain();
-      osc.type = "triangle";
+      // ⚠️ 三角波 → 正弦波（理由同 ARP_WAVE：三角波像长笛/簧片）
+      osc.type = ARP_WAVE;
       osc.frequency.value = noteToFreq("A", p.octave + 2);
       osc.detune.value = detunes[i];
-      gain.gain.value = p.shimmerGain / 3;
+      gain.gain.value = (p.shimmerGain / 3) * 0.5;
       osc.connect(gain);
       gain.connect(filter);
       osc.start();
@@ -779,52 +822,71 @@ export function playSfx(kind: "flip" | "reveal" | "select" | "answer" | "chime" 
   connectBoth(st, out, 0.5);
 
   if (kind === "flip") {
-    // ── 翻牌：低频 thud + 纸张摩擦 + 清脆铃 ──
-    // ① 低频下滑（120→60Hz）—— "啪"地翻开的手感
+    /**
+     * ⚠️⚠️ 2026-11-04 重做（用户反馈："翻牌的那个叮的声音不够好听，
+     *   可以换一个轻柔神秘的"）
+     *
+     * ⚠️ 原来的问题：铃是 **1240Hz 的正弦**（明亮、尖锐、有金属感）
+     *   → 听起来像"叮！"（像门铃 / 手机提示音），与占卜氛围**完全冲突**。
+     *
+     * ⚠️ 新的设计（**木质轻叩 + 柔和泛音**，像手指拂过纸牌）：
+     *   ① 木质叩击：正弦下滑（220→130Hz）+ 极短衰减 → "笃"的质感
+     *   ② 纸张摩擦：带通噪声（2.6kHz→1.5kHz，55ms）→ 卡片划过的沙沙
+     *   ③ 柔和泛音：两个**低八度**的正弦（587Hz / 880Hz，很轻）
+     *      → ⚠️ **不用高频铃**（那正是"吵"的来源）
+     *      → 低八度泛音有"神秘"的余韵，但绝不刺耳
+     */
+    // ① 木质叩击
     const thud = ctx.createOscillator();
     const tg = ctx.createGain();
     thud.type = "sine";
-    thud.frequency.setValueAtTime(120, now);
-    thud.frequency.exponentialRampToValueAtTime(60, now + 0.18);
-    tg.gain.setValueAtTime(0.22, now);
-    tg.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
+    thud.frequency.setValueAtTime(220, now);
+    thud.frequency.exponentialRampToValueAtTime(130, now + 0.12);
+    tg.gain.setValueAtTime(0.14, now);
+    tg.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
     thud.connect(tg);
     tg.connect(out);
     thud.start(now);
-    thud.stop(now + 0.3);
+    thud.stop(now + 0.22);
 
-    // ② 纸张摩擦（带通噪声，60ms）—— 卡片划过的质感
+    // ② 纸张摩擦（更短、更轻）
     const src = ctx.createBufferSource();
     src.buffer = makeNoiseBuffer(ctx);
     const bp = ctx.createBiquadFilter();
     bp.type = "bandpass";
     bp.frequency.setValueAtTime(2600, now);
-    bp.frequency.exponentialRampToValueAtTime(1500, now + 0.06);
-    bp.Q.value = 1.6;
+    bp.frequency.exponentialRampToValueAtTime(1500, now + 0.055);
+    bp.Q.value = 1.2;
     const ng = ctx.createGain();
-    ng.gain.setValueAtTime(0.09, now);
-    ng.gain.exponentialRampToValueAtTime(0.001, now + 0.07);
+    ng.gain.setValueAtTime(0.055, now);
+    ng.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
     src.connect(bp);
     bp.connect(ng);
     ng.connect(out);
     src.start(now);
-    src.stop(now + 0.1);
+    src.stop(now + 0.09);
 
-    // ③ 清脆铃（1240Hz，衰减快）—— "牌翻开了"的确认
-    const bell = ctx.createOscillator();
-    const bg = ctx.createGain();
-    bell.type = "sine";
-    bell.frequency.value = 1240;
-    bg.gain.setValueAtTime(0.07, now + 0.01);
-    bg.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
-    bell.connect(bg);
-    bg.connect(out);
-    bell.start(now + 0.01);
-    bell.stop(now + 0.55);
+    // ③ 柔和泛音（低八度，很轻 —— 神秘但不刺耳）
+    for (const [f, g0] of [[587.33, 0.032], [880.0, 0.018]] as const) {
+      const osc = ctx.createOscillator();
+      const bg = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = f;
+      bg.gain.setValueAtTime(0, now + 0.008);
+      bg.gain.linearRampToValueAtTime(g0, now + 0.02);
+      bg.gain.exponentialRampToValueAtTime(0.0001, now + 0.75);
+      osc.connect(bg);
+      bg.connect(out);
+      osc.start(now + 0.008);
+      osc.stop(now + 0.8);
+    }
   } else if (kind === "reveal") {
     // ── 牌面揭示：磬（三个泛音叠加 + 长混响尾）──
     // ⚠️ 这是整个仪式里**最重要的一下**（用户亲手翻开，牌面第一次显现）
-    for (const [f, g0] of [[1046.5, 0.055], [1568.0, 0.032], [2093.0, 0.018]] as const) {
+    // ⚠️ 2026-11-04：泛音从 1046/1568/2093Hz **整体降八度**到
+    //    523/784/1046Hz —— 原来那组偏亮偏尖（"叮！"），
+    //    降八度后是"钟"，有神秘余韵而不刺耳。
+    for (const [f, g0] of [[523.25, 0.05], [783.99, 0.028], [1046.5, 0.015]] as const) {
       const osc = ctx.createOscillator();
       const g = ctx.createGain();
       osc.type = "sine";

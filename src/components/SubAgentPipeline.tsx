@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import Icon, { type IconName } from "@/components/icons";
 
 /**
  * 子 Agent 流水线指示器 —— analyst → writer → reviewer 生命周期可视化
@@ -16,11 +17,14 @@ export interface SubAgentEvent {
   detail?: string;
 }
 
-const AGENT_META: Record<string, { icon: string; label: string; color: string }> = {
-  analyst: { icon: "🔍", label: "牌意分析师", color: "text-sky-300 border-sky-400/40 bg-sky-500/10" },
-  writer: { icon: "✍️", label: "撰写者", color: "text-fuchsia-300 border-fuchsia-400/40 bg-fuchsia-500/10" },
-  reviewer: { icon: "🧐", label: "审校者", color: "text-emerald-300 border-emerald-400/40 bg-emerald-500/10" },
-  supervisor: { icon: "🎭", label: "占卜师", color: "text-purple-300 border-purple-400/40 bg-purple-500/10" },
+/**
+ * ⚠️ 2026-11-04：icon 从 emoji 换成 SVG 图标（用户诉求："想要更漂亮一点的图标"）
+ */
+const AGENT_META: Record<string, { icon: IconName; label: string; color: string }> = {
+  analyst: { icon: "magnify", label: "牌意分析师", color: "text-sky-300 border-sky-400/40 bg-sky-500/10" },
+  writer: { icon: "quill", label: "撰写者", color: "text-fuchsia-300 border-fuchsia-400/40 bg-fuchsia-500/10" },
+  reviewer: { icon: "eye", label: "审校者", color: "text-emerald-300 border-emerald-400/40 bg-emerald-500/10" },
+  supervisor: { icon: "masks", label: "占卜师", color: "text-purple-300 border-purple-400/40 bg-purple-500/10" },
 };
 
 export default function SubAgentPipeline({ events }: { events: SubAgentEvent[] }) {
@@ -39,8 +43,15 @@ export default function SubAgentPipeline({ events }: { events: SubAgentEvent[] }
         <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-500/15 border border-indigo-400/30 text-indigo-300 font-mono">
           MULTI-AGENT PIPELINE
         </span>
-        <span className="text-indigo-200/60 text-xs">
-          🔍 分析师 → ✍️ 撰写者 → 🧐 审校者
+        <span className="text-indigo-200/60 text-xs flex items-center gap-1.5">
+          <Icon name="magnify" size={12} />
+          分析师
+          <span className="text-indigo-300/40">→</span>
+          <Icon name="quill" size={12} />
+          撰写者
+          <span className="text-indigo-300/40">→</span>
+          <Icon name="eye" size={12} />
+          审校者
         </span>
       </div>
       <div ref={ref} className="max-h-44 overflow-y-auto px-4 py-3 space-y-1.5">
@@ -55,8 +66,9 @@ export default function SubAgentPipeline({ events }: { events: SubAgentEvent[] }
                 transition={{ duration: 0.3 }}
                 className="flex items-center gap-2.5 text-xs"
               >
-                <span className={`shrink-0 w-24 truncate px-1.5 py-0.5 rounded border ${meta.color}`}>
-                  {meta.icon} {meta.label}
+                <span className={`shrink-0 w-24 truncate px-1.5 py-0.5 rounded border flex items-center gap-1 ${meta.color}`}>
+                  <Icon name={meta.icon} size={11} />
+                  {meta.label}
                 </span>
                 <span className="text-zinc-300/85">{e.action}</span>
                 {e.detail && <span className="text-zinc-500/70 text-[11px] truncate">{e.detail}</span>}

@@ -3,6 +3,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import ThinkingBubble from "@/components/ThinkingBubble";
+import Icon from "@/components/icons";
 
 /**
  * 对话流视图 —— 整场占卜的统一时间线
@@ -46,6 +47,14 @@ export interface FlowSpreadCard {
   current: boolean;
   /** 典籍牌意（翻开后可显示） */
   meaning?: string;
+  /**
+   * ⚠️ 牌面确认问题（2026-11-04 新增）
+   * ⚠️ 用途：牌阵面板的展开/收起要判断"牌上是否还有待回答的问题"
+   *   （用户必须看到问题才能回答）—— 见 SpreadPanel 的 hasPendingCardQuestion。
+   */
+  question?: string;
+  /** 用户对这张牌的回答（回答后 → 不再算待答） */
+  answer?: string;
 }
 
 export interface FlowCardData {
@@ -338,17 +347,38 @@ const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview, wa
   const doneCount = cards.filter((c) => c.done).length;
   const hasCurrent = cards.some((c) => c.current);
   const allDone = doneCount >= cards.length;
+  /**
+   * ⚠️⚠️ 2026-11-04 重做展开/收起逻辑（用户实测报告）
+   *
+   * ⚠️ 用户报告："翻牌一开始出现的时候，上面展示点击它，但是点击了没反应…
+   *   然后大模型会返回一些话过来，这个时候翻牌又折叠回去了，
+   *   还要重新手动打开选择"
+   *
+   * ⚠️ 根因（原来的 `wantOpen = hasCurrent && !waitingUser`）：
+   *   流程是：点牌 → card_reveal（current 被清空）→ **自动收起**
+   *          → 模型开始说话 → ask_user(card_confirm) 到达
+   *          → waitingUser=true，但 hasCurrent 仍是 false
+   *             （下一张牌的 card_flip_ready 还没到）
+   *          → **牌阵保持收起** → 用户看不到牌上的问题
+   *          → 只能手动点细条展开 → "还要重新手动打开选择"
+   *
+   * ⚠️ 新逻辑（**以"用户要不要做动作"为准**，而不是"模型在不在说话"）：
+   *   ① **牌上有待回答的问题** → 展开（用户必须看到问题才能回答）
+   *      判据：牌已翻开、有 question、还没有 answer
+   *   ② **该翻下一张了**（hasCurrent）→ 展开（用户要点牌）
+   *   ③ 模型正在说话且**没有**待回答问题 → 收起（不挡正文）
+   *   ④ 全部翻完 → 收起
+   */
+  const hasPendingCardQuestion = cards.some(
+    (c) => c.flipped && !!c.question && !c.answer
+  );
 
   // 自动展开/收起：**渲染期状态调整**（React 官方推荐模式，替代
   // useEffect + setState —— 后者会多渲染一轮，且 eslint 明确禁止）。
   //
-  // 展开条件：**该翻牌了（hasCurrent）且模型此刻没在说话（!waitingUser）**
-  //   - card_flip_ready 到达 → hasCurrent=true → 自动展开（用户该翻牌时看得到）
-  //   - card_reveal 到达   → current 被清空 → 自动收起（不挡解读正文）
-  //   - 全部翻完           → 收起（不再需要入口）
   // ⚠️ 用户手动操作过就不再自动切换（尊重用户意图）
   if (!userTouched) {
-    const wantOpen = hasCurrent && !waitingUser;
+    const wantOpen = hasPendingCardQuestion || (hasCurrent && !waitingUser);
     if (manualOpen !== wantOpen) setManualOpen(wantOpen);
   }
 
@@ -366,7 +396,7 @@ const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview, wa
         }}
         className="w-full flex items-center gap-2 rounded-xl border border-amber-500/20 bg-[#0d0819]/85 backdrop-blur-md px-3 py-2 text-left hover:border-amber-400/40 transition-colors"
       >
-        <span className="text-sm">🃏</span>
+        <Icon name="cards" size={14} className="text-amber-200/70" />
         <span className="text-[11px] tracking-[0.18em] text-amber-200/70">命运之牌</span>
         <span className="text-[10px] text-purple-300/40 font-mono">{doneCount}/{cards.length}</span>
         {/* 已翻开的牌缩略点（一眼看出翻了几张） */}
@@ -390,7 +420,7 @@ const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview, wa
     <div className="w-full rounded-2xl border border-amber-500/25 bg-gradient-to-b from-amber-950/10 to-[#0d0819]/85 backdrop-blur-md px-3 py-2">
       {/* 标题 + 进度 + 收起 */}
       <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-sm">🃏</span>
+        <Icon name="cards" size={14} className="text-amber-200/70" />
         <span className="text-[10px] tracking-[0.2em] text-amber-200/70">命运之牌</span>
         <span className="text-[10px] text-purple-300/40 font-mono">
           {doneCount}/{cards.length}
@@ -473,7 +503,7 @@ const SpreadPanel = memo(function SpreadPanel({ cards, onFlipCard, onPreview, wa
               ) : (
                 <div className="absolute inset-0 bg-[#160b26] flex items-center justify-center">
                   <div className="w-8 h-8 rounded-full border-2 border-purple-400/50 flex items-center justify-center rune-breathe">
-                    <span className="text-lg text-purple-300/70">✦</span>
+                    <Icon name="sparkle" size={15} className="text-purple-300/70" />
                   </div>
                   <div className="absolute inset-1 rounded-lg border border-purple-500/25" />
                   {c.current && (
@@ -812,7 +842,7 @@ const AskPanel = memo(function AskPanel({ entry, onAnswer }: { entry: FlowEntry;
     return (
       <div className="w-full rounded-2xl border border-purple-500/25 bg-[#0d0819]/60 backdrop-blur-sm px-4 py-3">
         <div className="flex items-center gap-2 mb-2.5">
-          <span className="text-base">🕯</span>
+          <Icon name="candle" size={15} className="text-purple-300/70" />
           <span className="text-[10px] tracking-[0.25em] text-purple-300/60">轮到你翻牌</span>
         </div>
         <p className="text-sm text-purple-100/85 mb-2.5" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>
@@ -846,7 +876,7 @@ const AskPanel = memo(function AskPanel({ entry, onAnswer }: { entry: FlowEntry;
     return (
       <div className="w-full rounded-2xl border border-amber-500/30 bg-amber-950/10 backdrop-blur-md px-4 py-3">
         <div className="flex items-center gap-2 mb-1.5">
-          <span className="text-base">🃏</span>
+          <Icon name="cards" size={15} className="text-amber-200/80" />
           <span className="text-[10px] tracking-[0.25em] text-amber-200/70">选 牌</span>
         </div>
         <p className="text-sm text-purple-100/85" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>
@@ -884,7 +914,21 @@ const AskPanel = memo(function AskPanel({ entry, onAnswer }: { entry: FlowEntry;
       }`}
     >
       <div className="flex items-center gap-2 mb-2.5">
-        <span className="text-base">{isCrossroads ? "🔮" : isContract ? "✦" : isInvocation ? "🔮" : isClosing ? "✧" : "💭"}</span>
+        {/**
+         * ⚠️ 2026-11-04：emoji → SVG 图标
+         * ⚠️ 每种提问形态有自己的图标（原来全是 emoji，且三种都用同一个 🔮）
+         */}
+        <Icon
+          name={
+            isCrossroads ? "scry"
+            : isContract ? "crystal"
+            : isInvocation ? "moon"
+            : isClosing ? "scroll"
+            : "thought"
+          }
+          size={16}
+          className={isCrossroads || isContract || isClosing ? "text-amber-200/85" : "text-emerald-200/85"}
+        />
         <span className={`text-xs tracking-[0.2em] ${headerColor}`}>{header}</span>
       </div>
 
@@ -978,7 +1022,7 @@ const ScrollCard = memo(function ScrollCard({ entry, onToggle }: { entry: FlowEn
   return (
     <div className="w-full rounded-2xl border border-purple-500/30 bg-gradient-to-b from-[#170d24]/85 to-[#0b0514]/85 backdrop-blur-md overflow-hidden">
       <button onClick={toggle} className="w-full px-4 py-3 flex items-center gap-2 text-left">
-        <span className="text-base">📜</span>
+        <Icon name="scroll" size={16} className="text-purple-200/80" />
         <span className="text-sm tracking-[0.2em] text-purple-200/90" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>
           {entry.title ?? "命运之卷"}
         </span>

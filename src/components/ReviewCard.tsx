@@ -1,6 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
+import Icon, { type IconName } from "@/components/icons";
 
 /**
  * 审校报告卡片 —— 展示 reviewer 的三维度评分与结论
@@ -14,10 +15,14 @@ export interface ReviewData {
   rewritten?: boolean;
 }
 
-const DIMS: { key: keyof ReviewData["scores"]; label: string; icon: string; color: string }[] = [
-  { key: "grounding", label: "典籍忠实", icon: "📜", color: "from-sky-500 to-cyan-400" },
-  { key: "empathy", label: "共情回应", icon: "💗", color: "from-rose-500 to-pink-400" },
-  { key: "tone", label: "语气人格", icon: "🎭", color: "from-amber-500 to-yellow-400" },
+/**
+ * ⚠️ 2026-11-04：icon 从 emoji 换成 SVG 图标（用户诉求："想要更漂亮一点的图标"）
+ * ⚠️ 原因见 `src/components/icons.tsx` 的头注释。
+ */
+const DIMS: { key: keyof ReviewData["scores"]; label: string; icon: IconName; color: string }[] = [
+  { key: "grounding", label: "典籍忠实", icon: "scroll", color: "from-sky-500 to-cyan-400" },
+  { key: "empathy", label: "共情回应", icon: "heart", color: "from-rose-500 to-pink-400" },
+  { key: "tone", label: "语气人格", icon: "masks", color: "from-amber-500 to-yellow-400" },
 ];
 
 export default function ReviewCard({ review }: { review: ReviewData }) {
@@ -29,7 +34,7 @@ export default function ReviewCard({ review }: { review: ReviewData }) {
     >
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <span className="text-lg">🧐</span>
+          <Icon name="eye" size={17} className="text-emerald-200/90" />
           <span className="text-sm text-emerald-200/90 tracking-wider">审校者报告</span>
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-400/30 text-emerald-300 font-mono">
             REVIEWER
@@ -52,7 +57,7 @@ export default function ReviewCard({ review }: { review: ReviewData }) {
           return (
             <div key={d.key} className="rounded-xl bg-black/25 border border-white/5 px-3 py-2.5">
               <div className="flex items-center gap-1.5 mb-1.5">
-                <span className="text-sm">{d.icon}</span>
+                <Icon name={d.icon} size={13} className="text-zinc-300/70" />
                 <span className="text-xs text-zinc-300/80">{d.label}</span>
                 <span className={`ml-auto text-sm font-bold ${v >= 7 ? "text-emerald-300" : v >= 5 ? "text-amber-300" : "text-rose-400"}`}>
                   {v}

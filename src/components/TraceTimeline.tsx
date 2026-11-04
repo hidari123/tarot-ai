@@ -20,6 +20,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Icon from "@/components/icons";
 
 /** 单条事件（与 /api/dashboard/events 的返回对应） */
 interface TraceEvent {
@@ -109,7 +110,10 @@ export default function TraceTimeline({ sessionId }: { sessionId: string | null 
   if (!sessionId) {
     return (
       <div className="rounded-2xl border border-purple-500/20 bg-purple-950/20 backdrop-blur p-5 mb-8">
-        <h2 className="text-sm text-purple-200/80 tracking-wider mb-3">🔍 事件 Trace 时间轴</h2>
+        <h2 className="text-sm text-purple-200/80 tracking-wider mb-3 flex items-center gap-1.5">
+          <Icon name="magnify" size={14} />
+          事件 Trace 时间轴
+        </h2>
         <p className="text-xs text-purple-300/40 py-3 text-center">
           在下方「最近占卜记录」里点击某一场，查看它的完整过程时间轴
         </p>
@@ -120,8 +124,9 @@ export default function TraceTimeline({ sessionId }: { sessionId: string | null 
   return (
     <div className="rounded-2xl border border-purple-500/20 bg-purple-950/20 backdrop-blur p-5 mb-8">
       <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-        <h2 className="text-sm text-purple-200/80 tracking-wider">
-          🔍 事件 Trace 时间轴
+        <h2 className="text-sm text-purple-200/80 tracking-wider flex items-center gap-1.5">
+          <Icon name="magnify" size={14} />
+          事件 Trace 时间轴
           <span className="ml-2 text-[11px] text-purple-300/40 font-mono">
             {sessionId}
           </span>

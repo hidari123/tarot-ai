@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { motion } from "framer-motion";
+import Icon from "@/components/icons";
 
 /**
  * 占卜师"思考中"气泡
@@ -120,7 +121,7 @@ export default function ThinkingBubble({
     >
       {/* 头像：与占卜师气泡一致的小圆徽记 */}
       <div className="shrink-0 w-7 h-7 rounded-full border border-purple-400/30 bg-purple-900/40 flex items-center justify-center">
-        <span className="text-sm text-purple-300/80 rune-breathe">✧</span>
+        <Icon name="moon" size={15} className="text-purple-300/80 rune-breathe" />
       </div>
 
       <div className="flex-1 rounded-2xl border border-purple-500/20 bg-[#0d0819]/60 backdrop-blur-sm px-4 py-3">

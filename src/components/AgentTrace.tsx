@@ -1,7 +1,8 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import Icon, { type IconName } from "@/components/icons";
 
 /**
  * Agent Trace 面板 —— 展示 Agent 每一次工具调用（调用名/参数/结果/耗时）
@@ -25,13 +26,16 @@ export interface RoundInfo {
   phase?: string;
 }
 
-const TOOL_META: Record<string, { icon: string; label: string; color: string }> = {
-  rag_search: { icon: "📖", label: "典籍检索", color: "text-sky-300" },
-  draw_cards: { icon: "🃏", label: "命运抽牌", color: "text-amber-300" },
-  ask_user: { icon: "💭", label: "询问求卜者", color: "text-emerald-300" },
-  write_reading: { icon: "✍️", label: "撰写命运之卷", color: "text-fuchsia-300" },
-  offer_card_selection: { icon: "🎴", label: "亲手选牌", color: "text-purple-300" },
-  fate_crossroads: { icon: "🔮", label: "命运岔路", color: "text-rose-300" },
+/**
+ * ⚠️ 2026-11-04：icon 从 emoji 换成 SVG 图标（用户诉求："想要更漂亮一点的图标"）
+ */
+const TOOL_META: Record<string, { icon: IconName; label: string; color: string }> = {
+  rag_search: { icon: "book", label: "典籍检索", color: "text-sky-300" },
+  draw_cards: { icon: "cards", label: "命运抽牌", color: "text-amber-300" },
+  ask_user: { icon: "thought", label: "询问求卜者", color: "text-emerald-300" },
+  write_reading: { icon: "quill", label: "撰写命运之卷", color: "text-fuchsia-300" },
+  offer_card_selection: { icon: "cards", label: "亲手选牌", color: "text-purple-300" },
+  fate_crossroads: { icon: "scry", label: "命运岔路", color: "text-rose-300" },
 };
 
 export default function AgentTrace({
@@ -82,7 +86,7 @@ export default function AgentTrace({
       {/* 轮次时间轴：可视化"Agent 在哪一步慢" */}
       {rounds && rounds.length > 0 && (
         <div className="px-4 py-2.5 border-b border-purple-500/10">
-          <div className="text-[10px] text-purple-400/50 mb-2 tracking-wider">⏱ 决策时间轴</div>
+          <div className="text-[10px] text-purple-400/50 mb-2 tracking-wider flex items-center gap-1"><Icon name="orbit" size={11} />决策时间轴</div>
           <div className="flex items-end gap-1 h-12">
             {rounds.map((r, i) => {
               const h = Math.max(8, Math.round((r.elapsedMs / maxRoundMs) * 100));
@@ -158,7 +162,7 @@ export default function AgentTrace({
                 </p>
               )}
               {tools.map((t, i) => {
-                const meta = TOOL_META[t.name] ?? { icon: "🔧", label: t.name, color: "text-zinc-300" };
+                const meta = TOOL_META[t.name] ?? { icon: "wand" as IconName, label: t.name, color: "text-zinc-300" };
                 return (
                   <motion.div
                     key={i}
@@ -170,7 +174,7 @@ export default function AgentTrace({
                     <span className="text-purple-500/40 pt-0.5 shrink-0">{String(i + 1).padStart(2, "0")}</span>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span>{meta.icon}</span>
+                        <Icon name={meta.icon} size={12} className={meta.color} />
                         <span className={`${meta.color} font-semibold`}>{meta.label}</span>
                         <span className="text-purple-400/30">·</span>
                         <span className="text-purple-300/50">{t.name}()</span>

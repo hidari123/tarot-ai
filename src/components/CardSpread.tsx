@@ -1,6 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
+import Icon from "@/components/icons";
 
 /**
  * 牌阵时间线（顶部固定条）—— 过去 / 当下 / 未来
@@ -170,7 +171,7 @@ export default function CardSpread({ cards, onFlipCard, onPreview }: {
                 /* 牌背：与旧版 TarotCardView 一致的星空牌背（看不到任何牌面信息） */
                 <div className="absolute inset-0 bg-[#160b26] flex items-center justify-center">
                   <div className="w-10 h-10 rounded-full border-2 border-purple-400/50 flex items-center justify-center rune-breathe">
-                    <span className="text-xl text-purple-300/70">✦</span>
+                    <Icon name="sparkle" size={18} className="text-purple-300/70" />
                   </div>
                   <div className="absolute inset-1.5 rounded-lg border border-purple-500/25" />
                   {/* 当前该翻的牌：点我提示 */}

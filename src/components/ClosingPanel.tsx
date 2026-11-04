@@ -1,6 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
+import Icon from "@/components/icons";
 
 /**
  * 收束落点卡片
@@ -52,7 +53,7 @@ export default function ClosingPanel({
     >
       {/* 标题 */}
       <div className="flex items-center gap-2.5 mb-3">
-        <span className="text-lg text-amber-200/90 rune-breathe">✦</span>
+        <Icon name="sparkle" size={19} className="text-amber-200/90 rune-breathe" />
         <span
           className="text-xs tracking-[0.3em] text-amber-200/80"
           style={{ fontFamily: "'Ma Shan Zheng', serif" }}
@@ -65,7 +66,7 @@ export default function ClosingPanel({
       {personaSuggest && (
         <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-950/10 px-3.5 py-2.5">
           <p className="text-xs text-amber-100/80 leading-relaxed">
-            <span className="mr-1.5">{personaSuggest.emoji ?? "✧"}</span>
+            <Icon name="masks" size={15} className="mr-1.5 text-amber-200/80" />
             {personaSuggest.reason ?? "要不要换个人聊聊？"}
           </p>
           {onSwitchPersona && (

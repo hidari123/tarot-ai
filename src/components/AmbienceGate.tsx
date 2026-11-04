@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { unlockAmbience, setMuted, setAmbienceLayer, isMuted } from "@/lib/audio/ambient";
+import Icon from "@/components/icons";
 
 /**
  * 首页入场：点击开启占卜之声
@@ -83,22 +84,25 @@ export default function AmbienceGate() {
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          exit={{ opacity: 0, scale: 0.96 }}
+          exit={{ opacity: 0, y: 12 }}
           transition={{ duration: 0.5 }}
-          className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none"
+          /**
+           * ⚠️⚠️ 位置：**底部**（不是居中）
+           * ⚠️ 用户实测报告："首页你点击打开音乐的按钮目前跟那几个选择人格重合了"
+           *   → 居中的提示正好压在"选择你的占卜师"那三个按钮上。
+           *   → 底部（bottom-10）既不挡人格选择，也不挡输入框与标题。
+           * ⚠️ 仍然 pointer-events-none —— 点击**任意处**都能解锁，
+           *    提示只是"告诉用户可以点"。
+           */
+          className="fixed inset-x-0 bottom-10 z-50 flex justify-center pointer-events-none"
         >
-          {/**
-           * ⚠️ pointer-events-none + 上面 window 级别的监听：
-           *   提示本身不拦截点击（用户点页面任何地方都能解锁），
-           *   但它仍然可见 → 用户知道"可以点"。
-           */}
-          <div className="flex flex-col items-center gap-4 px-6 text-center">
+          <div className="flex flex-col items-center gap-2.5 px-6 text-center">
             <motion.div
               animate={{ scale: [1, 1.08, 1], opacity: [0.55, 0.9, 0.55] }}
               transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
-              className="w-16 h-16 rounded-full border border-purple-400/40 flex items-center justify-center bg-purple-950/30 backdrop-blur-sm"
+              className="w-11 h-11 rounded-full border border-purple-400/40 flex items-center justify-center bg-purple-950/40 backdrop-blur-sm"
             >
-              <span className="text-2xl text-purple-200/90">✧</span>
+              <Icon name="moon" size={19} className="text-purple-200/90" />
             </motion.div>
             <p
               className="text-sm tracking-[0.25em] text-purple-200/70"

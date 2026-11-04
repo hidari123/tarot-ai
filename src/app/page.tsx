@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
@@ -16,6 +16,7 @@ import SubAgentPipeline, { type SubAgentEvent } from "@/components/SubAgentPipel
 import AmbienceToggle, { useAmbiencePhase } from "@/components/AmbienceToggle";
 import AmbienceGate from "@/components/AmbienceGate";
 import ClosingPanel from "@/components/ClosingPanel";
+import Icon, { type IconName } from "@/components/icons";
 import { unlockAmbience, playSfx } from "@/lib/audio/ambient";import { parseAgentEvent } from "@/lib/agent/schema";
 
 /* ---------------- 类型 ---------------- */
@@ -37,15 +38,21 @@ interface PersonaView {
 
 type Phase = "analyze" | "retrieve" | "draw" | "interpret" | "wait_user" | "review" | "done" | "error";
 
-const PHASE_TEXT: Record<Phase, { title: string; icon: string }> = {
-  analyze: { title: "凝听问题", icon: "🔮" },
-  draw: { title: "命运之牌", icon: "🃏" },
-  retrieve: { title: "翻阅典籍", icon: "📖" },
-  interpret: { title: "撰写命运之卷", icon: "✍️" },
-  wait_user: { title: "等待你的回应", icon: "💭" },
-  review: { title: "审校检视", icon: "🧐" },
-  done: { title: "解读完成", icon: "✨" },
-  error: { title: "波动", icon: "⚠️" },
+/**
+ * ⚠️ 2026-11-04：图标从 emoji 换成 **SVG 线条图标**（用户诉求："想要更漂亮一点的图标"）
+ * ⚠️ 原因见 `src/components/icons.tsx` 的头注释：
+ *   emoji 跨平台不一致（Windows/macOS/Android 三种长相）、
+ *   Linux 上可能渲染成豆腐块、且与"暗紫金线"的古典调性不搭。
+ */
+const PHASE_TEXT: Record<Phase, { title: string; icon: IconName }> = {
+  analyze: { title: "凝听问题", icon: "crystal" },
+  draw: { title: "命运之牌", icon: "cards" },
+  retrieve: { title: "翻阅典籍", icon: "book" },
+  interpret: { title: "撰写命运之卷", icon: "quill" },
+  wait_user: { title: "等待你的回应", icon: "thought" },
+  review: { title: "审校检视", icon: "eye" },
+  done: { title: "解读完成", icon: "sparkle" },
+  error: { title: "波动", icon: "orbit" },
 };
 
 const PHASE_ORDER: Phase[] = ["analyze", "draw", "retrieve", "interpret", "review", "done"];
@@ -134,7 +141,7 @@ function AgentStatusBar({ phase }: { phase: Phase | null }) {
                   : "bg-zinc-900/40 border border-zinc-800 text-zinc-600"
               }`}
             >
-              <span>{PHASE_TEXT[p].icon}</span>
+              <Icon name={PHASE_TEXT[p].icon} size={13} />
               <span>{PHASE_TEXT[p].title}</span>
               {active && <span className="animate-pulse">…</span>}
             </div>
@@ -152,7 +159,7 @@ function AgentStatusBar({ phase }: { phase: Phase | null }) {
                 : "bg-amber-900/40 border border-amber-400/50 text-amber-100"
             }`}
           >
-            <span>{PHASE_TEXT[phase].icon}</span>
+            <Icon name={PHASE_TEXT[phase].icon} size={13} />
             <span>{PHASE_TEXT[phase].title}</span>
           </div>
         </div>
@@ -541,6 +548,30 @@ export default function TarotApp() {
   const answerCardConfirm = useCallback(async (entryId: string, answer: string) => {
     // 答案挂到牌上（流内显示为该牌的用户气泡），占卜师随后开始讲透这张牌
     updateEntry(entryId, (e) => (e.card ? { card: { ...e.card, answer } } : {}));
+    /**
+     * ⚠️⚠️ 2026-11-04 新增：答案同步回**牌阵条目**
+     *
+     * ⚠️ 为什么必须同步：
+     *   SpreadPanel 的 `hasPendingCardQuestion` 判据是
+     *   「牌已翻开 + 有 question + **没有 answer**」。
+     *   不同步 answer → 牌阵会一直保持展开（挡住了正文），
+     *   而用户已经答完了。
+     *   ⚠️ 这是"收起/展开"两个方向的对称要求：
+     *     提问时同步 question → 展开；回答时同步 answer → 可收起。
+     */
+    setEntries((prev) =>
+      prev.map((e) =>
+        e.kind === "spread" && e.spread
+          ? {
+              ...e,
+              spread: e.spread.map((c) =>
+                // ⚠️ 只填"有 question 且还没 answer"的那张（= 刚被问的那张）
+                c.question && !c.answer ? { ...c, answer } : c
+              ),
+            }
+          : e
+      )
+    );
     setAsk(null);
     if (!sessionId) return;
     try {
@@ -1000,6 +1031,38 @@ export default function TarotApp() {
                   return prev.map((e) =>
                     e.id === lastCard.id
                       ? { ...e, card: { ...e.card!, question: p.ask.question, options: p.ask.options } }
+                      : e
+                  );
+                });
+                /**
+                 * ⚠️⚠️ 2026-11-04 新增：把问题同步到**牌阵条目**
+                 *
+                 * ⚠️ 为什么必须同步：
+                 *   SpreadPanel 的自动展开逻辑要判断"牌上是否还有待回答的问题"
+                 *   （见 DialogueFlow 的 hasPendingCardQuestion）——
+                 *   否则用户回答牌面问题时，牌阵是**收起**的 → 看不到问题
+                 *   → 用户实测报告的"还要重新手动打开选择"。
+                 *
+                 * ⚠️ 同步到**哪一张**：刚翻开的那张（最后一张已翻开的牌）。
+                 *   ⚠️ 不能用 "current"（card_reveal 已把它清空了）。
+                 */
+                const q = p.ask.question;
+                setEntries((prev) => {
+                  const lastFlipped = [...prev]
+                    .reverse()
+                    .find((e) => e.kind === "spread" && e.spread && e.spread.some((c) => c.flipped));
+                  if (!lastFlipped?.spread) return prev;
+                  return prev.map((e) =>
+                    e.id === lastFlipped.id
+                      ? {
+                          ...e,
+                          spread: e.spread!.map((c) => {
+                            // ⚠️ 只给"最后一张已翻开的牌"挂问题（还没答的那张）
+                            if (!c.flipped) return c;
+                            const alreadyAnswered = !!c.answer;
+                            return alreadyAnswered ? c : { ...c, question: q };
+                          }),
+                        }
                       : e
                   );
                 });
@@ -1670,7 +1733,11 @@ export default function TarotApp() {
                   listening ? "bg-rose-500/30 text-rose-300 animate-pulse" : "text-purple-300/60 hover:text-purple-200"
                 }`}
               >
-                {listening ? "◉" : "🎙"}
+                {listening ? (
+                  <span className="w-2.5 h-2.5 rounded-full bg-current animate-pulse" />
+                ) : (
+                  <Icon name="thought" size={15} />
+                )}
               </button>
             </div>
             <motion.button
@@ -1685,7 +1752,7 @@ export default function TarotApp() {
           </div>
           {error && (
             <div className="mt-3 flex items-center gap-2 text-purple-400/90 text-sm text-center sm:text-left">
-              <span>⚠️</span>
+              <Icon name="orbit" size={15} />
               <p className="flex-1">{error}</p>
               {/* 过期/出错时给唯一出路：一键重开（清空会话与本地记录） */}
               <button
@@ -1837,7 +1904,7 @@ export default function TarotApp() {
               animate={{ opacity: 1, y: 0 }}
               className="mt-3 w-full max-w-2xl rounded-2xl border border-rose-500/40 bg-rose-950/20 backdrop-blur-md px-4 py-3 flex items-center gap-3"
             >
-              <span className="text-base shrink-0">⚠️</span>
+              <Icon name="orbit" size={15} className="text-purple-400/80 shrink-0" />
               <p className="flex-1 text-sm text-rose-200/90">{error}</p>
               <button
                 onClick={restart}

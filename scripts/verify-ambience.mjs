@@ -152,6 +152,61 @@ console.log("\n【③ 乐句层 / 空间层 / 事件音效】（用户反馈「�
     idleBlock ? (idleBlock[0].match(/arpGain:\s*([\d.]+)/)?.[1] ?? "无") : "未找到 idle 块");
 }
 
+/* ────────────── ③b 2026-11-04 二次修正：消除"长笛声"与"叮" ────────────── */
+console.log("\n【③b 音色修正】（用户反馈「长笛一样的声音，很吵，叮——————」）");
+{
+  const src = readFileSync("src/lib/audio/ambient.ts", "utf-8");
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+
+  // ⚠️ 关键：乐句**不能用三角波**（三角波的谐波结构像簧片乐器 = 长笛）
+  const arpFn = code.match(/function playArpNote[\s\S]*?\n\}/);
+  check("乐句函数存在", !!arpFn);
+  if (arpFn) {
+    check("乐句用正弦波（不是三角波 → 消除长笛感）",
+      !/osc\.type = "triangle"/.test(arpFn[0]),
+      "triangle 的谐波结构像长笛/单簧管");
+    check("乐句包络是「拨弦式」（sustain 极低）",
+      /sustainLevel = gainValue \* 0\.0[0-9]/.test(arpFn[0]),
+      "sustain 接近 0 → 每个音是「点」出来的，不是「拉」出来的");
+    check("release 已缩短（不再 1.4s 的长尾）",
+      /release = 0\.[0-9]/.test(arpFn[0]) && !/release = Math\.min\(1\.4/.test(arpFn[0]));
+    check("乐句用微失谐的正弦叠加（±3 cents，有空气感但无拍频）",
+      /ARP_DETUNE/.test(arpFn[0]) && /ARP_WAVE/.test(arpFn[0]));
+  }
+
+  // ⚠️ 泛音层的失谐也要降（原来 ±4~7 cents → 拍频明显 = 金属颤音）
+  check("泛音层失谐已降到 ±2（消除金属颤音）",
+    /const detunes = \[0, 2, -2\]/.test(code));
+  // ⚠️ 判据要精确：只查**泛音层那段代码**（用 detunes 定位），不能查整个文件
+  //   （收束音效的下行琶音用 triangle 是合适的 —— 那是"铃"的质感，不是长笛）
+  const shimmerBlock = code.match(/const detunes = \[0, 2, -2\];[\s\S]*?st\.shimmer = shimmerVoices;/);
+  check("泛音层用正弦波（范围内检查）",
+    !!shimmerBlock && !/osc\.type = "triangle"/.test(shimmerBlock[0]),
+    "triangle 只允许出现在收束音效那种「铃」的场景");
+
+  // ⚠️ 翻牌音效：1240Hz 的铃 → 低八度柔和泛音
+  const flipFn = code.match(/if \(kind === "flip"\)[\s\S]*?\} else if \(kind === "reveal"\)/);
+  check("翻牌音效存在", !!flipFn);
+  if (flipFn) {
+    check("翻牌不再用 1240Hz 的尖锐铃",
+      !/1240/.test(flipFn[0]),
+      "1240Hz 听起来像门铃「叮！」");
+    check("翻牌用低八度柔和泛音（587/880Hz）",
+      /587\.33/.test(flipFn[0]) && /880\.0/.test(flipFn[0]));
+    // ⚠️ 用**代码特征**判断，不用注释关键词（注释在剥离后就没了）
+    check("翻牌保留木质叩击（正弦下滑 220→130Hz）",
+      /setValueAtTime\(220, now\)/.test(flipFn[0]) &&
+      /exponentialRampToValueAtTime\(130, now \+ 0\.12\)/.test(flipFn[0]));
+    check("翻牌保留纸张摩擦（带通噪声）",
+      /bandpass/.test(flipFn[0]) && /makeNoiseBuffer/.test(flipFn[0]));
+  }
+
+  // ⚠️ 揭示的磬也要降八度（原来 1046/1568/2093Hz 偏亮偏尖）
+  const revealFn = code.match(/kind === "reveal"\)[\s\S]*?\} else if \(kind === "select"\)/);
+  check("牌面揭示的磬已降八度（523/784/1046Hz）",
+    !!revealFn && /523\.25/.test(revealFn[0]) && !/2093/.test(revealFn[0]));
+}
+
 /* ────────────── ④ 页面接线 ────────────── */
 console.log("\n【④ 页面接线】");
 {
