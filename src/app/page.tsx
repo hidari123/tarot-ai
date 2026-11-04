@@ -13,6 +13,8 @@ import DialogueFlow, { type FlowEntry } from "@/components/DialogueFlow";
 import CardFan, { type FanCard } from "@/components/CardFan";
 import ReviewCard, { type ReviewData } from "@/components/ReviewCard";
 import SubAgentPipeline, { type SubAgentEvent } from "@/components/SubAgentPipeline";
+import AmbienceToggle, { useAmbiencePhase } from "@/components/AmbienceToggle";
+import { unlockAmbience, playSfx } from "@/lib/audio/ambient";
 import { parseAgentEvent } from "@/lib/agent/schema";
 
 /* ---------------- 类型 ---------------- */
@@ -244,6 +246,11 @@ export default function TarotApp() {
   const [phase, setPhase] = useState<Phase | null>(null);
   const [phaseLabel, setPhaseLabel] = useState("");
   /**
+   * 环境音：仪式阶段 → 氛围层的联动
+   * ⚠️ 只在"占卜进行中"时启用 —— 待机页不该有声音。
+   */
+  useAmbiencePhase(phase, stage !== "input");
+  /**
    * P2-⑪：当前是否处于"限速等待"
    * ⚠️ 与 phase 分开存 —— 它描述的是"等待的原因"而不是"流程处于哪一步"，
    *    两者会同时存在（我们既在某个阶段里，也在等限速配额）。
@@ -454,6 +461,8 @@ export default function TarotApp() {
    */
   const flipCard = useCallback(async () => {
     setAsk(null);
+    // ⚠️ 翻牌音效：木质"嗒"—— 这是仪式里最有仪式感的一下，值得给声音
+    void playSfx("flip");
     if (!sessionId) return;
     // 本地 pending：防连点（用户手快连点会发多个请求）
     if (flipPendingRef.current) return;
@@ -1050,6 +1059,13 @@ export default function TarotApp() {
       setError("请先在心中默念并写下你的问题 ✦");
       return;
     }
+    /**
+     * ⚠️ 环境音解锁 —— 必须在这里（**用户手势的同步调用栈内**）
+     *   浏览器禁止无手势的音频自动播放；这个 async 回调由按钮 onClick 触发，
+     *   所以此刻仍处于"用户手势"上下文，AudioContext.resume() 才会成功。
+     *   ⚠️ 不 await —— 音频解锁失败不该阻塞占卜开始。
+     */
+    void unlockAmbience().then(() => playSfx("chime"));
     setError("");
     setReading("");
     setReasoning("");
@@ -1127,6 +1143,8 @@ export default function TarotApp() {
     if (answeringRef.current) return; // 防连点
     answeringRef.current = true;
     setAsk(null);
+    // ⚠️ 答问音效：温和的确认音 —— 呼应"占卜师听见了你"
+    void playSfx("answer");
     try {
       const res = await fetch("/api/answer", {
         method: "POST",
@@ -1301,6 +1319,14 @@ export default function TarotApp() {
       <StardustCursor />
       <StarField />
       <MagicCircle />
+
+      {/* ---------- 环境音开关（固定右上角）----------
+        ⚠️ 位置选择：固定在视口右上 —— 它是"全局设置"而不是内容流的一部分，
+           不该随页面滚动（占卜页会很长，滚下去就找不到了）。
+           ⚠️ z-30 盖在魔法阵之上，但不遮挡任何交互区（右上角是空的）。 */}
+      <div className="fixed right-4 top-4 z-30">
+        <AmbienceToggle />
+      </div>
 
       {/* 标题 */}
       <motion.h1

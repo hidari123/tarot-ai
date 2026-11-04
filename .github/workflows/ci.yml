@@ -83,6 +83,9 @@ jobs:
           npx tsx scripts/verify-optimization-goals.mjs
           npx tsx scripts/verify-sse-cancel.mjs
           npx tsx scripts/verify-resume-trigger.mjs
+          # ⚠️ 环境音：断言"阶段→氛围层"的映射与页面接线（音频是看不见的功能，
+          #    最容易悄悄坏掉，而 CI 里没有别的东西能发现）
+          npx tsx scripts/verify-ambience.mjs
 
   # ────────────────────────────────────────────────────────────
   # ② 静态验证：不需要 LLM 的功能回归

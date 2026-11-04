@@ -104,9 +104,27 @@ item(
 );
 item(
   "P1-④ 安全响应头（框架级统一）",
-  has("next.config.ts") && /Content-Security-Policy/.test(read("next.config.ts")) &&
-    /X-Frame-Options/.test(read("next.config.ts")),
-  "next.config.ts headers()"
+  // ⚠️⚠️ 2026-11-04 修正：CSP **不再**放在 next.config.ts 的 headers() 里。
+  //   原因：next.config 的 headers() 是**静态**的，只能写死一份 CSP；
+  //   而 CSP 需要"每请求动态"（nonce / strict-dynamic）才能既严格又不挡死页面。
+  //   Next.js 16 的正确位置是 `src/proxy.ts`（原 middleware，已改名）。
+  //   实测踩过：写在 next.config 的 `script-src 'self'` 会把 Next 的内联
+  //   RSC script 全拦掉 → **首页永远停在 loading**。
+  //   ⚠️ 断言改成"检查安全头在**任一**框架级位置"，并**额外**要求
+  //     proxy.ts 里的 script-src 不会挡死内联脚本。
+  (() => {
+    const nc = read("next.config.ts");
+    const px = has("src/proxy.ts") ? read("src/proxy.ts") : "";
+    // 其余安全头（X-Frame-Options 等）必须在 next.config（框架级、全站生效）
+    const restOk = /X-Frame-Options/.test(nc) && /X-Content-Type-Options/.test(nc);
+    // CSP 必须在 proxy.ts 且放行内联脚本
+    const cspOk =
+      /Content-Security-Policy/.test(px) &&
+      /script-src/.test(px) &&
+      /'unsafe-inline'/.test(px);
+    return restOk && cspOk;
+  })(),
+  "next.config.ts headers()（其余头）+ src/proxy.ts（CSP，动态下发）"
 );
 item(
   "P1-⑤ 多 worker 状态收敛（runtime 单例 + 静态扫描守卫）",

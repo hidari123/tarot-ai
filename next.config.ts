@@ -10,40 +10,27 @@ import type { NextConfig } from "next";
  *     · 静态页面（HTML）也拿不到头
  *   Next 的 `headers()` 是**框架级**的 —— 声明一次，全站生效，包括页面。
  *
- * ⚠️ CSP 里的 'unsafe-inline'（style）：
- *   Next.js + Tailwind 4 会把样式内联注入，
- *   严格 CSP 需要 nonce —— 但 nonce 与静态优化（cacheComponents）冲突。
- *   权衡：script-src 'none'/'self' 是**关键**（挡 XSS 执行），
- *   style 的 unsafe-inline 风险较低（样式注入不能执行 JS）。
- *   分享页那种完全独立的 HTML 用的是更严格的 CSP（见 share 路由）。
+ * ⚠️⚠️ CSP 为什么不放在这里（**2026-11-04 修的回归**）：
+ *   原来这里设了 `script-src 'self'`（生产模式）。
+ *   实测后果：**首页永远停在 loading** ——
+ *     · Next.js App Router 的 HTML 里有 **8 个内联 `<script>`**
+ *       （RSC payload：`self.__next_f.push(...)`）
+ *     · `script-src 'self'` **不允许内联脚本**（没有 'unsafe-inline'）
+ *     * → 浏览器拦截这些脚本 → React 不 hydrate
+ *     * → 页面永远显示 Next 的 loading 骨架
+ *   这是**上一轮改造引入的真实回归** —— 而且是"看起来安全的配置"造成的，
+ *   正好印证了那条原则：**安全头的强度要用实测验证，不能凭直觉**。
+ *
+ *   修法：CSP 改由 `src/middleware.ts` 用 **nonce** 方案下发
+ *   （Next.js 官方推荐路径 —— middleware 设置 CSP 请求头时，
+ *    Next 会自动给它自己的内联脚本加上同一个 nonce）。
+ *   本文件保留**其余**安全头（它们不含 script-src，不影响脚本执行）。
  */
 const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), interest-cohort=()" },
-  {
-    key: "Content-Security-Policy",
-    value: [
-      "default-src 'self'",
-      // ⚠️ script-src 不含 'unsafe-inline' —— 这是 CSP 挡 XSS 的核心
-      //    'unsafe-eval' 只在开发模式需要（React Refresh 的热更新）
-      //    生产构建必须去掉 —— 否则 CSP 的价值大打折扣。
-      process.env.NODE_ENV === "production"
-        ? "script-src 'self'"
-        : "script-src 'self' 'unsafe-eval'",
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob: https:",
-      "font-src 'self' data:",
-      // ⚠️ connect-src 'self' —— 前端只能连自己的 API
-      "connect-src 'self'",
-      // ⚠️ frame-ancestors 'none' —— 禁止被 iframe 嵌套（点击劫持）
-      "frame-ancestors 'none'",
-      "base-uri 'self'",
-      "form-action 'self'",
-      "object-src 'none'",
-    ].join("; "),
-  },
 ];
 
 /**
