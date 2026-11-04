@@ -268,6 +268,13 @@ export interface AgentSession {
    */
   mode?: import("./divination-mode").DivinationMode;
   /**
+   * 会话种类（2026-11-04 D 方向：占卜 / 神谕）
+   *
+   * ⚠️ 神谕 = 免抽牌的对话式塔罗向导（复用同一套引擎，只是去掉仪式外壳）。
+   * ⚠️ 老会话没有这个字段 → 按 "divination" 处理（保持原行为）。
+   */
+  kind?: import("./session-kind").SessionKind;
+  /**
    * P2-⑨：综合（synthesis）是否已完成
    *
    * ⚠️ 为什么需要这个独立标记（守卫表引入后暴露的真 bug）：

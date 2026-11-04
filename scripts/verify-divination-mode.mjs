@@ -246,7 +246,9 @@ console.log("\n【④ 前后端接线】");
 
   check("API 接受 mode 参数", /mode\?: string/.test(routeCode));
   check("API 用 resolveMode 宽容解析", /resolveMode\(body\.mode\)/.test(routeCode));
-  check("API 把 mode 传给 createSession", /createSession\(question, body\.persona, userKey, mode\)/.test(routeCode));
+  // ⚠️ 2026-11-04 D 方向：createSession 多了 kind 参数 → 断言放宽
+  //    （"mode 在第 4 个参数位"这个契约仍然成立，只是不再是最后一个）
+  check("API 把 mode 传给 createSession", /createSession\(question, body\.persona, userKey, mode/.test(routeCode));
 
   check("session 类型有 mode 字段", /mode\?: import\("\.\/divination-mode"\)\.DivinationMode/.test(types));
   check("createSession 接受 mode 参数", /mode: DivinationMode = DEFAULT_MODE/.test(sess));

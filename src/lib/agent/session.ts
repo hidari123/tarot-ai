@@ -19,6 +19,7 @@ import { runtimeState } from "../runtime";
 import type { AgentSession } from "./types";
 import { derivePhase, type RitualPhase } from "./ritual-machine";
 import { DEFAULT_MODE, type DivinationMode } from "./divination-mode";
+import { DEFAULT_KIND, type SessionKind } from "./session-kind";
 
 /**
  * 内存会话表 —— globalThis 单例。
@@ -169,7 +170,8 @@ export function createSession(
   question: string,
   personaId?: string,
   userKey?: string,
-  mode: DivinationMode = DEFAULT_MODE
+  mode: DivinationMode = DEFAULT_MODE,
+  kind: SessionKind = DEFAULT_KIND
 ): AgentSession {
   cleanExpired();
   // ⚠️ P1-④：会话 id 改为 **192bit 全随机**（不再是"时间戳 + 6 位随机"）
@@ -189,9 +191,13 @@ export function createSession(
     cardReadings: [], interjections: [], pendingInterjections: [],
     userKey,
     // P1-⑩：新会话一律从"承约"开始（仪式第一站）
-    ritualPhase: "contract",
+    // ⚠️ 2026-11-04 D 方向：神谕不走仪式状态机 —— 起点标为 "done"，
+    //   这样任何按阶段推进的逻辑（守卫/提示）都不会误触发。
+    ritualPhase: kind === "oracle" ? "done" : "contract",
     // 2026-11-04 双模式：占卜模式（快速/深度）
     mode,
+    // 2026-11-04 D 方向：会话种类（占卜 / 神谕）
+    kind,
   };
   sessions.set(id, session);
   db.insertSession(id, question, persona.id, []);
@@ -281,6 +287,11 @@ export interface SessionSnapshot {
    * ⚠️ 老会话没有 → 恢复时按 "deep" 处理（保持原行为）
    */
   mode?: DivinationMode;
+  /**
+   * 会话种类（2026-11-04 D 方向）
+   * ⚠️ 老会话没有 → 恢复时按 "divination" 处理（保持原行为）
+   */
+  kind?: SessionKind;
   invocationAnswers?: string[];
   /** 三问呼召的完整问答对（P1-⑩ 推导仪式阶段时需要） */
   invocation?: { questions: string[]; answers: string[] };
@@ -323,6 +334,8 @@ export function snapshotSession(s: AgentSession): SessionSnapshot {
     ritualPhase: s.ritualPhase,
     // 2026-11-04：占卜模式进快照（恢复后必须保持同一模式，否则仪式路径会变）
     mode: s.mode,
+    // 2026-11-04 D 方向：会话种类进快照（恢复后必须保持同一形态）
+    kind: s.kind,
     invocationAnswers: s.invocationAnswers,
     interjections: s.interjections,
     pendingInterjections: s.pendingInterjections,
@@ -378,18 +391,25 @@ export function restoreSession(snap: SessionSnapshot): AgentSession | null {
       // ⚠️ 必须反推而不是默认 "contract"：
       //    否则恢复一个"已经承约完、正准备翻牌"的会话时，
       //    守卫会认为它还在承约阶段 → 用户看到"请先承约"（明明已经承约过了）。
-      ritualPhase: snap.ritualPhase ?? derivePhase({
-        finished: snap.finished,
-        contractQuestion: snap.contractQuestion,
-        invocation: snap.invocation,
-        drawnCards: snap.drawnCards,
-        cardReadings: snap.cardReadings,
-      }),
+      // ⚠️ 2026-11-04 D 方向：神谕会话不走仪式 → 恒为 "done"
+      //    （若按 derivePhase 反推会得到 "contract" → 触发承约守卫 → 神谕卡死）
+      ritualPhase:
+        snap.kind === "oracle"
+          ? "done"
+          : snap.ritualPhase ?? derivePhase({
+              finished: snap.finished,
+              contractQuestion: snap.contractQuestion,
+              invocation: snap.invocation,
+              drawnCards: snap.drawnCards,
+              cardReadings: snap.cardReadings,
+            }),
       invocationAnswers: snap.invocationAnswers,
       // 2026-11-04：占卜模式 —— 老会话没有 → 按 "deep" 处理（保持原行为）
       // ⚠️ 不能用 DEFAULT_MODE（quick）：老会话是**深度**仪式产生的，
       //    按 quick 恢复会让它跳过已经完成的阶段。
       mode: snap.mode ?? "deep",
+      // 2026-11-04 D 方向：会话种类 —— 老会话没有 → 按 "divination" 处理
+      kind: snap.kind ?? DEFAULT_KIND,
       interjections: snap.interjections ?? [],
       pendingInterjections: snap.pendingInterjections ?? [],
       userKey: snap.userKey,

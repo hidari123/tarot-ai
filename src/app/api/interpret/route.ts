@@ -9,6 +9,7 @@ import {
 import { validateAgentEvent } from "@/lib/agent/schema";
 import { recordEvent, eventsSince, persistEvent } from "@/lib/agent/event-log";
 import { resolveMode } from "@/lib/agent/divination-mode";
+import { resolveKind } from "@/lib/agent/session-kind";
 import { failSession } from "@/lib/db";
 import {
   clampText, LIMITS, deriveUserKey, withSecurityHeaders, badRequest, checkBodySize,
@@ -57,6 +58,11 @@ export async function POST(req: Request) {
      * ⚠️ 客户端可控 → 用 resolveMode 宽容解析（非法值退回默认，不报错）
      */
     mode?: string;
+    /**
+     * 会话种类（2026-11-04 D 方向）："divination" | "oracle"
+     * ⚠️ 神谕 = 免抽牌的对话式塔罗向导
+     */
+    kind?: string;
   };
   try {
     body = await req.json();
@@ -114,7 +120,10 @@ export async function POST(req: Request) {
     // 2026-11-04：占卜模式（快速/深度）—— resolveMode 宽容解析，
     //   非法值退回默认模式，不报错、不中断占卜。
     const mode = resolveMode(body.mode);
-    session = createSession(question, body.persona, userKey, mode);
+    // 2026-11-04 D 方向：会话种类（占卜 / 神谕）—— 同样宽容解析。
+    //   ⚠️ 神谕时 mode 无意义（没有仪式）→ 仍传默认值，由 kind 决定行为。
+    const kind = resolveKind(body.kind);
+    session = createSession(question, body.persona, userKey, mode, kind);
   }
 
   // 把客户端断开信号注入会话：HITL 等待中的 Promise 可被取消（防生成器/内存泄漏）

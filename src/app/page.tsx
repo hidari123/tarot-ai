@@ -1760,6 +1760,23 @@ export default function TarotApp() {
                 运势专区
               </span>
             </Link>
+            {/**
+              * ⚠️ 2026-11-04 D 方向：问神谕入口
+              *   竞品（Tarot Run 的 Oracle）把它放在最显眼的位置 ——
+              *   因为它**不需要用户先想清楚问题**（占卜需要），
+              *   是最低门槛的入口。
+              * ⚠️ 放在运势之后（而不是最前）——
+              *   占卜才是本站的主产品，神谕是补充路径。
+              */}
+            <Link
+              href="/oracle"
+              className="group inline-flex items-center gap-2 px-3.5 py-2 rounded-full border border-white/8 bg-white/[0.03] backdrop-blur-sm hover:border-purple-400/30 hover:bg-purple-900/20 transition-all"
+            >
+              <Icon name="crystal" size={14} className="text-purple-300/50 group-hover:text-purple-200" />
+              <span className="text-[11px] tracking-[0.15em] text-purple-300/55 group-hover:text-purple-100">
+                问神谕
+              </span>
+            </Link>
           </div>
         </motion.div>
       )}

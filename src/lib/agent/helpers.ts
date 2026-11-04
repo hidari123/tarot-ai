@@ -7,7 +7,7 @@
 import { PERSONAS } from "../personas";
 import type { RagHit } from "../rag-engine";
 import type { AgentEvent, AgentSession } from "./types";
-import { buildSupervisorPrompt } from "../prompts";
+import { buildSupervisorPrompt, buildOraclePrompt } from "../prompts";
 import { buildMemoryContext } from "../memory";
 import { callLLM } from "./llm";
 import type { LLMProvider } from "../llm-providers";
@@ -275,6 +275,22 @@ export function trimHistory(
 export function buildSystemPrompt(session: AgentSession): string {
   // 方向①：跨会话画像注入（占卜师"认识你"——承约阶段自然关联上次困惑）
   const memory = session.userKey ? buildMemoryContext(session.userKey) : "";
+
+  /**
+   * ⚠️ 2026-11-04 D 方向：**神谕模式**用完全不同的 prompt。
+   *
+   * ⚠️ 为什么必须分开（而不是给占卜 prompt 加一句"如果是神谕就…"）：
+   *   占卜 prompt 的主体是"按顺序走完仪式"——那是占卜的**流程约束**。
+   *   神谕没有仪式，硬套会让模型不断尝试抽牌类工具。
+   *   → 神谕有**自己的 prompt**（prompts.ts 的 buildOraclePrompt）。
+   *
+   * ⚠️ 而记忆（memory）与情绪档案**继续注入** ——
+   *   "神谕记得你"正是它的价值之一（跨会话画像）。
+   */
+  if (session.kind === "oracle") {
+    return buildOraclePrompt(session.persona) + (memory ? `\n\n${memory}` : "");
+  }
+
   /**
    * ⚠️ 2026-11-04 双模式：把"这次是快速/深度"告诉占卜师。
    *

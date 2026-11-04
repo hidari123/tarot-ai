@@ -325,3 +325,28 @@ export const QUICK_MODE_TOOLS = [
 export function toolsForMode(mode: DivinationMode): typeof TOOLS {
   return mode === "quick" ? (QUICK_MODE_TOOLS as unknown as typeof TOOLS) : TOOLS;
 }
+
+/**
+ * 神谕模式的工具集（2026-11-04 D 方向）
+ *
+ * ⚠️⚠️ 为什么神谕要**去掉抽牌类工具**（而不是只在 prompt 里说"别抽牌"）：
+ *   prompt 是**建议**，工具是**能力**。
+ *   只要 draw_cards / offer_card_selection / reveal_card 还在工具列表里，
+ *   模型就**可能**去调用（尤其在用户说"帮我抽牌"时）——
+ *   然后要么被守卫拦（浪费轮次），要么真的抽了牌（破坏"免抽牌"的语义）。
+ *   → 从**能力层**禁用，才是真禁用。
+ *
+ * ⚠️ 保留的工具：
+ *   · rag_search —— 神谕的核心能力（查牌义）
+ *   · ask_user —— 澄清与共情追问
+ *
+ * ⚠️⚠️ 为什么**去掉 fate_crossroads**（实测踩到的坑）：
+ *   fate_crossroads 是"占卜岔路"工具 —— 它的语义是"在牌阵的岔路口让用户选一条路"，
+ *   配套的是三张候选牌。
+ *   神谕里用它 → 模型会"替用户把三个方向都点一遍"再给一整套解读
+ *   （实测：2448 字长文，且本质上是**替用户做了选择**，违背"对话"本质）。
+ *   → 神谕用 ask_user（一个开放问题）就够了。
+ */
+export const ORACLE_TOOLS = TOOLS.filter((t) =>
+  ["rag_search", "ask_user"].includes(t.function.name)
+);

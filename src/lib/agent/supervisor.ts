@@ -28,7 +28,7 @@ import { buildProviders, pickProvider, type LLMProvider } from "../llm-providers
 import { callLLM, type CallResult } from "./llm";
 import { waitUserAnswer, isHitlGone, nudgeText } from "./hitl";
 import { markSessionDirty, snapshotSession } from "./session";
-import { toolsForMode } from "./tools/definitions";
+import { toolsForMode, ORACLE_TOOLS } from "./tools/definitions";
 import { execRagSearch, prefetchForCard, ragBudgetFor } from "./tools/rag";
 import { execDrawCards } from "./tools/cards";
 import { runAnalyst, runWriter, runReviewer, type ReviewResult } from "./subagents";
@@ -83,6 +83,15 @@ export async function* runAgent(
   opts?: { followup?: string }
 ): AsyncGenerator<AgentEvent> {
   /**
+   * ⚠️ 2026-11-04 D 方向：**神谕模式**标志。
+   *
+   * ⚠️ 为什么必须在**函数最开头**取（而不是在用到它的地方才取）：
+   *   它被用在 3 个地方（开场白 / 工具集 / 轮次上限 / 降级路径），
+   *   其中开场白在轮次上限**之前**。
+   *   → 统一在这里取一次，全函数复用（避免"两处判断不一致"的经典 bug）。
+   */
+  const oracleMode = session.kind === "oracle";
+  /**
    * ⚠️⚠️ P2-⑩（第二轮优化分析 2026-11 ⑩）：**busy 的所有权归路由层**。
    *
    * ⚠️ 原来的问题：busy 标志有**两个写入点**：
@@ -114,7 +123,14 @@ export async function* runAgent(
 
   if (session.messages.length === 0) {
     session.messages.push({ role: "system", content: buildSystemPrompt(session) });
-    session.messages.push({ role: "user", content: `我想占卜：${question}` });
+    /**
+     * ⚠️ 2026-11-04 D 方向：神谕的开场白不是"我想占卜"（那会让模型以为要走仪式）。
+     *   神谕是"用户在问一件事"。
+     */
+    session.messages.push({
+      role: "user",
+      content: oracleMode ? question : `我想占卜：${question}`,
+    });
     /**
      * ⚠️ P2-⑪（第二轮优化分析 2026-11 ⑪）：**原来这里写了一次 PROMPT_VERSION**，
      *   紧接着下面又写 `${PROMPT_VERSION}/${agentMode}` → 前者被**完全覆盖**。
@@ -143,7 +159,13 @@ export async function* runAgent(
     });
   }
 
-  yield { type: "phase", phase: "analyze", label: `${session.persona.emoji} ${session.persona.name}开始凝听你的问题…` };
+  yield {
+    type: "phase",
+    phase: "analyze",
+    label: oracleMode
+      ? `${session.persona.emoji} ${session.persona.name}在听你说…`
+      : `${session.persona.emoji} ${session.persona.name}开始凝听你的问题…`,
+  };
 
   /* ---- 方向⑤：Plan-Execute 模式（AGENT_MODE=plan）----
    * 与默认 ReAct 的差异：进入工具循环前先让 supervisor 产出一份显式计划
@@ -155,7 +177,12 @@ export async function* runAgent(
   const agentMode = process.env.AGENT_MODE === "plan" ? "plan" : "react";
   session.agentMode = agentMode;
   try { db.updateSessionPromptVersion(session.id, `${PROMPT_VERSION}/${agentMode}`); } catch (e) { dbLog("记录 prompt 版本失败", e); }
-  const planSteps = agentMode === "plan" ? await buildPlanSteps(config, session) : null;
+  /**
+   * ⚠️ 2026-11-04 D 方向：神谕**不做** Plan-Execute。
+   *   计划是"占卜仪轨路线图"（承约→呼召→选牌…）——
+   *   神谕没有仪轨，注入计划只会让模型去规划不存在的步骤。
+   */
+  const planSteps = agentMode === "plan" && !oracleMode ? await buildPlanSteps(config, session) : null;
   if (planSteps && planSteps.length >= 3) {
     session.plan = planSteps;
     // 计划注入历史（后续每轮 supervisor 都看得到，作为"地图"对照推进）
@@ -183,23 +210,22 @@ export async function* runAgent(
   const BASE_ROUNDS = Number(process.env.MAX_ROUNDS) || 22;
   const cardCount = Math.max(1, session.drawnCards?.length ?? 3);
   /**
-   * ⚠️ 2026-11-04 双模式：轮次上限按模式走。
+   * ⚠️ 2026-11-04 D 方向：**神谕模式**的轮次上限。
    *
-   * ⚠️ 快速模式省轮次的**真正来源**（不是压低上限）：
-   *   · 跳过呼召三问（省 1 轮工具调用 + 1 轮 LLM）
-   *   · 一次 interpret_card 讲完 3 张（省 2 轮 LLM 往返）
-   *   → 实际轮次从 ~14 降到 ~8
-   * ⚠️ 上限本身仍保留"按牌数算"的下限 —— 它是**安全网**，
-   *   不是"目标值"。压得太低会让 5 张牌的快速占卜撞墙（max_rounds 失败）。
-   * ⚠️ 深度模式保持旧行为（不低于 BASE_ROUNDS=22）。
+   * ⚠️ 神谕是"问一句、答一句"——不需要仪式流程 → 轮次少得多。
+   *   实测：一次牌义问答通常 2~4 轮（检索 + 回答 + 可能追问）。
+   * ⚠️ 上限给 8 轮：够处理"检索 → 回答 → 澄清 → 再回答"的节奏，
+   *   又能防止模型绕圈。
    */
   const modeProfile_ = modeProfile(session.mode ?? "deep");
-  const MAX_ROUNDS = Math.max(
-    modeProfile_.maxRounds,
-    cardCount * 2 + 8,
-    // ⚠️ 深度模式保持旧行为（不低于 22）
-    session.mode === "quick" ? 0 : BASE_ROUNDS
-  );
+  const MAX_ROUNDS = oracleMode
+    ? 8
+    : Math.max(
+        modeProfile_.maxRounds,
+        cardCount * 2 + 8,
+        // ⚠️ 深度模式保持旧行为（不低于 22）
+        session.mode === "quick" ? 0 : BASE_ROUNDS
+      );
   let round = 0;
   // 模型跳过工具直接回答的纠偏计数（首答模式防行为漂移）
   let noToolRetries = 0;
@@ -383,7 +409,11 @@ export async function* runAgent(
       // ⚠️ 2026-11-04 双模式：工具集按模式取
       //   快速模式用 QUICK_MODE_TOOLS —— interpret_card 被换成 interpret_all_cards
       //   （给模型"没有单张选项" → 它才会一次讲完，见 tools/definitions.ts 的说明）
-      const modeTools = toolsForMode(session.mode ?? "deep");
+      // ⚠️ 2026-11-04 D 方向：神谕模式用 ORACLE_TOOLS
+      //   —— 从**能力层**禁用抽牌类工具（prompt 说"别抽牌"只是建议，工具才是能力）
+      const modeTools = oracleMode
+        ? ORACLE_TOOLS
+        : toolsForMode(session.mode ?? "deep");
       const ragBanned = session.ragCallCount >= ragBudgetFor(session);
       const availableTools = ragBanned
         ? modeTools.filter((t) => t.function.name !== "rag_search")
@@ -456,8 +486,13 @@ export async function* runAgent(
       //    下死等只会让用户看到报错。本地剧本跑完整场仪式（质量不如
       //    真模型，但"白屏报错"更不可接受）。
       //    首答模式才降级；追问模式已经聊了一半，静默降级会答非所问。
+      // ⚠️ 2026-11-04 D 方向：神谕**不能**用本地降级剧本 ——
+      //   runLocalFallback 跑的是"完整占卜仪式"（承约→呼召→抽牌…），
+      //   对神谕来说完全跑偏（用户问的是一句牌义，却收到一场占卜）。
+      //   → 神谕降级为"直答"：把问题原样交给本地剧本的解读能力不可行，
+      //     所以直接报错（用户看到"暂时失联"，比收到无关内容好）。
       const isFollowup = opts?.followup !== undefined && session.messages.length > 2;
-      if (!isFollowup && session.drawnCards.length === 0) {
+      if (!oracleMode && !isFollowup && session.drawnCards.length === 0) {
         yield {
           type: "phase",
           phase: "analyze",
@@ -516,6 +551,26 @@ export async function* runAgent(
           // 会把原逐张正文替换成本次追问回答（分享卡/dashboard 从此只见追问）
           const prev = db.getSessionReading?.(session.id)?.reading ?? session.reading ?? "";
           db.updateSessionReading(session.id, prev ? `${prev}\n\n【追问】${text}` : text);
+        }
+        yield { type: "done" };
+        session.finished = true;
+        return;
+      }
+
+      /**
+       * ⚠️⚠️ 2026-11-04 D 方向：**神谕模式** —— 纯文本回答就是**完成**。
+       *
+       * ⚠️ 为什么必须在这里就结束（而不是走下面的"首答纠偏"）：
+       *   首答纠偏的逻辑是"模型没抽牌就回答 = 无效占卜"——
+       *   那**只对占卜成立**。神谕本来就不抽牌，
+       *   若走纠偏路径，模型会被反复要求"去抽牌"（而神谕没有抽牌工具）
+       *   → 死循环 → 用户看到"占卜师陷入沉思"。
+       */
+      if (oracleMode) {
+        const text = decision.message.content;
+        if (text) {
+          for (const evt of chunkDelta(text)) yield evt;
+          db.updateSessionReading(session.id, text);
         }
         yield { type: "done" };
         session.finished = true;
