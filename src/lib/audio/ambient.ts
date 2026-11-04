@@ -66,19 +66,21 @@ interface Note {
   d: number;
 }
 
-/** 每个氛围层的参数 */
+/**
+ * 每个氛围层的参数
+ *
+ * ⚠️⚠️ 2026-11-04 三改（用户反馈「还是很长很长的空鸣声，特别刺耳」）：
+ *   彻底移除 droneGain / shimmerGain / breathSec —— **持续音就是空鸣本身**。
+ *   真正的冥想音乐（Calm / Insight Timer 的音景，Marconi Union《Weightless》）
+ *   没有任何持续音：底床是自然噪声（风/水），旋律是稀疏的短音，音与音之间大量留白。
+ *   → 本表只剩：噪声底床 + 稀疏乐句 + 空间感。
+ */
 interface LayerParams {
   /** 基频八度偏移（-1 降八度，0 原位，+1 升八度） */
   octave: number;
-  /** drone 音量（0~1） */
-  droneGain: number;
-  /** 泛音层音量（0~1） */
-  shimmerGain: number;
-  /** 滤波截止频率（Hz） */
+  /** 滤波截止频率（Hz）—— 只作用于噪声底床 */
   filterHz: number;
-  /** 呼吸包络周期（秒），0 = 不呼吸 */
-  breathSec: number;
-  /** 噪声层音量（0~1）—— ⚠️ 压得很低（第一版是 0.012，太抢戏） */
+  /** 噪声层音量（0~1）—— 底床（风/空气感） */
   noiseGain: number;
   /** 乐句层音量（0~1） */
   arpGain: number;
@@ -88,84 +90,79 @@ interface LayerParams {
   arpLoopBeats: number;
   /** 每个拍的时长（秒） */
   beatSec: number;
-  /** 混响干湿比（0~1） */
+  /** 混响干湿比（0~1）—— ⚠️ 上限 0.5：大混响会把短音拖成"嗡鸣" */
   reverbMix: number;
-  /** 延迟干湿比（0~1） */
+  /** 延迟干湿比（0~1）—— 2026-11-04 起真正接线（此前只定义未生效） */
   delayMix: number;
 }
 
 const LAYER_PARAMS: Record<AmbienceLayer, LayerParams> = {
-  // 待机/首页：大调五声琶音，缓慢、空灵 —— "有音乐的等待"
+  // ⚠️ 音型设计原则（对齐冥想音乐）：
+  //   · 音符更少、间隔更长（d 值大 = 留白多）→ "偶尔一声"而不是"连绵不断"
+  //   · 每层一个循环 6~8 拍，但只有 2~5 个音 → 大部分时间是安静的
+  // 待机/首页：风声底床 + 偶尔一声风铃般的五声短句
   idle: {
-    octave: 0, droneGain: 0.040, shimmerGain: 0.012, filterHz: 900,
-    breathSec: 9, noiseGain: 0.004, arpGain: 0.030,
+    octave: 0, filterHz: 900,
+    noiseGain: 0.004, arpGain: 0.030,
     arp: [
-      { p: "A", d: 2 }, { p: "C", d: 1 }, { p: "E", d: 1 },
-      { p: "D", d: 2 }, { p: "C", d: 1 }, { p: "A", d: 1 },
+      { p: "A", d: 4 }, { p: "C", d: 2 }, { p: "E", d: 2 },
     ],
-    arpLoopBeats: 4, beatSec: 1.1, reverbMix: 0.55, delayMix: 0.22,
+    arpLoopBeats: 8, beatSec: 1.1, reverbMix: 0.45, delayMix: 0.18,
   },
-  // 承约：A 自然小调下行，低沉庄重
+  // 承约：更暗更低，低音区偶尔一声
   contract: {
-    octave: -1, droneGain: 0.062, shimmerGain: 0.010, filterHz: 520,
-    breathSec: 8, noiseGain: 0.004, arpGain: 0.026,
+    octave: -1, filterHz: 520,
+    noiseGain: 0.004, arpGain: 0.026,
     arp: [
-      { p: "A", d: 2 }, { p: "G", d: 1 }, { p: "E", d: 1 },
-      { p: "C", d: 2 }, { p: "A", d: 1 }, { p: "a", d: 1 },
+      { p: "A", d: 4 }, { p: "G", d: 2 }, { p: "E", d: 2 },
     ],
-    arpLoopBeats: 4, beatSec: 1.35, reverbMix: 0.42, delayMix: 0.14,
+    arpLoopBeats: 8, beatSec: 1.35, reverbMix: 0.35, delayMix: 0.12,
   },
-  // 呼召：Am 分解和弦，空灵飘忽
+  // 呼召：Am 分解，但每音之间隔一拍以上的空
   invocation: {
-    octave: 0, droneGain: 0.050, shimmerGain: 0.026, filterHz: 1100,
-    breathSec: 7, noiseGain: 0.005, arpGain: 0.034,
+    octave: 0, filterHz: 1100,
+    noiseGain: 0.005, arpGain: 0.034,
     arp: [
-      { p: "A", d: 1.5 }, { p: "C", d: 0.5 }, { p: "E", d: 1 }, { p: "A", d: 1 },
-      { p: "G", d: 1.5 }, { p: "E", d: 0.5 }, { p: "C", d: 1 }, { p: "D", d: 1 },
+      { p: "A", d: 3 }, { p: "E", d: 2 }, { p: "C", d: 3 },
     ],
-    arpLoopBeats: 4, beatSec: 1.2, reverbMix: 0.68, delayMix: 0.30,
+    arpLoopBeats: 8, beatSec: 1.2, reverbMix: 0.48, delayMix: 0.22,
   },
-  // 选牌：稀疏、留白多 → 制造"等待你出手"的张力
+  // 选牌：极稀疏 —— 制造"等待你出手"的张力
   selection: {
-    octave: 0, droneGain: 0.046, shimmerGain: 0.020, filterHz: 860,
-    breathSec: 5, noiseGain: 0.004, arpGain: 0.028,
+    octave: 0, filterHz: 860,
+    noiseGain: 0.004, arpGain: 0.028,
     arp: [
-      { p: "D", d: 3 }, { p: "A", d: 1 },
-      { p: "E", d: 3 }, { p: "B", d: 1 },
+      { p: "D", d: 6 }, { p: "A", d: 2 },
     ],
-    arpLoopBeats: 4, beatSec: 1.5, reverbMix: 0.60, delayMix: 0.26,
+    arpLoopBeats: 8, beatSec: 1.5, reverbMix: 0.40, delayMix: 0.16,
   },
-  // 讲牌：C 大调琶音，温暖流动
+  // 讲牌：稍流动一点，但仍是"点"状
   perCard: {
-    octave: 0, droneGain: 0.055, shimmerGain: 0.020, filterHz: 780,
-    breathSec: 6, noiseGain: 0.004, arpGain: 0.036,
+    octave: 0, filterHz: 780,
+    noiseGain: 0.004, arpGain: 0.036,
     arp: [
-      { p: "C", d: 1 }, { p: "E", d: 1 }, { p: "G", d: 1 }, { p: "B", d: 1 },
-      { p: "A", d: 1 }, { p: "G", d: 1 }, { p: "F", d: 1 }, { p: "E", d: 1 },
+      { p: "C", d: 2 }, { p: "E", d: 2 }, { p: "G", d: 3 }, { p: "B", d: 1 },
     ],
-    arpLoopBeats: 4, beatSec: 0.85, reverbMix: 0.48, delayMix: 0.18,
+    arpLoopBeats: 8, beatSec: 0.85, reverbMix: 0.42, delayMix: 0.15,
   },
-  // 综合：Am-F-C-G 层层堆叠，开阔
+  // 综合：最丰富的一层（仪式高潮），但也只是 5 个音/8 拍
   synthesis: {
-    octave: 0, droneGain: 0.058, shimmerGain: 0.032, filterHz: 1500,
-    breathSec: 9, noiseGain: 0.005, arpGain: 0.042,
+    octave: 0, filterHz: 1500,
+    noiseGain: 0.005, arpGain: 0.042,
     arp: [
-      { p: "A", d: 1 }, { p: "C", d: 1 }, { p: "E", d: 2 },
-      { p: "F", d: 1 }, { p: "A", d: 1 }, { p: "C", d: 2 },
-      { p: "C", d: 1 }, { p: "E", d: 1 }, { p: "G", d: 2 },
-      { p: "A", d: 1 }, { p: "G", d: 1 }, { p: "E", d: 2 },
+      { p: "A", d: 2 }, { p: "C", d: 2 }, { p: "E", d: 3 },
+      { p: "G", d: 2 }, { p: "A", d: 3 },
     ],
-    arpLoopBeats: 4, beatSec: 0.75, reverbMix: 0.62, delayMix: 0.24,
+    arpLoopBeats: 8, beatSec: 0.75, reverbMix: 0.50, delayMix: 0.20,
   },
-  // 收束：Am 琶音渐弱，落回主音
+  // 收束：安详，落回主音
   closing: {
-    octave: -1, droneGain: 0.042, shimmerGain: 0.014, filterHz: 620,
-    breathSec: 10, noiseGain: 0.003, arpGain: 0.026,
+    octave: -1, filterHz: 620,
+    noiseGain: 0.003, arpGain: 0.026,
     arp: [
-      { p: "A", d: 2 }, { p: "C", d: 1 }, { p: "E", d: 1 },
-      { p: "C", d: 2 }, { p: "A", d: 1 }, { p: "a", d: 1 },
+      { p: "A", d: 4 }, { p: "C", d: 2 }, { p: "a", d: 2 },
     ],
-    arpLoopBeats: 4, beatSec: 1.45, reverbMix: 0.70, delayMix: 0.28,
+    arpLoopBeats: 8, beatSec: 1.45, reverbMix: 0.45, delayMix: 0.18,
   },
 };
 
@@ -225,12 +222,13 @@ interface AmbienceState {
   convolver: ConvolverNode | null;
   /** 延迟器 */
   delay: DelayNode | null;
-  /** 持续音 */
-  drones: { osc: OscillatorNode; gain: GainNode }[];
-  /** 泛音层 */
-  shimmer: { osc: OscillatorNode; gain: GainNode }[] | null;
-  /** 噪声层 */
-  noise: { src: AudioBufferSourceNode; gain: GainNode } | null;
+  /** 延迟湿线的发送增益（2026-11-04 起按层接线 delayMix） */
+  delayWet: GainNode | null;
+  /**
+   * ⚠️ 噪声层（唯一的持续声源，无固定音高 → 不产生"鸣"）
+   * ⚠️ 2026-11-04 三改：顺带存下低通滤波器 —— 切层时需要改 filterHz（底床明暗）
+   */
+  noise: { src: AudioBufferSourceNode; gain: GainNode; filter: BiquadFilterNode } | null;
   /** 当前层 */
   layer: AmbienceLayer;
   /** 用户音量（0~1，UI 滑块） */
@@ -240,7 +238,7 @@ interface AmbienceState {
   /** 是否已解锁（用户手势发生过） */
   unlocked: boolean;
   /** 乐句调度器 */
-  scheduler: { timer: number | null; nextNoteTime: number; noteIndex: number } | null;
+  scheduler: { timer: number | null; nextNoteTime: number; noteIndex: number; active: boolean } | null;
   /** 当前乐句层参数（调度器要用） */
   arpParams: { notes: Note[]; beatSec: number; loopBeats: number; gain: number; octave: number } | null;
 }
@@ -251,8 +249,8 @@ function getState(): AmbienceState {
   const g = globalThis as unknown as Record<string, AmbienceState | undefined>;
   if (!g[STATE_KEY]) {
     g[STATE_KEY] = {
-      ctx: null, master: null, dry: null, wet: null, convolver: null, delay: null,
-      drones: [], shimmer: null, noise: null,
+      ctx: null, master: null, dry: null, wet: null, convolver: null, delay: null, delayWet: null,
+      noise: null,
       layer: "idle", volume: 0.3, muted: true, unlocked: false,
       scheduler: null, arpParams: null,
     };
@@ -270,10 +268,12 @@ function getState(): AmbienceState {
  * ⚠️ **程序化生成，无需音频文件** —— 这是"空灵"感的关键。
  *   原理：IR 是一段"声音在房间里反弹"的录音。
  *   合成一个**指数衰减的噪声**就能得到一个不错的"大空间"。
- * ⚠️ 时长越长 = 空间越大越空灵（代价：CPU 与内存）。
- *   2.6 秒是个平衡点（再长会糊，再短会"干"）。
+ * ⚠️ 2026-11-04 三改：2.6s → 1.6s。
+ *   原因（用户反馈「很长很长的空鸣声」）：IR 太长 = 每个音都被拖成长尾，
+ *   连续的音互相叠加尾巴 = 一片"嗡——"。真实冥想音乐的空间感是"清晰的大房间"，
+ *   不是"无尽的山洞"。
  */
-function makeImpulseResponse(ctx: AudioContext, seconds = 2.6, decay = 2.6): AudioBuffer {
+function makeImpulseResponse(ctx: AudioContext, seconds = 1.6, decay = 2.6): AudioBuffer {
   const rate = ctx.sampleRate;
   const len = Math.floor(rate * seconds);
   const ir = ctx.createBuffer(2, len, rate);
@@ -313,38 +313,11 @@ function makeNoiseBuffer(ctx: AudioContext): AudioBuffer {
  * 构建
  * ══════════════════════════════════════════════════════════════ */
 
-/** 建一个"持续音"振荡器 */
-function makeDrone(
-  ctx: AudioContext,
-  dest: AudioNode,
-  freq: number,
-  gainValue: number,
-  type: OscillatorType
-): { osc: OscillatorNode; gain: GainNode } {
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.type = type;
-  osc.frequency.value = freq;
-  gain.gain.value = gainValue;
-  osc.connect(gain);
-  gain.connect(dest);
-  osc.start();
-  return { osc, gain };
-}
-
 /**
- * 创建一个滤波器节点
- *
- * ⚠️ 滤波后的信号要**同时**送到 dry 与 wet（混响总线）。
+ * ⚠️ 2026-11-04 三改：makeDrone / makeFilter 已删除（drone 体系整体移除，
+ *   makeFilter 的唯一调用方也在 buildLayer 里随 drone 一起删了）。
+ *   噪声底床的滤波直接内联在 buildLayer 的噪声链里。
  */
-function makeFilter(ctx: AudioContext, dest: AudioNode, type: BiquadFilterType, freq: number, q = 0.7): BiquadFilterNode {
-  const f = ctx.createBiquadFilter();
-  f.type = type;
-  f.frequency.value = freq;
-  f.Q.value = q;
-  f.connect(dest);
-  return f;
-}
 
 /**
  * 创建/恢复音频图
@@ -382,12 +355,17 @@ function ensureGraph(): AmbienceState | null {
     wet.connect(master);
 
     // 延迟（空间纵深）
+    // ⚠️ 2026-11-04：delayWet 存进状态 → 每层可以有自己的 delayMix
+    //   （此前 delayWet 是局部变量、写死 0.25，LAYER_PARAMS.delayMix 从未生效）
     const delay = ctx.createDelay(2);
     delay.delayTime.value = 0.42;
     const delayFb = ctx.createGain();
-    delayFb.gain.value = 0.34;
+    // ⚠️ 2026-11-04 三改：反馈 0.34 → 0.18。
+    //   反馈越高，同一个音被重复的次数越多（0.34 约重复 3 次），
+    //   稀疏的音叠起来 = "嗡嗡的复读"。0.18 只留一两次极轻的回声。
+    delayFb.gain.value = 0.18;
     const delayWet = ctx.createGain();
-    delayWet.gain.value = 0.25;
+    delayWet.gain.value = 0.2;
     delay.connect(delayFb);
     delayFb.connect(delay);
     delay.connect(delayWet);
@@ -399,6 +377,7 @@ function ensureGraph(): AmbienceState | null {
     st.wet = wet;
     st.convolver = convolver;
     st.delay = delay;
+    st.delayWet = delayWet;
     st.unlocked = true;
     return st;
   } catch {
@@ -406,7 +385,15 @@ function ensureGraph(): AmbienceState | null {
   }
 }
 
-/** 让一个节点同时连到 dry 与 wet（混响） */
+/**
+ * 让一个节点同时连到 dry 与 wet（混响）
+ *
+ * ⚠️ 2026-11-04 三改：额外接入延迟（echo）发送。
+ *   原实现里 delay 节点**只有反馈环和输出、没有任何输入** ——
+ *   也就是说 delayMix 一直是个死参数、延迟从未真正生效。
+ *   现在把音符的一部分送进延迟 → 稀疏的音才有"远处的回声"（空间纵深）。
+ *   ⚠️ 送进延迟的量刻意很小（DELAY_SEND）—— 回声太多会变成"嗡嗡的复读"。
+ */
 function connectBoth(st: AmbienceState, node: AudioNode, reverbMix: number): void {
   node.connect(st.dry!);
   if (st.convolver && reverbMix > 0.01) {
@@ -415,7 +402,16 @@ function connectBoth(st: AmbienceState, node: AudioNode, reverbMix: number): voi
     node.connect(send);
     send.connect(st.convolver);
   }
+  if (st.delay && st.delayWet) {
+    const dSend = st.ctx!.createGain();
+    dSend.gain.value = DELAY_SEND;
+    node.connect(dSend);
+    dSend.connect(st.delay);
+  }
 }
+
+/** 送进延迟（回声）的量 —— 刻意很小，只是"远处的一点回响" */
+const DELAY_SEND = 0.22;
 
 /* ══════════════════════════════════════════════════════════════
  * 乐句调度器（lookahead scheduler）
@@ -442,7 +438,7 @@ function startScheduler(st: AmbienceState): void {
     timer: window.setInterval(() => {
       const s = st.scheduler;
       const p = st.arpParams;
-      if (!s || !p || !st.ctx) return;
+      if (!s || !p || !st.ctx || !s.active) return;
       const now = st.ctx.currentTime;
       // ⚠️ 循环音型：noteIndex 走到末尾就回 0
       const note = p.notes[s.noteIndex % p.notes.length];
@@ -460,6 +456,11 @@ function startScheduler(st: AmbienceState): void {
     }, LOOKAHEAD_MS),
     nextNoteTime: ctx.currentTime + 0.08,
     noteIndex: 0,
+    /**
+     * ⚠️ active：早退判断用（见 setAmbienceLayer）。
+     *   drone 删除后，"层是否活着"不能再看 st.drones.length —— 看调度器。
+     */
+    active: true,
   };
 }
 
@@ -533,71 +534,40 @@ function playArpNote(
   }
 
   lp.connect(g);
-  connectBoth(st, g, 0.6);
+  // ⚠️ 2026-11-04 三改：混响量改为跟随当前层（原来写死 0.6，会盖掉每层的 reverbMix）
+  connectBoth(st, g, LAYER_PARAMS[st.layer]?.reverbMix ?? 0.4);
 }
 
 /* ══════════════════════════════════════════════════════════════
  * 层次构建
  * ══════════════════════════════════════════════════════════════ */
 
-/** 重建某一层的持续音 */
+/**
+ * 重建某一层的声景
+ *
+ * ⚠️⚠️ 2026-11-04 三改：整个"持续音"体系（drone + shimmer + 呼吸 LFO）被移除。
+ *   原因（用户反馈「很长很长的空鸣声，特别刺耳」）：
+ *   · 两个永不停止的正弦（A + A 高八度）= 持续纯音，听觉系统把它当"信号测试音"
+ *   · shimmer 再叠 3 个 A+2 八度（≈1760Hz）的持续正弦 —— 刺耳的主体
+ *   · 它们还灌进 2.6s 大混响 → 拖成一片"嗡——"
+ *   真正的冥想音乐没有持续音。现在的层 = 噪声底床 + 稀疏乐句（调度器）。
+ */
 function buildLayer(layer: AmbienceLayer): void {
   const st = getState();
   if (!st.ctx || !st.master) return;
   const p = LAYER_PARAMS[layer];
 
-  // ⚠️ 先停旧的（淡出），再起新的 —— 直接换会有"咔"的爆音
-  const now = st.ctx.currentTime;
-  for (const d of st.drones) {
-    d.gain.gain.cancelScheduledValues(now);
-    d.gain.gain.setValueAtTime(d.gain.gain.value, now);
-    d.gain.gain.linearRampToValueAtTime(0, now + 1.2);
-    d.osc.stop(now + 1.3);
-  }
-  if (st.shimmer) {
-    for (const s of st.shimmer) {
-      s.gain.gain.cancelScheduledValues(now);
-      s.gain.gain.setValueAtTime(s.gain.gain.value, now);
-      s.gain.gain.linearRampToValueAtTime(0, now + 1.2);
-      s.osc.stop(now + 1.3);
-    }
-  }
-  st.drones = [];
-  st.shimmer = null;
+  // ⚠️ 切层时先停旧调度器（旧的乐句尾音自然衰减，不硬切 → 无爆音）
   stopScheduler(st);
 
-  // 统一滤波器（控制"亮/暗"）
-  const filter = makeFilter(st.ctx, st.dry!, "lowpass", p.filterHz);
-  connectBoth(st, filter, p.reverbMix);
-
-  // 持续音：主音 + 八度（八度让音更"厚"）
-  const voices = [makeDrone(st.ctx, filter, noteToFreq("A", p.octave), p.droneGain, "sine")];
-  voices.push(makeDrone(st.ctx, filter, noteToFreq("A", p.octave + 1), p.droneGain * 0.4, "sine"));
-  st.drones = voices;
-
-  // 泛音层：比主音高两个八度 + 轻微失谐 → "微光"的晃动感
-  if (p.shimmerGain > 0.001) {
-    const shimmerVoices: { osc: OscillatorNode; gain: GainNode }[] = [];
-    // ⚠️ 2026-11-04：失谐从 ±4~7 降到 ±2（原来拍频太明显 → "金属颤音"很吵）
-    const detunes = [0, 2, -2];
-    for (let i = 0; i < 3; i++) {
-      const osc = st.ctx.createOscillator();
-      const gain = st.ctx.createGain();
-      // ⚠️ 三角波 → 正弦波（理由同 ARP_WAVE：三角波像长笛/簧片）
-      osc.type = ARP_WAVE;
-      osc.frequency.value = noteToFreq("A", p.octave + 2);
-      osc.detune.value = detunes[i];
-      gain.gain.value = (p.shimmerGain / 3) * 0.5;
-      osc.connect(gain);
-      gain.connect(filter);
-      osc.start();
-      shimmerVoices.push({ osc, gain });
-    }
-    st.shimmer = shimmerVoices;
-  }
-
-  // 噪声层（空气感）—— ⚠️ 音量压得很低（0.003~0.005），不再抢戏
-  if (p.noiseGain > 0.001 && !st.noise) {
+  // 噪声底床（风/空气感 —— 无固定音高，永不产生"鸣"）
+  // ⚠️ 2026-11-04 三改：底床的明暗（filterHz）现在真的随层切换 ——
+  //    之前 filterHz 只作用在已被删除的 drone 链上，噪声永远是固定 1200Hz。
+  if (st.noise) {
+    // 已存在 → 改音量与明暗（不用重建，避免任何咔哒声）
+    st.noise.gain.gain.setTargetAtTime(p.noiseGain, st.ctx.currentTime, 1.5);
+    st.noise.filter.frequency.setTargetAtTime(p.filterHz, st.ctx.currentTime, 1.5);
+  } else if (p.noiseGain > 0.001) {
     const src = st.ctx.createBufferSource();
     src.buffer = makeNoiseBuffer(st.ctx);
     src.loop = true;
@@ -605,30 +575,20 @@ function buildLayer(layer: AmbienceLayer): void {
     gain.gain.value = p.noiseGain;
     const nf = st.ctx.createBiquadFilter();
     nf.type = "lowpass";
-    nf.frequency.value = 1200;
+    nf.frequency.value = p.filterHz;
     src.connect(nf);
     nf.connect(gain);
     gain.connect(st.master);
     src.start();
-    st.noise = { src, gain };
-  } else if (st.noise) {
-    st.noise.gain.gain.setTargetAtTime(p.noiseGain, st.ctx.currentTime, 1.5);
+    st.noise = { src, gain, filter: nf };
   }
 
-  // 混响/延迟的干湿比
+  // 混响/延迟的干湿比（⚠️ delayMix 2026-11-04 起真正接线）
   if (st.convolver && st.wet) {
     st.wet.gain.setTargetAtTime(p.reverbMix, st.ctx.currentTime, 1.2);
   }
-
-  // 呼吸包络（LFO 调制 drone 音量）→ "活着"的感觉
-  if (p.breathSec > 0) {
-    const lfo = st.ctx.createOscillator();
-    const lfoGain = st.ctx.createGain();
-    lfo.frequency.value = 1 / p.breathSec;
-    lfoGain.gain.value = p.droneGain * 0.35;
-    lfo.connect(lfoGain);
-    for (const v of voices) lfoGain.connect(v.gain.gain);
-    lfo.start();
+  if (st.delayWet) {
+    st.delayWet.gain.setTargetAtTime(p.delayMix, st.ctx.currentTime, 1.2);
   }
 
   // 乐句层：交给前瞻调度器
@@ -667,7 +627,10 @@ export async function unlockAmbience(): Promise<void> {
   st.master.gain.setValueAtTime(st.master.gain.value, now);
   st.master.gain.linearRampToValueAtTime(target, now + 1.5);
   // ⚠️ 乐句调度器在 unlock 前没启动 → 这里补上
+  //   （buildLayer 只在 setAmbienceLayer 且已解锁时才建层；
+  //    「先解锁但还没切层」的场景由这里兜底）
   if (st.arpParams && !st.scheduler) startScheduler(st);
+  else if (st.scheduler) st.scheduler.active = true;
 }
 
 /**
@@ -675,7 +638,12 @@ export async function unlockAmbience(): Promise<void> {
  */
 export function setAmbienceLayer(layer: AmbienceLayer): void {
   const st = getState();
-  if (st.layer === layer && st.drones.length > 0) return;
+  /**
+   * ⚠️ 早退条件（2026-11-04 三改）：drone 删除后不能再用 st.drones.length。
+   *   现在用「调度器活着」判断该层是否已在响 —— 调度器是乐句层的引擎，
+   *   它活着 = 该层已在工作（噪声底床也随之建好）。
+   */
+  if (st.layer === layer && st.scheduler?.active) return;
   if (!st.unlocked) {
     // ⚠️ 还没解锁 → 只记录意图，等 unlock 时再生效
     st.layer = layer;
@@ -881,11 +849,14 @@ export function playSfx(kind: "flip" | "reveal" | "select" | "answer" | "chime" 
       osc.stop(now + 0.8);
     }
   } else if (kind === "reveal") {
-    // ── 牌面揭示：磬（三个泛音叠加 + 长混响尾）──
+    // ── 牌面揭示：磬（三个泛音叠加 + 混响尾）──
     // ⚠️ 这是整个仪式里**最重要的一下**（用户亲手翻开，牌面第一次显现）
     // ⚠️ 2026-11-04：泛音从 1046/1568/2093Hz **整体降八度**到
     //    523/784/1046Hz —— 原来那组偏亮偏尖（"叮！"），
     //    降八度后是"钟"，有神秘余韵而不刺耳。
+    // ⚠️ 2026-11-04 三改：衰减 2.4s → 1.2s。
+    //    长衰减的金属泛音互相拖尾叠成"鸣"——这是「空鸣」的帮凶，
+    //    真实磬在中等空间里的可闻尾音也就 1 秒上下。
     for (const [f, g0] of [[523.25, 0.05], [783.99, 0.028], [1046.5, 0.015]] as const) {
       const osc = ctx.createOscillator();
       const g = ctx.createGain();
@@ -893,11 +864,11 @@ export function playSfx(kind: "flip" | "reveal" | "select" | "answer" | "chime" 
       osc.frequency.value = f;
       g.gain.setValueAtTime(0, now);
       g.gain.linearRampToValueAtTime(g0, now + 0.008);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 2.4);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 1.2);
       osc.connect(g);
       g.connect(out);
       osc.start(now);
-      osc.stop(now + 2.5);
+      osc.stop(now + 1.3);
     }
   } else if (kind === "select") {
     // 选牌：轻快的上行双音
@@ -931,7 +902,10 @@ export function playSfx(kind: "flip" | "reveal" | "select" | "answer" | "chime" 
       osc.stop(now + 0.75);
     }
   } else if (kind === "gong") {
-    // ── 阶段转换：低沉锣（多失谐正弦 + 长衰减 + 大混响）──
+    // ── 阶段转换：低沉锣（多失谐正弦 + 衰减 + 混响）──
+    // ⚠️ 2026-11-04 三改：衰减 3.0s → 1.2s。
+    //    锣是"阶段开始的标记"，不是"持续音景"；
+    //    3 秒的尾巴会跟下一个音叠成"嗡鸣"。
     for (const [f, det] of [[110, -8], [110, 6], [164.8, 3], [220, -4]] as const) {
       const osc = ctx.createOscillator();
       const g = ctx.createGain();
@@ -940,14 +914,16 @@ export function playSfx(kind: "flip" | "reveal" | "select" | "answer" | "chime" 
       osc.detune.value = det;
       g.gain.setValueAtTime(0, now);
       g.gain.linearRampToValueAtTime(0.035, now + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 3.0);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 1.2);
       osc.connect(g);
       g.connect(out);
       osc.start(now);
-      osc.stop(now + 3.1);
+      osc.stop(now + 1.3);
     }
   } else {
-    // 收束完成：下行琶音 + 长混响尾
+    // 收束完成：下行琶音 + 混响尾
+    // ⚠️ 2026-11-04 三改：尾巴 1.8s → 1.0s（同 gong/reveal 的理由：
+    //    长衰减尾互相叠加 = "嗡鸣"）
     for (const [i, f] of [523.25, 392.0, 329.63, 261.63].entries()) {
       const osc = ctx.createOscillator();
       const g = ctx.createGain();
@@ -956,11 +932,11 @@ export function playSfx(kind: "flip" | "reveal" | "select" | "answer" | "chime" 
       const t = now + i * 0.16;
       g.gain.setValueAtTime(0, t);
       g.gain.linearRampToValueAtTime(0.05, t + 0.03);
-      g.gain.exponentialRampToValueAtTime(0.001, t + 1.8);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 1.0);
       osc.connect(g);
       g.connect(out);
       osc.start(t);
-      osc.stop(t + 1.9);
+      osc.stop(t + 1.1);
     }
   }
 }

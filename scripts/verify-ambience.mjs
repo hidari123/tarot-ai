@@ -16,7 +16,7 @@
  * 用法：npx tsx scripts/verify-ambience.mjs
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 
 let pass = 0, fail = 0;
 const check = (label, ok, detail = "") => {
@@ -174,15 +174,16 @@ console.log("\n【③b 音色修正】（用户反馈「长笛一样的声音，
       /ARP_DETUNE/.test(arpFn[0]) && /ARP_WAVE/.test(arpFn[0]));
   }
 
-  // ⚠️ 泛音层的失谐也要降（原来 ±4~7 cents → 拍频明显 = 金属颤音）
-  check("泛音层失谐已降到 ±2（消除金属颤音）",
-    /const detunes = \[0, 2, -2\]/.test(code));
-  // ⚠️ 判据要精确：只查**泛音层那段代码**（用 detunes 定位），不能查整个文件
-  //   （收束音效的下行琶音用 triangle 是合适的 —— 那是"铃"的质感，不是长笛）
-  const shimmerBlock = code.match(/const detunes = \[0, 2, -2\];[\s\S]*?st\.shimmer = shimmerVoices;/);
-  check("泛音层用正弦波（范围内检查）",
-    !!shimmerBlock && !/osc\.type = "triangle"/.test(shimmerBlock[0]),
-    "triangle 只允许出现在收束音效那种「铃」的场景");
+  // ⚠️ 2026-11-04 三改：泛音层（shimmer）整体删除 —— 它是 1760Hz 的持续正弦，
+  //   正是「刺耳」的主体。原来的"失谐降到 ±2"断言随之失效，
+  //   改为断言「泛音层不存在、且不存在任何持续振荡器」。
+  check("泛音层已整体删除（不再是持续正弦）",
+    !/const detunes = \[0, 2, -2\]/.test(code) && !/st\.shimmer/.test(code));
+  // ⚠️ 判据要精确：只查**音效**部分有没有 triangle —— 收束音效的"铃"用 triangle 是合适的
+  const sfxSection = code.match(/export function playSfx[\s\S]*?\n\}/);
+  check("音效函数存在", !!sfxSection);
+  check("音效里仍允许 triangle（收束的铃）",
+    !!sfxSection && /osc\.type = "triangle"/.test(sfxSection[0]));
 
   // ⚠️ 翻牌音效：1240Hz 的铃 → 低八度柔和泛音
   const flipFn = code.match(/if \(kind === "flip"\)[\s\S]*?\} else if \(kind === "reveal"\)/);
@@ -207,16 +208,80 @@ console.log("\n【③b 音色修正】（用户反馈「长笛一样的声音，
     !!revealFn && /523\.25/.test(revealFn[0]) && !/2093/.test(revealFn[0]));
 }
 
+/* ────────────── ③c 2026-11-04 三改：彻底消除「空鸣」 ────────────── */
+console.log("\n【③c 消除空鸣】（用户反馈「还是很长很长的空鸣声，特别刺耳」）");
+{
+  const src = readFileSync("src/lib/audio/ambient.ts", "utf-8");
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+
+  // ⚠️ 核心判据：代码里**不能再有持续振荡器**（drone 体系）。
+  //   持续正弦 = 空鸣/耳鸣感的根源（用户三轮反馈都指向它）。
+  check("无 drone（持续正弦）实现", !/makeDrone/.test(code));
+  check("无 shimmer（高八度持续泛音层）实现", !/shimmerVoices/.test(code));
+  check("无呼吸 LFO（调制持续音的包络）", !/lfoGain/.test(code));
+  check("状态里没有 drones 字段", !/drones:/.test(code));
+  check("状态里没有 shimmer 字段", !/shimmer:/.test(code));
+  check("参数表没有 droneGain 字段", !/droneGain:/.test(code));
+  check("参数表没有 shimmerGain 字段", !/shimmerGain:/.test(code));
+  check("参数表没有 breathSec 字段", !/breathSec:/.test(code));
+
+  // ⚠️ 唯一允许的常驻声源 = 噪声底床（无固定音高 → 不会"鸣"）
+  const noiseChain = (code.match(/createBufferSource\(\)/g) || []).length;
+  check("常驻声源只有噪声底床（无音高的风）", noiseChain >= 1);
+  check("噪声底床是粉噪声（不是白噪声电流声）", /makeNoiseBuffer/.test(code));
+
+  // ⚠️ 音效尾巴必须短（长尾巴叠起来 = 嗡鸣）
+  const revealFn = code.match(/kind === "reveal"\)[\s\S]*?\} else if \(kind === "select"\)/);
+  check("牌面揭示的磬尾巴 ≤ 1.5s（不再是 2.4s 长鸣）",
+    !!revealFn && /now \+ 1\.2/.test(revealFn[0]) && !/now \+ 2\.4/.test(revealFn[0]));
+  const gongFn = code.match(/kind === "gong"\)[\s\S]*?\} else \{/);
+  check("阶段转换的锣尾巴 ≤ 1.5s（不再是 3.0s 长鸣）",
+    !!gongFn && /now \+ 1\.2/.test(gongFn[0]) && !/now \+ 3\.0/.test(gongFn[0]));
+
+  // ⚠️ 混响 IR 不能太长（长 IR = 每个音都被拖成长尾）
+  const irDef = code.match(/makeImpulseResponse\(ctx: AudioContext, seconds = ([\d.]+)/);
+  check("混响 IR ≤ 2s（不再是 2.6s 的长尾雾）",
+    !!irDef && Number(irDef[1]) <= 2, irDef ? `${irDef[1]}s` : "未找到");
+
+  // ⚠️ 混响量上限（干湿比太高 → 一切都糊成一片）
+  const reverbMixes = [...code.matchAll(/reverbMix:\s*([\d.]+)/g)].map((m) => Number(m[1]));
+  check("每层混响量 ≤ 0.5（大混响会把短音拖成嗡鸣）",
+    reverbMixes.length === 7 && Math.max(...reverbMixes) <= 0.5,
+    `最大 ${Math.max(...reverbMixes)}`);
+
+  // ⚠️ 乐句必须稀疏（音符少 + 间隔长 → 大部分是安静的）
+  const noteCounts = [...code.matchAll(/arp:\s*\[([\s\S]*?)\]/g)].map((m) => (m[1].match(/\{ p:/g) || []).length);
+  check("每层音型 ≤ 5 个音（稀疏 = 冥想音乐的关键）",
+    noteCounts.length === 7 && Math.max(...noteCounts) <= 5,
+    `最大 ${Math.max(...noteCounts)}`);
+  const loopBeats = [...code.matchAll(/arpLoopBeats:\s*(\d+)/g)].map((m) => Number(m[1]));
+  check("每层循环 ≥ 8 拍（音符之间大量留白）",
+    loopBeats.length === 7 && Math.min(...loopBeats) >= 8,
+    `最小 ${Math.min(...loopBeats)}`);
+
+  // ⚠️ delayMix 以前是死参数（delay 链没有输入源）→ 现在必须真的接线
+  check("延迟链真的有输入（音符送进 delay）", /connect\(st\.delay\)/.test(code));
+  check("delayMix 已接入状态（每层可调回声量）", /st\.delayWet/.test(code));
+  const delayMixes = [...code.matchAll(/delayMix:\s*([\d.]+)/g)].map((m) => Number(m[1]));
+  check("7 层都有 delayMix", delayMixes.length === 7, `${delayMixes.length} 个`);
+
+  // ⚠️ 底床的明暗随层走（filterHz 现在真的作用在噪声链上）
+  check("噪声链的低通跟随层的 filterHz", /nf\.frequency\.value = p\.filterHz/.test(code));
+  check("切层时会更新底床明暗", /st\.noise\.filter\.frequency\.setTargetAtTime/.test(code));
+
+  // ⚠️ 早退条件不能再依赖 drones（已删除）
+  check("setAmbienceLayer 的早退不再依赖 drones.length", !/st\.drones\.length/.test(code));
+  check("早退改用调度器状态", /st\.scheduler\?\.active/.test(code));
+}
+
 /* ────────────── ④ 页面接线 ────────────── */
 console.log("\n【④ 页面接线】");
 {
   const page = readFileSync("src/app/page.tsx", "utf-8");
   const toggle = readFileSync("src/components/AmbienceToggle.tsx", "utf-8");
-  const gate = readFileSync("src/components/AmbienceGate.tsx", "utf-8");
 
   check("页面 import 了音频模块", /from "@\/lib\/audio\/ambient"/.test(page));
   check("页面 import 了开关组件", /from "@\/components\/AmbienceToggle"/.test(page));
-  check("页面 import 了入场组件", /from "@\/components\/AmbienceGate"/.test(page));
   check("开始占卜时解锁音频（用户手势上下文）", /unlockAmbience\(\)/.test(page));
   check("解锁调用在 startDivination 里", /startDivination[\s\S]{0,700}unlockAmbience/.test(page));
   check("解锁调用未被 await（不阻塞占卜开始）", /void unlockAmbience\(\)/.test(page));
@@ -227,7 +292,6 @@ console.log("\n【④ 页面接线】");
   check("锣只在关键阶段播（不全播）", /STAGE_GONG_PHASES\.(has|includes)/.test(page));
   check("页面挂了 useAmbiencePhase（阶段联动）", /useAmbiencePhase\(/.test(page));
   check("渲染了开关按钮", /<AmbienceToggle\s*\/>/.test(page));
-  check("渲染了入场提示（仅待机页）", /stage === "input" && <AmbienceGate/.test(page));
 
   // ⚠️ 开关组件
   check("开关有 aria-label", /aria-label=/.test(toggle));
@@ -238,13 +302,43 @@ console.log("\n【④ 页面接线】");
   const realUseState = /(^|[^\w])useState\s*[(<]/m.test(
     toggle.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "")
   );
-  check("开关不用 useState 管外部状态（仅本地展开态）", !realUseState || /showSlider/.test(toggle));
+  check("开关不用 useState 管外部状态（仅本地展开态）", !realUseState || /showSlider|showPanel|setShowPanel|setHintDismissed/.test(toggle));
+}
 
-  // ⚠️ 入场组件
-  check("入场提示监听 window 的指针事件（任意处可点）", /addEventListener\("pointerdown"/.test(gate));
-  check("入场提示用 capture 阶段（先于其他逻辑）", /capture: true/.test(gate));
-  check("入场提示有 pointer-events-none（不挡交互）", /pointer-events-none/.test(gate));
-  check("入场提示调用 unlockAmbience", /unlockAmbience\(\)/.test(gate));
+/* ────────────── ④b 2026-11-04 三改：单按钮 + Windows 式音量面板 ────────────── */
+console.log("\n【④b 音乐控制交互】（用户反馈「音乐按钮不要两个，就像 windows 操作栏一样」）");
+{
+  const page = readFileSync("src/app/page.tsx", "utf-8");
+  const toggle = readFileSync("src/components/AmbienceToggle.tsx", "utf-8");
+
+  // ⚠️ 旧的 AmbienceGate（底部大提示 + 悬浮月亮）必须彻底消失
+  const gateExists = existsSync("src/components/AmbienceGate.tsx");
+  check("AmbienceGate 已删除（底部大提示 + 悬浮月亮去掉）", !gateExists);
+  check("页面不再渲染 AmbienceGate", !/<AmbienceGate/.test(page));
+  check("页面不再 import AmbienceGate", !/from "@\/components\/AmbienceGate"/.test(page));
+
+  // ⚠️ 只有一个常驻按钮：数按钮标签 —— 提示气泡是 motion.button（也算一个可点元素），
+  //   面板内的音乐键是普通 button → 合计 3 个可点元素
+  const buttonCount = (toggle.match(/<button|<motion\.button/g) || []).length;
+  check("可点元素共 3 个（1 常驻 + 1 面板音乐键 + 1 提示气泡）", buttonCount === 3, `实际 ${buttonCount}`);
+  check("常驻按钮只有一个（Windows 式：点它开面板，不直接静音）",
+    /onClick={togglePanel}/.test(toggle) && /aria-expanded={showPanel}/.test(toggle));
+  check("面板里有独立的音乐开关按钮（点击可关闭音乐）",
+    /toggleMusic/.test(toggle) && /aria-label={muted \? "开启音乐" : "关闭音乐"}/.test(toggle));
+  check("音乐开关会静音", /setMuted\(true\)/.test(toggle));
+  check("音乐开关会解锁并开声", /unlockAmbience\(\)/.test(toggle) && /setMuted\(false\)/.test(toggle));
+
+  // ⚠️ 首次提示气泡：在右上角按钮旁
+  check("有首次提示气泡（本页有氛围乐 · 点击开启）", /本页有氛围乐/.test(toggle));
+  check("提示气泡挂在右上角按钮旁（与按钮同一容器）", /flex items-start gap-2/.test(toggle));
+  check("提示气泡可点击（点它即解锁 = 浏览器要的手势）", /onClick=\{\(\) => \{[\s\S]{0,220}unlockAmbience\(\)/.test(toggle));
+
+  // ⚠️ 面板交互细节
+  check("点面板外关闭（Windows 飞出窗行为）", /addEventListener\("pointerdown"/.test(toggle));
+  check("Esc 可关闭面板", /"Escape"/.test(toggle));
+  check("拖动音量自动取消静音", /if \(v > 0 && muted\)/.test(toggle));
+  check("音量滑块在弹出面板里（type=range 存在且面板用 AnimatePresence）",
+    /type="range"/.test(toggle) && /AnimatePresence/.test(toggle));
 }
 
 /* ────────────── ⑤ 版权安全 ────────────── */

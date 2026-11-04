@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
@@ -14,7 +14,6 @@ import CardFan, { type FanCard } from "@/components/CardFan";
 import ReviewCard, { type ReviewData } from "@/components/ReviewCard";
 import SubAgentPipeline, { type SubAgentEvent } from "@/components/SubAgentPipeline";
 import AmbienceToggle, { useAmbiencePhase } from "@/components/AmbienceToggle";
-import AmbienceGate from "@/components/AmbienceGate";
 import ClosingPanel from "@/components/ClosingPanel";
 import Icon, { type IconName } from "@/components/icons";
 import { unlockAmbience, playSfx } from "@/lib/audio/ambient";import { parseAgentEvent } from "@/lib/agent/schema";
@@ -1647,20 +1646,21 @@ export default function TarotApp() {
       <StarField />
       <MagicCircle />
 
-      {/* ---------- 环境音开关（固定右上角）----------
-        ⚠️ 位置选择：固定在视口右上 —— 它是"全局设置"而不是内容流的一部分，
+      {/* ---------- 环境音控制（固定右上角）----------
+        ⚠️ 位置选择：固定在视口右上 —— 它是全局设置而不是内容流的一部分，
            不该随页面滚动（占卜页会很长，滚下去就找不到了）。
-           ⚠️ z-30 盖在魔法阵之上，但不遮挡任何交互区（右上角是空的）。 */}
+           ⚠️ z-30 盖在魔法阵之上，但不遮挡任何交互区（右上角是空的）。
+        ⚠️ 2026-11-04 三改：这里只挂一个按钮（Windows 任务栏式的音量飞出窗），
+           首次提示气泡（点击开启氛围乐）也由 AmbienceToggle 内部渲染。 */}
       <div className="fixed right-4 top-4 z-30">
         <AmbienceToggle />
       </div>
 
       {/* ---------- 首页入场：点击开启占卜之声 ----------
         ⚠️ 浏览器禁止无手势的音频自动播放 → 必须有一次真实的点击。
-           这个组件把"解锁"包装成入场仪式（不是丑陋的遮罩）。
-        ⚠️ 只在待机页出现（进入占卜后不再打扰）。 */}
-      {stage === "input" && <AmbienceGate />}
-
+           这个组件把解锁包装成入场仪式（不是丑陋的遮罩）。
+        ⚠️ 2026-11-04 三改：底部大提示 + 悬浮月亮（AmbienceGate）已删除，
+           首次提示改由右上角按钮旁的气泡承担（见 AmbienceToggle）。 */}
       {/* 标题 */}
       <motion.h1
         initial={{ opacity: 0, y: -20 }}
