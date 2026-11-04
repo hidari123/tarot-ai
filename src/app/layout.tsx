@@ -34,8 +34,27 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
+    /**
+     * ⚠️⚠️ 高度链路（2026-11-04 修"全屏却有右侧滚动条"）：
+     *
+     *   原来的组合是：
+     *     <html className="h-full">          → html 高度 = 视口高（**不含滚动条**）
+     *     <body className="min-h-full">      → body 最小高度 = html 高 = 视口高
+     *     <main className="min-h-screen">    → 100vh（**含滚动条高度**）
+     *
+     *   CSS 里 `100vh` **包含滚动条的高度**，而 `h-full` 用的是**视口高（不含滚动条）**。
+     *   两者叠加 → 内容比视口高出一个滚动条的高度 → **右侧出现滚动条**。
+     *   而 `<main>` 上有 `overflow-hidden` → 内容被裁，但**页面本身仍可滚**。
+     *
+     *   修法：主体改用 `min-h-[100dvh]`（dvh = dynamic viewport height，
+     *   **不含滚动条**，且移动端地址栏收放/软键盘时自适应）。
+     *   → 见 `src/app/page.tsx` 的 <main>。
+     *
+     *   ⚠️ 这里把 body 的 `min-h-full` 去掉了 —— 它是冗余的：
+     *   <main> 自己就是 `min-h-[100dvh]`，body 再叠一层只会加剧溢出。
+     */
     <html lang="zh-CN" className="h-full antialiased">
-      <body className="min-h-full flex flex-col">
+      <body className="flex flex-col">
         {children}
         <PwaRegister />
       </body>

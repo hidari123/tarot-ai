@@ -2,6 +2,7 @@
 
 import { memo, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import ThinkingBubble from "@/components/ThinkingBubble";
 
 /**
  * 对话流视图 —— 整场占卜的统一时间线
@@ -554,6 +555,10 @@ const DialogueFlow = memo(function DialogueFlow({
   onPreviewCard,
   streaming,
   waitingUser,
+  /** ⚠️ 2026-11-04 新增：思考气泡所需的三个值 */
+  thinkingPhase,
+  thinkingElapsed,
+  thinkingRound,
 }: {
   entries: FlowEntry[];
   /** 回答 ask 条目（问题面板） */
@@ -570,6 +575,12 @@ const DialogueFlow = memo(function DialogueFlow({
   streaming: boolean;
   /** 是否正在等用户回应（模型停下 = 牌阵可展开；模型在说话 = 牌阵收起） */
   waitingUser?: boolean;
+  /** ⚠️ 当前仪式阶段（思考气泡按阶段换短句） */
+  thinkingPhase?: string | null;
+  /** ⚠️ 已等待秒数（思考气泡的显示门槛 + 短句轮换） */
+  thinkingElapsed?: number;
+  /** ⚠️ 轮次索引（短句跨轮轮换） */
+  thinkingRound?: number;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   /** 用户是否手动上滚（暂停流式跟随） */
@@ -711,11 +722,44 @@ const DialogueFlow = memo(function DialogueFlow({
             return null;
         }
       })}
-      {streaming && entries.length > 0 && (
-        <div className="flex justify-start">
-          <span className="typing-cursor text-purple-300 px-2">▍</span>
-        </div>
-      )}
+      {/**
+       * ⚠️⚠️ 2026-11-04：占卜师"思考中"气泡
+       *
+       * ⚠️ 之前这里只有一个 typing-cursor（▍），而它**只在占卜师已经开始说话时**才有
+       *   → "模型正在生成第一个 token"的那几秒到几十秒，界面**完全静止**
+       *   → 用户以为卡死了 → 去刷新。
+       *
+       * ⚠️ 现在的分层：
+       *   · elapsed < 1.2s → 不显示（模型通常很快就有首个 token，
+       *     这时弹气泡会"闪一下就消失"，比不显示更糟）
+       *   · elapsed ≥ 1.2s 且**占卜师还没开口** → 显示思考气泡（三点呼吸 + 口吻短句）
+       *   · 占卜师已经在说话 → 显示 typing-cursor（原文案）
+       *
+       * ⚠️ 判据"占卜师还没开口"= **最后一条 entry 不是 teller**（teller = 占卜师的话）
+       *   —— 因为 delta 是流式追加到 teller 条目里的，
+       *   一旦有内容，那个条目就变成"已开口"。
+       */}
+      {streaming && entries.length > 0 && (() => {
+        // ⚠️ 最后一条是否是占卜师的话（已开口）
+        const last = entries[entries.length - 1];
+        const tellerStarted = last?.kind === "teller" && !!last.text?.trim();
+        const elapsed = thinkingElapsed ?? 0;
+
+        if (!tellerStarted && elapsed >= 1.2) {
+          return (
+            <ThinkingBubble
+              phase={thinkingPhase}
+              elapsed={elapsed}
+              round={thinkingRound}
+            />
+          );
+        }
+        return (
+          <div className="flex justify-start">
+            <span className="typing-cursor text-purple-300 px-2">▍</span>
+          </div>
+        );
+      })()}
 
       {/* ---------- 牌阵面板：sticky 吸底 ----------
        * ⚠️ 为什么不在流里（原先作为普通条目）？

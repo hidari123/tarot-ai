@@ -139,6 +139,19 @@ export function extractBranchesFromPrompt(prompt: string): string[] {
 /**
  * 汇总逐张解读为最终正文（落库用）。
  * 格式与前端 CitedReading 的段落解析一致：【牌面·位置·牌名】 + 正文段
+ *
+ * ⚠️⚠️ 2026-11-04 修：把 `session.reading` **追加**在逐张解读之后
+ *
+ * ⚠️ 原来的行为：有逐张解读时**直接返回 parts，丢弃 session.reading**。
+ *   这导致 `session.reading` 里的内容（综合正文、追问、**回响**）全部丢失：
+ *     · 落库的正文只有牌面解读
+ *     · 分享卡摘要也取不到
+ *     · 刷新后看到的也不一样
+ *   实测踩过：回响明明在 SSE 里显示了，落库正文却没有。
+ *
+ * ⚠️ 为什么追加而不是覆盖：
+ *   session.reading 是"占卜师在对话流里说的话"（综合正文 / 追问 / 回响），
+ *   cardReadings 是"逐张牌的结构化解读" —— **两者是互补的，不该丢一个**。
  */
 export function buildFinalReading(session: AgentSession): string {
   const parts: string[] = [];
@@ -146,10 +159,10 @@ export function buildFinalReading(session: AgentSession): string {
     if (!slot.reading) continue;
     parts.push(`【牌面·${slot.pos}·${slot.nameZh}】${slot.reading}`);
   }
-  if (parts.length === 0) {
-    // 兜底：没有逐张解读（走了旧管线）→ 用 session.reading
-    return session.reading ?? "";
-  }
+  // ⚠️ 对话流里占卜师说的话（综合 / 追问 / 回响）
+  const spoken = (session.reading ?? "").trim();
+  if (spoken) parts.push(spoken);
+  if (parts.length === 0) return "";
   return parts.join("\n\n");
 }
 

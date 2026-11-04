@@ -30,6 +30,24 @@ export interface SpreadCard {
   flipped: boolean;
   /** 是"当前该翻的"那张（→ 可点 + 呼吸光提示） */
   current: boolean;
+  /**
+   * ⚠️ 正在翻开（2026-11-04 新增）
+   *   · 用户点了 → 立刻进入这个态 → 播 3D 翻转动画
+   *   · ⚠️ 解决用户实测报告的"点了没反应"：
+   *     之前点击后要等后端 200 + SSE 事件到达，牌面才变化 ——
+   *     在网络慢时**看起来就是点了没反应**。
+   *   · 现在点击**立刻**有视觉反馈（本地乐观更新），
+   *     后端事件到了再落定。
+   */
+  flipping?: boolean;
+  /**
+   * ⚠️ 是否可点（2026-11-04 新增）
+   *   · 牌阵建立后、card_flip_ready 到达前 → **不可点**（闸门还没就绪）
+   *   · 之前这些牌和"已翻开的牌"视觉几乎一样 → 用户分不清
+   *     "这张还没到" vs "这张坏了" → 点了没反应就以为坏了。
+   *   · 现在不可点的牌有明确的**待命**视觉（弱呼吸 + cursor-wait）。
+   */
+  clickable?: boolean;
 }
 
 export default function CardSpread({ cards, onFlipCard, onPreview }: {
@@ -90,26 +108,48 @@ export default function CardSpread({ cards, onFlipCard, onPreview }: {
               type="button"
               onClick={() => {
                 if (c.flipped) onPreview?.(c.index);
-                else if (c.current) onFlipCard?.(c.index);
+                else if (c.current && !c.flipping) onFlipCard?.(c.index);
               }}
-              whileHover={c.flipped || c.current ? { scale: 1.05, y: -3 } : undefined}
+              /**
+               * ⚠️ 2026-11-04：不可点时**明确告诉用户为什么**
+               *   · 之前：不可点的牌和已翻开的牌长得一样（只差边框色）
+               *     → 用户点了没反应 → 以为牌坏了。
+               *   · 现在：可点 = 强呼吸 + 手型光标；不可点 = 弱呼吸 + 等待光标。
+               */
+              whileHover={c.flipped || (c.current && !c.flipping) ? { scale: 1.05, y: -3 } : undefined}
+              whileTap={c.flipped || (c.current && !c.flipping) ? { scale: 0.97 } : undefined}
               animate={
-                c.current
-                  ? { scale: [1, 1.04, 1], boxShadow: ["0 0 0px rgba(168,85,247,0)", "0 0 26px rgba(168,85,247,0.55)", "0 0 0px rgba(168,85,247,0)"] }
-                  : { scale: 1 }
+                c.flipping
+                  ? { rotateY: 90, scale: 1.06 }
+                  : c.current
+                    ? { scale: [1, 1.04, 1], boxShadow: ["0 0 0px rgba(168,85,247,0)", "0 0 26px rgba(168,85,247,0.55)", "0 0 0px rgba(168,85,247,0)"] }
+                    : c.flipped || c.done
+                      ? { scale: 1 }
+                      // ⚠️ 待命态：极弱的呼吸（幅度只有可点态的 1/4），
+                      //    让用户看出"它活着，在等"，而不是"它是死的"
+                      : { scale: [1, 1.008, 1], opacity: [0.82, 0.92, 0.82] }
               }
-              transition={c.current ? { duration: 2.2, repeat: Infinity } : { duration: 0.2 }}
+              transition={
+                c.flipping
+                  ? { duration: 0.45, ease: "easeOut" }
+                  : c.current
+                    ? { duration: 2.2, repeat: Infinity }
+                    : { duration: 3.6, repeat: Infinity }
+              }
               /* ⚠️ aspect-ratio 内联兜底（同 DialogueFlow：防 dev 增量缓存不生成
                  aspect-[2/3] 任意值类导致卡牌塌成横线） */
-              style={{ aspectRatio: "2 / 3" }}
+              style={{ aspectRatio: "2 / 3", transformStyle: "preserve-3d" }}
               className={`relative w-full rounded-xl overflow-hidden border transition-all ${
-                c.current
-                  ? "border-purple-400/70 shadow-[0_0_30px_rgba(168,85,247,0.35)] cursor-pointer"
-                  : c.done
-                    ? "border-amber-400/55 cursor-pointer hover:border-amber-300/80"
-                    : c.flipped
-                      ? "border-purple-500/40 cursor-zoom-in hover:border-purple-400/60"
-                      : "border-purple-800/40"
+                c.flipping
+                  ? "border-purple-300/80 cursor-wait pointer-events-none"
+                  : c.current
+                    ? "border-purple-400/70 shadow-[0_0_30px_rgba(168,85,247,0.35)] cursor-pointer"
+                    : c.done
+                      ? "border-amber-400/55 cursor-pointer hover:border-amber-300/80"
+                      : c.flipped
+                        ? "border-purple-500/40 cursor-zoom-in hover:border-purple-400/60"
+                        : // ⚠️ 待命：cursor-wait（而不是默认 pointer）→ 一眼看出"在等"
+                          "border-purple-800/40 cursor-wait"
               }`}
             >
               {c.flipped && c.image ? (
@@ -134,11 +174,31 @@ export default function CardSpread({ cards, onFlipCard, onPreview }: {
                   </div>
                   <div className="absolute inset-1.5 rounded-lg border border-purple-500/25" />
                   {/* 当前该翻的牌：点我提示 */}
-                  {c.current && (
+                  {c.current && !c.flipping && (
                     <span className="absolute bottom-1.5 inset-x-0 text-center text-[10px] text-purple-200/80 tracking-wider">
                       点我翻开
                     </span>
                   )}
+                  {/**
+                   * ⚠️ 2026-11-04 新增：待命态提示
+                   *   用户实测报告"牌出现了，但有时候点的无效"——
+                   *   根因之一是**不可点的牌没有任何文字说明**，
+                   *   用户以为牌坏了（其实只是还没轮到它）。
+                   *   → 明确写"等待中"，并用极弱的呼吸（父级 animate 已处理）。
+                   *   ⚠️ 注意：只在**牌阵已建立且该牌未轮到**时显示，
+                   *      避免在牌还没生成时误导。
+                   */}
+                  {!c.current && !c.flipped && !c.done && cards.length > 0 && (
+                    <span className="absolute bottom-1.5 inset-x-0 text-center text-[10px] text-purple-400/45 tracking-wider">
+                      等待中
+                    </span>
+                  )}
+                </div>
+              )}
+              {/* ⚠️ 翻开中：盖一层微光（本地乐观反馈，点击立刻有反应） */}
+              {c.flipping && (
+                <div className="absolute inset-0 bg-purple-400/15 backdrop-blur-[1px] flex items-center justify-center z-10">
+                  <span className="text-[10px] text-purple-100/90 tracking-widest">翻  开  中</span>
                 </div>
               )}
               {c.done && (

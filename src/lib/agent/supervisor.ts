@@ -32,6 +32,7 @@ import { TOOLS } from "./tools/definitions";
 import { execRagSearch, prefetchForCard, RAG_BUDGET } from "./tools/rag";
 import { execDrawCards } from "./tools/cards";
 import { runAnalyst, runWriter, runReviewer, type ReviewResult } from "./subagents";
+import { generateEcho } from "./echo";
 import { runLocalFallback } from "./fallback";
 import {
   canEnter, advancePhase, RITUAL_PHASE_LABEL, completedPhases, TOOL_PHASE_REQUIREMENT,
@@ -611,6 +612,44 @@ export async function* runAgent(
         yield { type: "tool", tool: { name, args, resultSummary: `收束完成，用户回应：${answer.slice(0, 40)}`, durationMs: Date.now() - t0 } };
         db.logToolCall(session.id, seq, "supervisor", name, args, `收束｜${answer.slice(0, 50)}`, Date.now() - t0);
         roundToolNames.push(name);
+
+        /**
+         * ⚠️⚠️ 回响（2026-11-04 新增）
+         *
+         * ⚠️ 用户实测报告："综合与收束那里，我每次回答完问题，都是停在那里了…
+         *   需要用户有输入的时候，他能接上话…不要让用户停在那里"。
+         *
+         * ⚠️ 为什么放在这里（用户答完收束问题之后、done 之前）：
+         *   此刻情绪轨迹已完整（承约/呼召/确认各环节累积），
+         *   三张牌的解读也都在 session.cardReadings 里 ——
+         *   **正是生成回响所需的全部素材齐备的时刻**。
+         *
+         * ⚠️ 回响失败**绝不影响主流程**（generateEcho 内部 catch 返回 null）——
+         *   收束照常完成，用户只是少看到一段话。
+         */
+        const echo = await generateEcho(config, session, answer);
+        if (echo) {
+          // ⚠️ 作为**正文**流出（走 delta）→ 前端会把它接在收束正文后面，
+          //    用户视角是"占卜师接着说了一段"，而不是多出一个 UI 组件。
+          yield { type: "phase", phase: "interpret", label: "占卜师留下回响…" };
+          for (const evt of chunkDelta(echo)) yield evt;
+          yield { type: "delta", delta: "\n\n" };
+          db.logTiming(session.id, "echo", 0, echo.slice(0, 60));
+          /**
+           * ⚠️⚠️ 回响也要并入 session.reading（2026-11-04 修）
+           *
+           * ⚠️ 为什么必须并入：
+           *   `buildFinalReading(session)` 只拼 cardReadings + session.reading ——
+           *   回响是**局部变量**，不进 session.reading 的话：
+           *     · 落库的正文**不含回响**（实测确认：正文尾部停在牌面解读）
+           *     · 分享卡的摘要**不含回响**（分享卡取的是 reading）
+           *     · 刷新后看到的正文也**不含回响**
+           *   → 用户看到的是"占卜师说了回响，但一刷新就没了"（前后不一致）。
+           *
+           * ⚠️ 追加而不是覆盖（保持既有正文）。
+           */
+          session.reading = session.reading ? `${session.reading}\n\n${echo}` : echo;
+        }
         // ---- 方向⑤：情绪驱动的人格切换建议 ----
         // 收束点是最自然的"下一次入口"：整场情绪轨迹已完整（emotionTags
         // 在承约/呼召/确认问题各环节累积）。规则：

@@ -30,6 +30,22 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   if (live) {
     return withSecurityHeaders(Response.json({
       status: live.finished ? "done" : "running",
+      /**
+       * ⚠️⚠️ canFollowup —— "能不能追问"的**显式契约**（2026-11-04 加）
+       *
+       * ⚠️ 为什么必须有这个字段（用户实测报告的 bug）：
+       *   原来的前端只判 `r.ok`（HTTP 200）就回填 sessionId 并显示"可追问"面板。
+       *   但本路由对**两类**会话都返回 200：
+       *     ① 内存中的活跃会话 → 能追问 ✅
+       *     ② DB 里已完成的会话（内存会话已被 cleanExpired 逐出）→ **不能追问** ❌
+       *   → 用户看到追问面板 → 一点 → POST /api/interpret → getSession(内存) 查不到
+       *     → **410 "会话已过期"** → 用户看到"超过 30 分钟"（其实会话是正常完成的）
+       *
+       * ⚠️ 判据必须是"内存会话存在"，不能从 status 推断：
+       *   追问走的是 `/api/interpret` → `getSession(id)` → **只查内存 Map**。
+       *   所以"能不能追问"是服务端的事实，不该让前端猜。
+       */
+      canFollowup: !live.finished,
       question: live.question,
       persona: live.persona.id,
       cards: live.drawnCards.map((d, i) => ({
@@ -55,6 +71,13 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   if (persisted) {
     return withSecurityHeaders(Response.json({
       status: "finished",
+      /**
+       * ⚠️ DB 里的会话**不能追问** —— 内存会话已被 cleanExpired 逐出，
+       *   而追问的 getSession() 只查内存。
+       *   ⚠️ 但**正文要照常返回**（用户刷新后仍应看到完整解读）——
+       *   "不能追问" ≠ "不能看"。
+       */
+      canFollowup: false,
       question: persisted.question,
       cards: persisted.cards,
       reading: persisted.reading,

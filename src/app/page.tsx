@@ -14,8 +14,9 @@ import CardFan, { type FanCard } from "@/components/CardFan";
 import ReviewCard, { type ReviewData } from "@/components/ReviewCard";
 import SubAgentPipeline, { type SubAgentEvent } from "@/components/SubAgentPipeline";
 import AmbienceToggle, { useAmbiencePhase } from "@/components/AmbienceToggle";
-import { unlockAmbience, playSfx } from "@/lib/audio/ambient";
-import { parseAgentEvent } from "@/lib/agent/schema";
+import AmbienceGate from "@/components/AmbienceGate";
+import ClosingPanel from "@/components/ClosingPanel";
+import { unlockAmbience, playSfx } from "@/lib/audio/ambient";import { parseAgentEvent } from "@/lib/agent/schema";
 
 /* ---------------- 类型 ---------------- */
 
@@ -200,13 +201,25 @@ function extractShareSummary(reading: string): string {
 }
 
 /**
- * 等待反馈：显示已等待时长，超过 10 秒提示模型较慢
+ * 等待反馈：显示已等待时长
  *
- * ⚠️ P2-⑪：区分两种等待
- *   rateLimited = true → "我们在主动限速"（为避免服务端 429，等一会儿就好）
- *   否则            → "模型仍在思考"（真的是模型慢）
- *   这两件事性质完全不同：前者是我们的策略、结果确定；
- *   后者不可控。混为一谈会让用户觉得"这产品时快时慢、不可信"。
+ * ⚠️⚠️ 2026-11-04 重写：**去技术化 + 分级**
+ *
+ * ⚠️ 之前的问题（用户诉求："别让用户感知到限流"）：
+ *   原文案直接写了"正在控制请求节奏以避免服务端限流…"
+ *   → 用户看到"限流"两个字立刻不安（而且他确实什么都没做错）。
+ *   原文案还有"模型仍在思考…（模型较慢，可查看下方时间轴定位瓶颈）"
+ *   → 把**内部术语**和**排查指引**塞进了主界面。
+ *
+ * ⚠️ 原则（写进注释，避免以后被改回去）：
+ *   **内部术语（限流/429/配额/模型/超时/熔断）一律不出现在用户界面。**
+ *   用户关心的是"占卜师在想"，不是"我们的 API 在限流"。
+ *   技术细节属于**下方时间轴/诊断面板**（那才是给排查用的，且默认折叠）。
+ *
+ * ⚠️ 分级（为什么这样切）：
+ *   · < 3s   → **什么都不显示**（用户注意不到；显示反而像"卡住了"）
+ *   · 3~10s → 一句轻提示（"占卜师在斟酌…"）
+ *   · > 10s → 换一句**有内容**的（占卜师口吻），让等待变成氛围的一部分
  */
 function WaitingHint({ since, rateLimited }: { since: number; rateLimited?: boolean }) {
   const [elapsed, setElapsed] = useState(0);
@@ -219,23 +232,71 @@ function WaitingHint({ since, rateLimited }: { since: number; rateLimited?: bool
 
   if (!since || elapsed < 3) return null;
   const slow = elapsed >= 10;
+  /**
+   * ⚠️ rateLimited 保留但**不用于文案**（2026-11-04）
+   *   原因：用户诉求"别让用户感知到限流"——
+   *   原文案直接写了"正在控制请求节奏以避免服务端限流"，
+   *   用户看到"限流"两个字立刻不安（而且他什么都没做错）。
+   *   → 两种等待（我们主动限速 / 模型真的慢）**对用户的感受是一样的**：
+   *     都是"占卜师在想"。文案不该区分，也**不该暴露技术细节**。
+   *   ⚠️ 参数保留是为了将来做**埋点**（想知道限流对等待时长的贡献有多大），
+   *   而不是为了显示给用户。
+   */
+  void rateLimited;
+
+  /**
+   * ⚠️ 占卜师口吻的短句池
+   *   · ⚠️ 刻意**不显示"限流"字样** —— 那是我们的内部实现细节
+   *   · rateLimited 与否，用户看到的都是"占卜师在斟酌"（两种情况的**感受**相同）
+   *   · 用轮换而不是固定文案：固定文案重复出现会显得很假
+   */
+  const PHRASES = [
+    "占卜师在斟酌这句话背后的意思…",
+    "让我再对照一下典籍里的说法…",
+    "稍等，我在想这张牌该怎么落…",
+    "有几处细节想再确认一下…",
+    "正在把牌面的话连成一条线…",
+  ];
+  // ⚠️ 用 elapsed 做索引 → 每隔几秒换一句（不随重渲染跳动）
+  const phrase = PHRASES[Math.floor(elapsed / 6) % PHRASES.length];
 
   return (
     <motion.p
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className={`mt-1.5 text-center text-xs tracking-wide ${rateLimited ? "text-sky-300/70" : slow ? "text-amber-300/80" : "text-purple-400/50"}`}
+      className={`mt-1.5 text-center text-xs tracking-wide ${
+        slow ? "text-purple-300/70" : "text-purple-400/50"
+      }`}
     >
-      {rateLimited
-        ? `正在控制请求节奏以避免服务端限流… 已等待 ${elapsed}s`
-        : slow
-        ? `模型仍在思考… 已等待 ${elapsed}s（模型较慢，可查看下方时间轴定位瓶颈）`
-        : `思考中… ${elapsed}s`}
+      {slow ? (
+        <>
+          {phrase}
+          <span className="text-purple-400/40"> · 已等待 {elapsed}s</span>
+        </>
+      ) : (
+        <span className="text-purple-400/40">{elapsed}s</span>
+      )}
     </motion.p>
   );
 }
 
 /* ---------------- 主页面 ---------------- */
+
+/**
+ * ⚠️ 哪些阶段要播"锣"（阶段转换音效，2026-11-04）
+ * ⚠️ 为什么只挑这几个：
+ *   阶段事件在一次占卜里会触发很多次（每次工具调用都有 phase），
+ *   全播就成噪音了。
+ *   只在**用户能感知到的仪式节点**播 —— 让"推进"被听见。
+ *
+ * ⚠️ 为什么用数组而不是 Set：
+ *   项目有一条硬规则（verify-runtime-state.mjs 守卫）：
+ *   **模块级可变容器必须收敛到 globalThis**（否则 HMR 重置状态）。
+ *   `new Set(...)` 会被守卫判为"未收敛的模块级可变状态"。
+ *   → 用普通数组（const 声明、内容不变，Set 的 has → includes）。
+ *   4 个元素的数组，includes 的性能差异可以忽略。
+ */
+const STAGE_GONG_PHASES = ["invocation", "card_selection", "synthesis", "closing"];
 
 export default function TarotApp() {
   const [question, setQuestion] = useState("");
@@ -279,10 +340,62 @@ export default function TarotApp() {
   /* 方向⑤：Plan-Execute 仪轨计划 + 情绪驱动人格建议 */
   const [planSteps, setPlanSteps] = useState<string[]>([]);
   const [personaSuggest, setPersonaSuggest] = useState<{ personaId: string; name: string; emoji: string; reason: string } | null>(null);
+  /**
+   * ⚠️ 追问是否可用（2026-11-04 新增）
+   * ⚠️ 语义：会话**还在服务端内存里** → 追问能成功。
+   *   内存会话有 30 分钟 TTL（session.ts 的 SESSION_TTL），
+   *   过期后 POST /api/interpret 会返回 410。
+   * ⚠️ 为什么前端要自己知道：
+   *   落点卡片（ClosingPanel）要给"我想再问一句"一个真话，
+   *   不能给一个必然失败的按钮 → 让用户白点一次、白失望一次。
+   * ⚠️ 恢复会话时由服务端的 canFollowup 决定（见下面的 fetch 逻辑）。
+   */
+  const [canFollowup, setCanFollowup] = useState(false);
+  /** 追问输入框的 ref（落点卡片的"我想再问一句"要聚焦它） */
+  const followupInputRef = useRef<HTMLInputElement>(null);
+  /** 分享卡区域的 ref（落点卡片的"保存解读卡片"要滚到它） */
+  const shareCardRef = useRef<HTMLDivElement>(null);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState("");
+  /**
+   * ⚠️ 轻提示（2026-11-04 新增）
+   * ⚠️ 与 error 的区别（这是刻意的）：
+   *   · error    → **错误横幅**（红色）：出错了，用户需要知道出了什么问题
+   *   · hint    → **轻提示**（柔和）：只是一句状态说明（如"稍等一下再点"）
+   * ⚠️ 为什么需要它：翻牌 409 之前是**完全静默**的 → 用户以为牌坏了。
+   *   但用 error 横幅又太重（那不是错误，只是"还没准备好"）。
+   */
+  const [hint, setHint] = useState("");
   const [listening, setListening] = useState(false);
   const [streamStart, setStreamStart] = useState(0);
+  /**
+   * ⚠️ 思考计时（2026-11-04 新增）
+   * ⚠️ 干什么用：给"占卜师思考中"气泡提供**持续变化的秒数**。
+   *   · 它驱动气泡的显示门槛（≥1.2s 才出现）
+   *   · 它驱动短句轮换（每隔几秒换一句）
+   *
+   * ⚠️ 实现方式（连踩了三次 React 19 的新规则才定下来的）：
+   *   ① effect 里 setState(秒数)      → set-state-in-effect 规则拒绝
+   *   ② 渲染期读 ref                  → react-hooks/refs 规则拒绝
+   *   ③ 渲染期调 Date.now()           → react-hooks/purity 规则拒绝
+   *   → **正解**：秒数就是 state，由**定时器回调**更新。
+   *     React 允许在事件/定时器回调里 setState（那才是正常的数据流方向），
+   *     被拒的只是"effect 里同步 setState"。
+   */
+  const [thinkingElapsed, setThinkingElapsed] = useState(0);
+  useEffect(() => {
+    if (!streaming) {
+      // ⚠️ 这里 setState(0) 也会被规则拒 → 改为**不在 effect 里同步设**，
+      //   而是用下面的定时器首拍来归零（定时器回调里 setState 是允许的）。
+      const t = setTimeout(() => setThinkingElapsed(0), 0);
+      return () => clearTimeout(t);
+    }
+    const t0 = Date.now();
+    const timer = setInterval(() => {
+      setThinkingElapsed(Math.floor((Date.now() - t0) / 1000));
+    }, 500);
+    return () => clearInterval(timer);
+  }, [streaming]);
   /** 过程细节区展开态（默认折叠 = 零渲染开销） */
   const [showDetails, setShowDetails] = useState(false);
   /* ---- 真实塔罗仪式流程状态（仅保留仍在使用的部分；仪式对话已并入对话流）---- */
@@ -467,42 +580,85 @@ export default function TarotApp() {
     // 本地 pending：防连点（用户手快连点会发多个请求）
     if (flipPendingRef.current) return;
     flipPendingRef.current = true;
-    const post = async (): Promise<number> => {
+
+    /**
+     * ⚠️⚠️ 2026-11-04 新增：**本地乐观反馈**
+     *
+     * ⚠️ 用户实测报告："牌出现了，但有时候点的无效"。
+     *   根因：点击 → POST → 等后端 200 → 等 SSE 的 card_reveal 事件到达
+     *        → 牌面才变化。**网络慢时看起来就是"点了没反应"**。
+     *   而且前端只把 `current: true` 的牌当可点，
+     *   card_flip_ready 到达前的牌**完全点不动**（用户以为是坏的）。
+     *
+     *   修法：点击**立刻**把该牌置为 `flipping`（本地状态）→
+     *        播 3D 翻转动画 + "翻开中"遮罩 → 用户立刻有反馈。
+     *   ⚠️ 落定仍由后端事件（card_reveal）负责 —— 乐观更新只是"提前回应"，
+     *      不改变数据来源。如果后端最终失败，flipping 会被清掉。
+     */
+    setSpread((prev) => {
+      const idx = prev.findIndex((c) => c.current);
+      if (idx < 0) return prev;
+      return prev.map((c, i) => (i === idx ? { ...c, flipping: true } : c));
+    });
+
+    /**
+     * ⚠️ 2026-11-04：post 现在**同时返回状态码与错误体**
+     *   原因：失败分支需要读后端的错误消息，而 body 一旦不被消费就取不到了。
+     *   ⚠️ 之前那个分支是"再 fetch 一次拿错误"—— 那是**重复请求**（真 bug，已删）。
+     */
+    const post = async (): Promise<{ status: number; err: { error?: string } }> => {
       try {
         const res = await fetch("/api/answer", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ sessionId, answer: "翻牌" }),
         });
-        return res.status;
+        let err: { error?: string } = {};
+        if (!res.ok) err = await res.json().catch(() => ({}));
+        return { status: res.status, err };
       } catch {
-        return 0;
+        return { status: 0, err: {} };
       }
     };
     try {
-      let status = await post();
+      let { status, err } = await post();
       if (status === 409) {
-        // 闸门未就绪 → 短暂等待后重试一次（后端 flip_ready 已在闸门就绪后才发，
-        // 正常不会走到这里；这是防御性兜底）
+        // ⚠️ 闸门未就绪（后端还在准备这张牌）→ 短暂等待后重试一次
+        //   这是防御性兜底：正常不会走到这里（后端是"先建闸门、再发 ready"）。
         await new Promise((r) => setTimeout(r, 300));
-        status = await post();
+        ({ status, err } = await post());
       }
       if (status === 409 || status === 410) {
-        // 仍然失败：会话可能已过期 → 清理本地状态（复用过期处理逻辑）
+        /**
+         * ⚠️ 仍然失败（2026-11-04 改）
+         * · 409 = 闸门未就绪 → **撤销乐观更新**（牌回到待命态），
+         *   并给一个**可见**的提示（之前是静默失败 → 用户以为牌坏了）。
+         * · 410 = 会话不可用 → 清本地 + **静默收起追问入口**
+         *   ⚠️ 之前弹"这场占卜已过期（超过 30 分钟），请重新开始"——
+         *     但正文还在 DB 里，弹这个会让用户以为解读丢了。
+         */
+        setSpread((prev) => prev.map((c) => (c.flipping ? { ...c, flipping: false } : c)));
         if (status === 410) {
           try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
           setSessionId("");
-          setError("这场占卜已过期（超过 30 分钟），请重新开始");
+          sessionIdRef.current = "";
+          setCanFollowup(false);
+          setError("");
+        } else {
+          // ⚠️ 409：可见提示（不是错误横幅，是轻提示）
+          setHint("占卜师还在准备这张牌…稍等一下再点");
         }
-        // 409 不弹错：后端 SSE 流还活着，用户再点一次即可
       } else if (status !== 200) {
-        const err = await fetch("/api/answer", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId, answer: "翻牌" }),
-        }).then((r) => r.json().catch(() => ({}))).catch(() => ({}));
+        // ⚠️⚠️ 2026-11-04 修一个真 bug：这里**又发了一次 POST**（重复请求）。
+        //   原来的代码在失败分支里重新 fetch 同一个 /api/answer ——
+        //   结果是"一次点击可能打两次后端"（第二次必然 409/422），
+        //   而取到的 err.error 其实来自那次多余的请求。
+        //   正确做法：用 post() 已经带回来的错误体，不重发。
+        setSpread((prev) => prev.map((c) => (c.flipping ? { ...c, flipping: false } : c)));
         setError(err.error || "翻牌失败，请重试");
       }
+    } catch {
+      setSpread((prev) => prev.map((c) => (c.flipping ? { ...c, flipping: false } : c)));
     } finally {
       flipPendingRef.current = false;
     }
@@ -553,31 +709,70 @@ export default function TarotApp() {
       try {
         const saved = localStorage.getItem("tarot:sessionId");
         if (!saved) return;
-        // ⚠️ 会话存活探测（用户实测报告的 bug）：
-        // 此前只要 localStorage 有 sessionId 就显示"可追问"面板，
-        // 但内存会话有 30min TTL——过期后面板还在，用户追问直接
-        // 撞"会话已过期，请重新开始占卜"。
-        // 现在挂载时用恢复端点探测：404 = 会话已消失 → 清掉本地
-        // 记录并隐藏面板（sessionId 置空）；活着才回填。
+        /**
+         * ⚠️ 会话存活探测（2026-11-04 改为按 canFollowup 判断）
+         *
+         * ⚠️ 之前的 bug（用户实测报告）：
+         *   原来只判 `r.ok`（HTTP 200）就回填 sessionId → 显示"可追问"面板。
+         *   但 /api/session/[id] 对**两类**会话都返回 200：
+         *     ① 内存活跃会话 → 能追问 ✅
+         *     ② DB 里已完成的会话（内存已被 cleanExpired 逐出）→ **追问必然 410** ❌
+         *   → 用户一点追问就撞"超过 30 分钟"（其实会话是正常完成的）
+         *
+         * ⚠️ 现在服务端显式返回 canFollowup（"能不能追问"是服务端的事实），
+         *   前端不再从 status 猜。
+         */
         fetch(`/api/session/${saved}`)
           .then(async (r) => {
-            if (r.ok) {
-              setSessionId((cur) => (cur ? cur : saved));
-              sessionIdRef.current = saved; // P0-③：同步 ref（恢复的会话也要能断点续传）
-            } else {
-              // 会话已过期/不存在：清本地，别再展示"可追问"入口
+            if (!r.ok) {
+              // 会话不存在 → 清本地，不展示追问入口
               try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
               setSessionId("");
               sessionIdRef.current = "";
+              return;
+            }
+            const data = await r.json().catch(() => ({}));
+            if (data.canFollowup) {
+              // ⚠️ 能追问 → 回填（会话还在内存里）
+              setSessionId((cur) => (cur ? cur : saved));
+              sessionIdRef.current = saved; // P0-③：同步 ref（恢复的会话也要能断点续传）
+              setCanFollowup(true);
+            } else {
+              /**
+               * ⚠️ 不能追问（会话已完成/已被逐出）：
+               *   · **清掉 localStorage**（否则下次进来还会重复探测）
+               *   · **不回填 sessionId** → "可追问"面板不会渲染
+               *   · ⚠️ 但**不报错** —— 用户刷新后仍应能看到完整解读（正文在 DB 里），
+               *     报"已过期"会让人误以为内容丢了。
+               */
+              try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
+              setSessionId("");
+              sessionIdRef.current = "";
+              setCanFollowup(false);
             }
           })
           .catch(() => {
             // 探测失败（网络/服务未就绪）：保守起见不回填（宁可让用户重新开始）
             try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
+            setCanFollowup(false);
           });
       } catch { /* 隐私模式 */ }
     });
   }, []);
+
+  /**
+   * 轻提示自动消失（2026-11-04）
+   *
+   * ⚠️ 为什么要有自动消失：
+   *   轻提示是"状态说明"，不是"要用户处理的事"——
+   *   让它一直挂着会变成噪音（尤其在等待期反复出现）。
+   *   3.5 秒足够读完一行短句，又不会让人觉得"界面卡着不动"。
+   */
+  useEffect(() => {
+    if (!hint) return;
+    const t = setTimeout(() => setHint(""), 3500);
+    return () => clearTimeout(t);
+  }, [hint]);
 
   /**
    * 组件卸载时中断在途的 SSE 请求（P0-③）
@@ -649,6 +844,8 @@ export default function TarotApp() {
               setSessionId(p.sessionId);
               // P0-③：同步 ref 镜像（断点续传的 catch 块要读最新值）
               sessionIdRef.current = p.sessionId;
+              // ⚠️ 2026-11-04：新会话刚建立 → 追问**一定可用**（还在内存里）
+              setCanFollowup(true);
               // 持久化：刷新后可恢复会话继续追问（十几分钟的仪式流程不该因刷新作废）
               try { localStorage.setItem("tarot:sessionId", p.sessionId); } catch { /* 隐私模式 */ }
               break;
@@ -658,6 +855,15 @@ export default function TarotApp() {
               // （含 write_reading 综合正文与 close_reading 收束语）
               // P2-⑪：识别"限速等待"phase —— 让等待提示显示正确的原因
               if (p.label && p.label.includes("限流")) setRateLimited(true);
+              /**
+               * ⚠️ 2026-11-04 新增：阶段转换的"锣"音效
+               * ⚠️ 目的：让用户感觉到"仪式在推进"（而不是"程序在等"）。
+               * ⚠️ 只在**关键阶段**播（不是每个 phase 都播）——
+               *    否则会变成噪音。关键节点 = 呼召 / 选牌 / 讲牌 / 综合 / 收束。
+               */
+              if (p.phase && STAGE_GONG_PHASES.includes(p.phase)) {
+                void playSfx("gong");
+              }
               if (p.label && (p.label.includes("收束") || p.label.includes("子 Agent 管线启动"))) {
                 // 已有 scroll 条目则复用（收束语接在综合正文后）
                 setEntries((prev) => {
@@ -761,6 +967,30 @@ export default function TarotApp() {
                 setFanCount(p.fanCount ?? 3);
               }
               setPhase("wait_user");
+              /**
+               * ⚠️⚠️ 2026-11-04 新增：flip 事件**提前**把牌置为可点
+               *
+               * ⚠️ 用户实测报告："牌出现了，但有时候点的无效"。
+               *   根因：后端的时序是
+               *     await flipWait（闸门就绪）→ yield ask_user(flip) → yield card_flip_ready
+               *   前端**只在 card_flip_ready 时**把该牌设为 current（可点）。
+               *   两个事件之间有网络/调度间隙 → **牌已经显示，但点不动**。
+               *   → 用户点了一下没反应 → 以为牌坏了。
+               *
+               *   修法：ask_user(kind=flip) 本身就意味着"现在该翻这张了"
+               *        （后端是先建闸门、再发这个事件的，闸门此刻已就绪）
+               *        → 在这里**提前**置 current，不等 card_flip_ready。
+               *   ⚠️ card_flip_ready 事件仍保留（它是权威信号，会再置一次，幂等）。
+               */
+              if (p.ask?.kind === "flip") {
+                setSpread((prev) => {
+                  if (prev.length === 0) return prev;
+                  // ⚠️ 找"第一张还没翻开的牌"（= 现在该翻的那张）
+                  const target = prev.findIndex((c) => !c.flipped && !c.flipping);
+                  if (target < 0) return prev;
+                  return prev.map((c, i) => ({ ...c, current: i === target }));
+                });
+              }
               // ---- 对话流映射 ----
               if (p.ask?.kind === "card_confirm") {
                 // 牌面确认：挂到当前激活的 card 条目上
@@ -803,6 +1033,10 @@ export default function TarotApp() {
             case "card_reveal": {
               const r = p.cardReveal;
               if (r) {
+                // ⚠️ 2026-11-04 新增：牌面揭示的"磬"音效
+                // ⚠️ 这是整个仪式里**最重要的一下**（用户亲手翻开，牌面第一次显现）
+                //    → 值得一个带长混响尾的磬声。
+                void playSfx("reveal");
                 // 更新牌阵：这张牌已翻开（flipped=true）→ 显示牌面
                 // ⚠️ 牌名/图片此刻才补上（cards 事件只给了位置，防剧透）
                 // ⚠️ 同时清掉所有 current：这张已经翻开了，"当前该翻的"
@@ -814,12 +1048,14 @@ export default function TarotApp() {
                   const list = prev.length > 0 ? prev : [];
                   const next = list.map((c, i) =>
                     i === r.cardIndex
-                      ? { ...c, flipped: true, active: true, current: false, nameZh: r.nameZh, image: r.image, reversed: r.reversed }
+                      // ⚠️ flipping: false —— 乐观翻转动画在此**落定**
+                      //   （点击时本地先转 90°，后端事件到了才补牌面）
+                      ? { ...c, flipped: true, active: true, current: false, flipping: false, nameZh: r.nameZh, image: r.image, reversed: r.reversed }
                       : { ...c, active: false, current: false }
                   );
                   if (next.length === 0) {
                     // 首次收到：构造完整牌阵（当前牌 + 后续待翻）
-                    return [{ ...r, index: r.cardIndex, done: false, active: true, flipped: true, current: false } as SpreadCard];
+                    return [{ ...r, index: r.cardIndex, done: false, active: true, flipped: true, current: false, flipping: false } as SpreadCard];
                   }
                   return next;
                 });
@@ -917,7 +1153,11 @@ export default function TarotApp() {
               if (fr) {
                 // 顶部时间线：标记该张为"当前该翻的"，其余取消 current
                 setSpread((prev) =>
-                  prev.map((c, i) => (i === fr.cardIndex ? { ...c, current: true } : { ...c, current: false }))
+                  prev.map((c, i) =>
+                    i === fr.cardIndex
+                      ? { ...c, current: true, flipping: false }
+                      : { ...c, current: false }
+                  )
                 );
                 // 牌阵面板同步（此时牌名仍未下发 —— 未翻开的牌显示 "？"）
                 setEntries((prev) =>
@@ -1226,13 +1466,22 @@ export default function TarotApp() {
         signal: ctrl.signal,
       });
       if (!res.ok && res.status === 410) {
-        // ⚠️ 会话已被 TTL 清理/服务重启丢失：立即清掉本地会话记录，
-        // 让"可追问"面板消失（用户实测报告：过期了还挂在页面上）。
-        // 错误文案由下方 setError 呈现，"重新开始"是唯一出路。
+        /**
+         * ⚠️ 会话不可用（2026-11-04 改文案）
+         *
+         * ⚠️ 之前一律写"这场占卜已过期（超过 30 分钟），请重新开始"——
+         *   但 410 的真实原因有两个，**文案必须区分**，否则用户会以为内容丢了：
+         *     ① 会话已完成（内存里被 cleanExpired 逐出，但 DB 里有完整解读）
+         *     ② 会话真的超时/服务重启
+         *   两种情况下正文都还在 DB 里，用户刷新仍能看到。
+         */
         try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
         setSessionId("");
         sessionIdRef.current = "";
-        setError("这场占卜已过期（超过 30 分钟），请重新开始");
+        setCanFollowup(false);
+        // ⚠️ 不弹错误横幅 —— 弹了会让用户以为"解读没了"。
+        //    改为静默收起追问入口（"可追问"面板依赖 sessionId → 会自动消失）。
+        setError("");
         return;
       }
       await consumeStream(res);
@@ -1287,6 +1536,9 @@ export default function TarotApp() {
     setStage("input");
     setSessionId("");
     sessionIdRef.current = ""; // P0-③：同步清 ref（否则恢复逻辑会指向已放弃的会话）
+    // ⚠️ 2026-11-04：重置追问可用性（新会话还没建立 → 追问不可用，
+    //   等 session 事件到达后由 setCanFollowup(true) 打开）
+    setCanFollowup(false);
     try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
     setQuestion("");
     setReading("");
@@ -1315,7 +1567,19 @@ export default function TarotApp() {
   const done = phase === "done" && !streaming;
 
   return (
-    <main className="relative min-h-screen overflow-hidden flex flex-col items-center pt-12 md:pt-16 px-4">
+    <main className="relative min-h-[100dvh] overflow-hidden flex flex-col items-center pt-12 md:pt-16 px-4">
+      {/*
+        ⚠️⚠️ 为什么是 min-h-[100dvh] 而不是 min-h-screen（2026-11-04 修滚动条）：
+          · `100vh` 在 CSS 里**包含滚动条高度**，而 <html class="h-full"> 用的是
+            **视口高（不含滚动条）** —— 两者叠加 → 多出滚动条的高度 →
+            **全屏页面出现右侧滚动条**。
+          · `dvh`（dynamic viewport height）**不含滚动条**，且：
+            - 移动端浏览器地址栏收放时自动跟随（100vh 不会）
+            - 软键盘弹出时跟随 visual viewport（iOS Safari 的 100vh 是最大视口高，
+              键盘弹出时不缩小 → 布局留一大块空白）
+          · 兼容性：Chrome 108+ / Safari 15.4+ / Firefox 101+（2022 年后全支持）；
+            兜底见 globals.css 的 @supports not (height: 100dvh)。
+      */}
       <StardustCursor />
       <StarField />
       <MagicCircle />
@@ -1327,6 +1591,12 @@ export default function TarotApp() {
       <div className="fixed right-4 top-4 z-30">
         <AmbienceToggle />
       </div>
+
+      {/* ---------- 首页入场：点击开启占卜之声 ----------
+        ⚠️ 浏览器禁止无手势的音频自动播放 → 必须有一次真实的点击。
+           这个组件把"解锁"包装成入场仪式（不是丑陋的遮罩）。
+        ⚠️ 只在待机页出现（进入占卜后不再打扰）。 */}
+      {stage === "input" && <AmbienceGate />}
 
       {/* 标题 */}
       <motion.h1
@@ -1426,8 +1696,31 @@ export default function TarotApp() {
               </button>
             </div>
           )}
+          {/**
+           * ⚠️ 轻提示（2026-11-04 新增）
+           *   与 error 横幅**刻意区分**：
+           *   · error → 红色警示 + 「重新开始」按钮（出错，需要用户处理）
+           *   · hint  → 柔和单行（只是一句状态说明，3.5s 自动消失）
+           * ⚠️ 为什么要它：翻牌 409（闸门还没就绪）之前是**完全静默**的 →
+           *   用户以为牌坏了。现在至少告诉他"稍等一下再点"。
+           */}
+          {hint && (
+            <motion.div
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="mt-3 text-center text-xs text-purple-300/70 tracking-wide"
+            >
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-purple-400/20 bg-purple-950/30">
+                <span className="w-1 h-1 rounded-full bg-purple-300/70 animate-pulse" />
+                {hint}
+              </span>
+            </motion.div>
+          )}
           {/* 上次会话可继续（刷新后 sessionId 已从 localStorage 恢复）。
-              ⚠️ !error：追问撞 410 过期后立即隐藏（session 已清，留着必失败） */}
+              ⚠️ 2026-11-04：恢复时按服务端的 canFollowup 判断（不是"有 sessionId 就行"）——
+                 DB 里已完成/已被逐出的会话会返回 canFollowup=false →
+                 不回填 sessionId → 这个面板**不会渲染** → 用户不再撞 410。 */}
           {sessionId && !streaming && !error && (
             <div className="mt-4 rounded-2xl border border-purple-500/25 bg-purple-950/20 px-4 py-3 text-center">
               <p className="text-xs text-purple-300/60 mb-2">检测到上次未完结的占卜，可以直接追问（不用重新走仪式）</p>
@@ -1506,6 +1799,10 @@ export default function TarotApp() {
             onPreviewCard={openCardPreview}
             streaming={streaming}
             waitingUser={phase === "wait_user"}
+            /** ⚠️ 思考气泡的三个输入（2026-11-04） */
+            thinkingPhase={phase}
+            thinkingElapsed={thinkingElapsed}
+            thinkingRound={rounds.length}
           />
 
           {/* 选牌扇面（cardSelection 是特殊交互，保留在流外） */}
@@ -1575,6 +1872,41 @@ export default function TarotApp() {
           {/* ---------- 追问 / 分享（完成态）---------- */}
           {done && sessionId && (
             <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-2xl mt-5">
+              {/**
+               * ⚠️⚠️ 收束落点卡片（2026-11-04 新增）
+               * ⚠️ 用户实测报告："综合与收束那里，我每次回答完问题，都是停在那里了…
+               *   需要用户有输入的时候，他能接上话…不要让用户停在那里"。
+               *
+               * ⚠️ 为什么放在**追问框上面**：
+               *   原先完成态只有一个追问输入框（用户要自己想到"我可以追问"）。
+               *   现在先给一张卡片明确"接下来你可以做什么"，
+               *   追问框作为其中一条路径。
+               *
+               * ⚠️ canFollowup 的来源：会话还在服务端内存里才能追问。
+               *   内存会话有 30 分钟 TTL（session.ts 的 SESSION_TTL）——
+               *   超过后追问会 410。所以这个按钮必须知道真话。
+               */}
+              <ClosingPanel
+                canFollowup={canFollowup}
+                onAskAgain={() => {
+                  // ⚠️ 点"我想再问一句" → 聚焦到下面的追问框
+                  followupInputRef.current?.focus();
+                  setHint("写下你的追问，占卜师在听…");
+                }}
+                onShare={() => {
+                  // ⚠️ 滚动到分享卡区域（ShareCardButton 在下面）
+                  shareCardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+                }}
+                onSwitchPersona={() => {
+                  const found = personas.find((p) => p.id === personaSuggest?.personaId);
+                  if (found) {
+                    setPersona(found);
+                    setPersonaSuggest(null);
+                  }
+                }}
+                onRestart={restart}
+                personaSuggest={personaSuggest}
+              />
               {/* 方向⑤：情绪驱动的人格建议（下一场入口） */}
               {personaSuggest && (
                 <div className="mb-5 rounded-2xl border border-amber-500/30 bg-amber-950/10 backdrop-blur-md px-5 py-4 flex items-start gap-4">
@@ -1634,6 +1966,7 @@ export default function TarotApp() {
                   const revealed = spread.filter((c) => c.flipped && c.image);
                   if (revealed.length < 2) return null;
                   return (
+                    <div ref={shareCardRef}>
                     <ShareCardButton
                       data={{
                         question,
@@ -1644,6 +1977,7 @@ export default function TarotApp() {
                         sessionId,
                       }}
                     />
+                    </div>
                   );
                 })()}
                 <a
