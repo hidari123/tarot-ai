@@ -531,7 +531,28 @@ export async function* runAgent(
     const hasHitl = (toolCalls ?? []).some((tc) =>
       ["ask_user", "offer_card_selection", "fate_crossroads"].includes(tc.function.name)
     );
-    if (decision.message.content && session.messages.length > 3 && !hasHitl) {
+    /**
+     * ⚠️⚠️ 2026-11-04 D 方向修复：「神谕回复发两遍」的根因。
+     *
+     * ⚠️ 现象：神谕的答案在页面上出现**两次**（内容完全一样）。
+     *
+     * ⚠️ 根因（这个 if 条件漏了一个关键判断）：
+     *   ① L534 这个分支把 `decision.message.content` 流成 delta（"决策附带文本"）
+     *   ② 当模型**不调用任何工具**时（神谕的最终答案就是这种），
+     *      它也会命中 L534 → **完整答案被流了一遍**
+     *   ③ 然后流程走到下面的"无工具调用分支" → **又把 content 流了一遍**
+     *   → 同一段内容发两遍。
+     *
+     * ⚠️ 为什么原来没暴露：
+     *   占卜模式下"无工具调用"几乎不会出现（首答会被纠偏拦下），
+     *   所以 L534 实际上只在"有工具调用"时命中 —— 逻辑是对的但**条件写漏了**。
+     *   神谕模式让"无工具调用"成为**正常路径**，这个漏写就暴露了。
+     *
+     * ⚠️ 修法：加上 `toolCalls &&` —— 只有**确实要调工具**时，
+     *   才把"决策附带的话"提前流出来（那是给用户看的过渡语）。
+     *   无工具调用时，正文由下面的分支统一流出（只有一份）。
+     */
+    if (decision.message.content && session.messages.length > 3 && !hasHitl && toolCalls && toolCalls.length > 0) {
       const intro = decision.message.content.trim();
       if (intro) {
         for (const evt of chunkDelta(intro)) yield evt;

@@ -39,6 +39,25 @@ async function streamSse(res, onEvent) {
   }
 }
 
+/**
+ * 检测正文是否自我重复（同一段被发两遍）
+ *
+ * ⚠️ 2026-11-04：这是「神谕回复发两遍」bug 的**真实检测**（不只是静态断言）。
+ */
+function isDuplicated(s) {
+  const t = s.trim();
+  if (t.length < 100) return false;
+  const half = Math.floor(t.length / 2);
+  // 允许中间有空白差异
+  const a = t.slice(0, half).replace(/\s+/g, "");
+  const b = t.slice(half).replace(/\s+/g, "");
+  if (a === b) return true;
+  // 也检查"后一半 = 前一半的前缀"这种部分重复
+  const minLen = Math.min(a.length, b.length);
+  if (minLen > 60 && a.slice(0, minLen) === b.slice(0, minLen)) return true;
+  return false;
+}
+
 console.log("=== 端到端：神谕（Oracle）===\n");
 
 const tools = [];
@@ -120,6 +139,12 @@ const checks = [
   ["回答长度克制（≤1200 字，不是长篇报告）", text.length <= 1200, `${text.length} 字`],
   ["没有报错", !error, error ?? ""],
   ["拿到了 sessionId（可追问）", !!sessionId],
+  /**
+   * ⚠️⚠️ 「回复发两遍」的回归防线（2026-11-04 修复的真实 bug）。
+   * ⚠️ 检测法：把正文一分为二，看前后两半是否相同
+   *   （同一段内容被流两遍时，正文就是两个副本首尾相接）。
+   */
+  ["回复没有重复（不是同一段发两遍）", !isDuplicated(text), isDuplicated(text) ? "检测到重复！" : ""],
 ];
 
 let pass = 0, fail = 0;

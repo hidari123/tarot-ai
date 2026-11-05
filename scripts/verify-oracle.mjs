@@ -59,6 +59,27 @@ console.log("\n【② 引擎接线】（共用 runAgent，只换外壳）");
   check("首答纠偏在神谕之前被短路",
     code.indexOf("if (oracleMode)") < code.indexOf("noToolRetries++"));
 
+  /**
+   * ⚠️⚠️ 2026-11-04 修复：「神谕回复发两遍」的回归防线。
+   *
+   * ⚠️ 根因：L534 的"决策附带文本"分支也会在**无工具调用**时命中
+   *   → 完整答案被流了一遍 → 下面的"无工具调用分支"又流一遍 → 重复。
+   * ⚠️ 占卜模式几乎不触发（首答被纠偏拦下），神谕模式让"无工具调用"成为正常路径
+   *   → 这个漏写的条件才暴露出来。
+   * ⚠️ 修法：只有**确实要调工具**时才提前流出过渡语。
+   *
+   * ⚠️ 匹配方式：直接找那行 if 的**条件部分**（而不是整块）——
+   *   块里含大段注释，任何"截取固定长度"的正则都会失配。
+   */
+  const introCond = code
+    .split("\n")
+    .find((l) => l.includes("if (decision.message.content"));
+  check("决策附带文本只在「有工具调用」时流出（否则神谕会重复）",
+    !!introCond && introCond.includes("toolCalls && toolCalls.length > 0"),
+    introCond ? introCond.trim().slice(0, 100) : "未找到该 if 行");
+  check("该分支在无工具调用分支之前（顺序正确）",
+    code.indexOf("toolCalls && toolCalls.length > 0") < code.indexOf("if (!toolCalls || toolCalls.length === 0)"));
+
   check("神谕不做 Plan-Execute（没有仪轨）",
     /agentMode === "plan" && !oracleMode/.test(code));
   check("神谕不走本地占卜降级剧本",
