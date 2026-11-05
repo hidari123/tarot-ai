@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 运势文案组装 —— 零 LLM 成本
  *
  * ⚠️⚠️ 为什么这一层**不调用 LLM**：
@@ -25,6 +25,13 @@ import { hashString } from "./deterministic";
 export interface FortuneSegment {
   /** 牌名（中文） */
   nameZh: string;
+  /**
+   * 牌面图路径（2026-11-05 视觉重设计）
+   * ⚠️ 为什么加这个字段：
+   *   运势页要显示**牌面**（不是牌背）—— 没有图就没法渲染牌。
+   *   之前页面只能显示牌名与文字，因为数据层没带图。
+   */
+  image?: string;
   /** 是否逆位 */
   reversed: boolean;
   /** 牌位（每日无牌位；年运有"年度主题"等） */
@@ -76,6 +83,7 @@ export function composeDaily(card: TarotCard, reversed: boolean, dateKey: string
 
   return {
     nameZh: card.nameZh,
+    image: card.image,
     reversed,
     keywords: kw,
     meaning,
@@ -109,6 +117,7 @@ export function composeWeek(
     const tpl = templates[(h + i) % templates.length];
     return {
       nameZh: it.card.nameZh,
+    image: it.card.image,
       reversed: it.reversed,
       keywords: kw,
       meaning: (it.reversed ? it.card.reversed : it.card.upright).trim(),
@@ -139,6 +148,7 @@ export function composeMonthly(
       : "顺流的时候要留意，别把好运气用完了。";
     return {
       nameZh: it.card.nameZh,
+    image: it.card.image,
       reversed: it.reversed,
       pos: it.period,
       keywords: kw,
@@ -171,6 +181,7 @@ export function composeSeason(
     const lead = posLeads[(h + i) % posLeads.length](it.pos);
     return {
       nameZh: it.card.nameZh,
+    image: it.card.image,
       reversed: it.reversed,
       pos: it.pos,
       keywords: kw,
@@ -199,6 +210,7 @@ export function composeYear(
   return {
     theme: {
       nameZh: theme.card.nameZh,
+    image: theme.card.image,
       reversed: theme.reversed,
       keywords: kw,
       meaning: themeMeaning,
@@ -214,6 +226,7 @@ export function composeYear(
       const mm = (m.reversed ? m.card.reversed : m.card.upright).trim();
       return {
         nameZh: m.card.nameZh,
+    image: m.card.image,
         reversed: m.reversed,
         pos: `${m.month} 月`,
         keywords: mkw,

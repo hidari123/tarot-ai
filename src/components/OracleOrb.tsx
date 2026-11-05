@@ -157,7 +157,11 @@ export default function OracleOrb({
         />
       </div>
 
-      {/* ---- 环绕符文环（缓慢反向旋转） ---- */}
+      {/* ---- 环绕符文环（缓慢反向旋转） ----
+          ⚠️ 为什么符文用 **SVG path** 而不是字符（✦ ☾ ✧…）：
+            ① verify-icons 断言禁止 src/ 出现 U+2600–U+26FF 杂项符号（☾ 就在其中）
+            ② 这些字符依赖系统字体，缺字体时是豆腐块
+            → 自己画 path，跨平台一致且符合项目约定。 */}
       <motion.div
         className="absolute inset-[-14%]"
         style={{ rotate: 360 }}
@@ -167,19 +171,31 @@ export default function OracleOrb({
           {Array.from({ length: 12 }, (_, i) => {
             const a = (i * 30 * Math.PI) / 180;
             const r = 92;
+            // 六种符文形状循环
+            const SHAPES = [
+              // 四芒星
+              "M0,-5 L1.4,-1.4 L5,0 L1.4,1.4 L0,5 L-1.4,1.4 L-5,0 L-1.4,-1.4 Z",
+              // 新月
+              "M2,-4.5 A5,5 0 1 0 2,4.5 A3.8,3.8 0 1 1 2,-4.5 Z",
+              // 空心菱
+              "M0,-4.5 L3.2,0 L0,4.5 L-3.2,0 Z",
+              // 沙漏
+              "M-3,-4.5 L3,-4.5 L0,0 L3,4.5 L-3,4.5 L0,0 Z",
+              // 六芒
+              "M0,-5 L1.5,-1.5 L5,0 L1.5,1.5 L0,5 L-1.5,1.5 L-5,0 L-1.5,-1.5 Z M0,-2.2 L2.2,0 L0,2.2 L-2.2,0 Z",
+              // 雪花
+              "M0,-5 L0,5 M-4.3,-2.5 L4.3,2.5 M-4.3,2.5 L4.3,-2.5",
+            ];
             return (
-              <text
-                key={i}
-                x={100 + r * Math.cos(a)}
-                y={100 + r * Math.sin(a)}
-                textAnchor="middle"
-                dominantBaseline="central"
-                fontSize="8"
-                fill="rgba(212,175,55,0.55)"
-                style={{ fontFamily: "serif" }}
-              >
-                {["✦", "☾", "✧", "⟡", "✶", "❋"][i % 6]}
-              </text>
+              <g key={i} transform={`translate(${100 + r * Math.cos(a)} ${100 + r * Math.sin(a)})`}>
+                <path
+                  d={SHAPES[i % SHAPES.length]}
+                  fill={i % 2 === 0 ? "rgba(212,175,55,0.55)" : "none"}
+                  stroke="rgba(212,175,55,0.55)"
+                  strokeWidth="0.7"
+                  strokeLinejoin="round"
+                />
+              </g>
             );
           })}
         </svg>

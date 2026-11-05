@@ -3,6 +3,8 @@ import { Suspense } from "react";
 import { connection } from "next/server";
 import Link from "next/link";
 import CelestialBackdrop from "@/components/CelestialBackdrop";
+import TarotCardFrame from "@/components/TarotCardFrame";
+import CelestialPanel, { ArcaneTag } from "@/components/CelestialPanel";
 import { buildSeasonContent } from "@/lib/fortune/server";
 import { cardsOfTheSeason } from "@/lib/fortune/deterministic";
 
@@ -38,56 +40,74 @@ async function SeasonalContent() {
         <p className="text-sm text-purple-200/45">起点 · 展开 · 阻碍 · 转机 · 落点</p>
       </header>
 
-      {/* 五张牌 */}
-      <div className="space-y-4 mb-10">
-        {fortune.segments.map((s, i) => {
-          const item = items[i];
-          if (!item) return null;
-          return (
-            <section
-              key={s.pos}
-              className="flex gap-4 rounded-2xl border border-white/8 bg-purple-950/20 backdrop-blur-sm p-4 hover:border-emerald-400/20 transition-colors"
-            >
-              <div className="shrink-0 w-[84px] sm:w-[100px]">
-                <div
-                  className="rounded-lg overflow-hidden border border-emerald-400/20"
-                  style={{ aspectRatio: "2 / 3" }}
+      {/* ---------- 四季五张（2026-11-05：改成「弧形牌阵 + 解读列表」两段式） ----------
+          ⚠️ 为什么弧形而不是竖排：
+            竖排五张 = 一个列表，读起来像"目录"；
+            弧形（两端低、中间高）= 一副**摊开的牌阵**，
+            且弧度与魔法阵呼应 → 页面有统一的视觉语言。 */}
+      <div className="mb-10">
+        {/* 弧形牌阵 */}
+        <div className="relative flex justify-center items-end gap-3 sm:gap-6 mb-10 px-2">
+          {fortune.segments.map((s, i) => {
+            const item = items[i];
+            if (!item) return null;
+            // 弧形：中间高、两端低
+            const lift = [26, 8, 0, 8, 26][i] ?? 0;
+            return (
+              <div
+                key={s.pos}
+                className="relative z-10 flex flex-col items-center"
+                style={{ transform: `translateY(${lift}px)` }}
+              >
+                <p className="text-[10px] tracking-[0.2em] text-emerald-200/60 mb-2">
+                  {s.pos}
+                </p>
+                <TarotCardFrame
+                  src={item.card.image}
+                  alt={`${s.nameZh}${s.reversed ? "（逆位）" : ""}`}
+                  reversed={item.reversed}
+                  tone="gold"
+                  width={112}
+                />
+                <p
+                  className="text-[13px] text-purple-50/85 tracking-wider mt-2"
+                  style={{ fontFamily: "'Ma Shan Zheng', serif" }}
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={item.card.image}
-                    alt={`${s.nameZh}${s.reversed ? "（逆位）" : ""}`}
-                    className={`w-full h-full object-cover ${s.reversed ? "rotate-180" : ""}`}
-                  />
-                </div>
+                  {s.nameZh}
+                </p>
               </div>
-              <div className="flex-1 min-w-0">
+            );
+          })}
+        </div>
+
+        {/* 解读列表 */}
+        <div className="space-y-3">
+          {fortune.segments.map((s, i) => {
+            const item = items[i];
+            if (!item) return null;
+            return (
+              <CelestialPanel key={`t${s.pos}`} tone="gold" padding="p-4">
                 <div className="flex items-center gap-2 mb-2 flex-wrap">
                   <span className="px-2 py-0.5 rounded text-[10px] border border-emerald-400/30 text-emerald-200/70">
                     {s.pos}
                   </span>
-                  <span className="text-sm text-purple-50/90 tracking-wider">{s.nameZh}</span>
-                  {s.reversed && <span className="text-[10px] text-purple-300/40">逆位</span>}
+                  <span className="text-[13px] text-purple-50/90 tracking-wider">{s.nameZh}</span>
+                  {s.reversed && <span className="text-[10px] text-cyan-200/50">逆位</span>}
+                  {s.keywords.length > 0 && (
+                    <span className="flex flex-wrap gap-1.5">
+                      {s.keywords.map((k) => (
+                        <ArcaneTag key={k}>{k}</ArcaneTag>
+                      ))}
+                    </span>
+                  )}
                 </div>
-                {s.keywords.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 mb-2.5">
-                    {s.keywords.map((k) => (
-                      <span
-                        key={k}
-                        className="px-2 py-0.5 rounded-full border border-emerald-400/20 bg-emerald-500/10 text-[10px] text-emerald-200/70"
-                      >
-                        {k}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <p className="text-[13px] leading-[1.85] text-purple-100/65 whitespace-pre-line">
+                <p className="text-[13px] leading-[1.9] text-purple-100/72 whitespace-pre-line">
                   {s.text}
                 </p>
-              </div>
-            </section>
-          );
-        })}
+              </CelestialPanel>
+            );
+          })}
+        </div>
       </div>
     </>
   );

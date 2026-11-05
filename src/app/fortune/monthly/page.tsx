@@ -1,8 +1,10 @@
-﻿import type { Metadata } from "next";
+import type { Metadata } from "next";
 import { Suspense } from "react";
 import { connection } from "next/server";
 import Link from "next/link";
 import CelestialBackdrop from "@/components/CelestialBackdrop";
+import TarotCardFrame from "@/components/TarotCardFrame";
+import CelestialPanel, { ArcaneTag } from "@/components/CelestialPanel";
 import { buildMonthlyContent } from "@/lib/fortune/build";
 
 /**
@@ -44,52 +46,67 @@ async function MonthlyContent() {
         <p className="text-sm text-purple-200/45">三段时光，各有各的张力</p>
       </header>
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        {segments.map((s, i) => {
-          const item = items[i];
-          return (
-            <section
-              key={s.pos ?? i}
-              className="rounded-2xl border border-white/8 bg-purple-950/20 backdrop-blur-sm overflow-hidden"
-            >
-              {/* 牌面 */}
-              <div className="relative" style={{ aspectRatio: "3 / 4" }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
+      {/* ---------- 月运三张（2026-11-05：改成「牌阵 + 文案卡」两段式） ----------
+          ⚠️ 为什么不用三列网格：
+            三列网格看起来像"三个商品卡片"，而月运是**一段时间的三个段落**
+            （上旬/中旬/下旬）—— 它们是**连续的**，不是并列的。
+          ⚠️ 新布局：上面是牌阵（横向排开 + 连线），下面是各自的解读。
+            → 牌阵本身成为视觉主体，文案退居其次。 */}
+      <div className="mb-10">
+        {/* 牌阵 */}
+        <div className="relative flex justify-center items-end gap-6 sm:gap-12 mb-8 px-4">
+          {/* 连线（牌与牌之间） */}
+          <svg
+            viewBox="0 0 100 10"
+            preserveAspectRatio="none"
+            className="absolute inset-x-16 top-1/2 h-px pointer-events-none"
+            style={{ opacity: 0.55 }}
+          >
+            <line x1="0" y1="5" x2="100" y2="5" stroke="rgba(212,175,55,0.35)" strokeWidth="0.4" strokeDasharray="1.5 1.5" vectorEffect="non-scaling-stroke" />
+          </svg>
+
+          {segments.map((s, i) => {
+            const item = items[i];
+            return (
+              <div key={s.pos ?? i} className="relative z-10 flex flex-col items-center">
+                <p className="text-[10px] tracking-[0.25em] text-amber-200/60 mb-2">
+                  {s.pos}
+                </p>
+                <TarotCardFrame
                   src={item.card.image}
                   alt={`${item.card.nameZh}${item.reversed ? "（逆位）" : ""}`}
-                  className={`w-full h-full object-cover ${item.reversed ? "rotate-180" : ""}`}
+                  reversed={item.reversed}
+                  tone="gold"
+                  width={128}
                 />
-                <div className="absolute inset-0 bg-gradient-to-t from-[#0d0a18] via-transparent to-transparent" />
-                <div className="absolute bottom-3 left-0 right-0 text-center">
-                  <p className="text-[10px] tracking-[0.25em] text-purple-200/60 mb-1">{s.pos}</p>
-                  <p
-                    className="text-lg text-purple-50 tracking-widest"
-                    style={{ fontFamily: "'Ma Shan Zheng', serif" }}
-                  >
-                    {s.nameZh}
-                  </p>
-                </div>
-              </div>
-              {/* 文案 */}
-              <div className="p-4">
-                <div className="flex flex-wrap gap-1.5 mb-2.5">
-                  {s.keywords.map((k) => (
-                    <span
-                      key={k}
-                      className="px-2 py-0.5 rounded-full border border-purple-400/25 bg-purple-500/10 text-[10px] text-purple-200/75"
-                    >
-                      {k}
-                    </span>
-                  ))}
-                </div>
-                <p className="text-[13px] leading-[1.85] text-purple-100/70 whitespace-pre-line">
-                  {s.text}
+                <p
+                  className="text-[15px] text-purple-50/90 tracking-widest mt-2"
+                  style={{ fontFamily: "'Ma Shan Zheng', serif" }}
+                >
+                  {s.nameZh}
                 </p>
               </div>
-            </section>
-          );
-        })}
+            );
+          })}
+        </div>
+
+        {/* 解读卡 */}
+        <div className="grid gap-4 sm:grid-cols-3">
+          {segments.map((s, i) => (
+            <CelestialPanel key={`t${i}`} tone="gold" padding="p-5">
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {s.keywords.map((k) => (
+                  <ArcaneTag key={k} tone="gold">
+                    {k}
+                  </ArcaneTag>
+                ))}
+              </div>
+              <p className="text-[13px] leading-[1.95] text-purple-100/75 whitespace-pre-line">
+                {s.text}
+              </p>
+            </CelestialPanel>
+          ))}
+        </div>
       </div>
     </>
   );

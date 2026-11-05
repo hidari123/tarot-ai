@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -6,6 +6,7 @@ import Link from "next/link";
 import Icon from "@/components/icons";
 import KnowledgePanel, { type RagHitView } from "@/components/KnowledgePanel";
 import CelestialBackdrop from "@/components/CelestialBackdrop";
+import OracleEye from "@/components/OracleEye";
 
 /**
  * 神谕（Oracle）—— 免抽牌的对话式塔罗向导（2026-11-04 D 方向）
@@ -306,7 +307,11 @@ export default function OracleChat() {
                 transition={{ duration: 0.6 }}
                 className="text-center mb-8"
               >
-                <Icon name="crystal" size={30} className="text-purple-300/60 mx-auto mb-4" />
+                {/* ⚠️ 2026-11-05：神谕之眼（视觉锚点）
+                    ⚠️ 为什么不用现成的 Icon（crystal）：
+                      一个线性小图标撑不起"神谕"的分量，
+                      而这是**用户进入神谕页看到的第一眼** → 值得一个专属图形。 */}
+                <OracleEye className="mx-auto mb-5" active={false} />
                 <h1 className="text-xl tracking-[0.15em] text-purple-50 mb-3">问神谕</h1>
                 <p className="text-sm text-purple-200/45 leading-relaxed max-w-md mx-auto">
                   不必抽牌，也可以问。
@@ -315,21 +320,38 @@ export default function OracleChat() {
                 </p>
               </motion.div>
 
+              {/* 示例问题（改成图标卡片，与首页入口风格统一） */}
               <div className="space-y-2">
                 {samples.map((s) => (
                   <button
                     key={s}
                     onClick={() => send(s)}
-                    className="w-full text-left rounded-xl border border-white/8 bg-purple-950/15 px-4 py-3 text-[13px] text-purple-100/70 hover:border-purple-400/30 hover:bg-purple-900/20 transition-all"
+                    className="group w-full text-left rounded-xl border border-white/8 bg-purple-950/20 backdrop-blur-sm px-4 py-3.5 text-[13px] text-purple-100/72 hover:border-amber-400/30 hover:bg-purple-900/25 hover:text-purple-50 transition-all flex items-center gap-3"
                   >
-                    {s}
+                    <span
+                      className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center transition-colors"
+                      style={{
+                        border: "1px solid rgba(212,175,55,0.28)",
+                        background: "radial-gradient(circle at 34% 28%, rgba(76,29,149,0.6), rgba(12,6,26,0.8))",
+                      }}
+                    >
+                      <Icon name="crystal" size={12} className="text-amber-200/70" />
+                    </span>
+                    <span className="flex-1">{s}</span>
+                    <span className="text-purple-300/25 group-hover:text-amber-200/50 transition-colors">
+                      ↵
+                    </span>
                   </button>
                 ))}
               </div>
             </div>
           )}
 
-          {/* 消息 */}
+          {/* 消息（2026-11-05：从「圆角气泡」改成「符文卡片」）
+              ⚠️ 为什么改：
+                圆角气泡 = 通用聊天 UI（像微信），完全看不出这是"占卜"。
+                → 符文卡片：左侧一道**竖直光带**（金色=神谕 / 靛蓝=用户）
+                  + 极淡的神纹底纹 → 有"典籍"的味道，与产品调性一致。 */}
           <AnimatePresence initial={false}>
             {messages.map((m) => {
               if (m.role === "user") {
@@ -340,7 +362,11 @@ export default function OracleChat() {
                     animate={{ opacity: 1, y: 0 }}
                     className="flex justify-end"
                   >
-                    <div className="max-w-[85%] rounded-2xl rounded-br-md bg-purple-700/40 border border-purple-400/20 px-4 py-2.5 text-[14px] leading-relaxed text-purple-50">
+                    <div
+                      className="relative max-w-[85%] rounded-xl rounded-br-sm bg-indigo-950/40 border border-indigo-400/20 px-4 py-3 text-[14px] leading-[1.85] text-indigo-50/90"
+                      style={{ boxShadow: "inset 3px 0 0 rgba(129,140,248,0.55)" }}
+                    >
+                      <span className="text-indigo-300/45 text-[10px] mr-1.5 align-middle font-ui">我</span>
                       {m.text}
                     </div>
                   </motion.div>
@@ -353,8 +379,30 @@ export default function OracleChat() {
                   animate={{ opacity: 1, y: 0 }}
                   className="flex justify-start"
                 >
-                  <div className="max-w-[92%] rounded-2xl rounded-bl-md bg-purple-950/30 border border-white/8 px-4 py-3 text-[14px] leading-[1.85] text-purple-100/85 whitespace-pre-line">
-                    {m.text || (busy ? <ThinkingDots /> : null)}
+                  <div
+                    className="relative max-w-[92%] rounded-xl rounded-bl-sm px-4 py-3.5 text-[14px] leading-[1.95] text-purple-100/88 whitespace-pre-line"
+                    style={{
+                      background:
+                        "linear-gradient(160deg, rgba(42,26,72,0.55), rgba(12,7,26,0.72))",
+                      backdropFilter: "blur(14px) saturate(1.15)",
+                      WebkitBackdropFilter: "blur(14px) saturate(1.15)",
+                      border: "1px solid rgba(212,175,55,0.18)",
+                      boxShadow:
+                        "0 8px 32px rgba(0,0,0,0.42), inset 3px 0 0 rgba(212,175,55,0.65), inset 0 1px 0 rgba(255,255,255,0.05)",
+                    }}
+                  >
+                    {/* 神纹底纹（极淡，只在有内容时可见） */}
+                    <div
+                      className="absolute inset-0 pointer-events-none rounded-xl opacity-[0.05]"
+                      style={{
+                        backgroundImage:
+                          "radial-gradient(circle at 88% 12%, rgba(212,175,55,0.9) 0%, transparent 42%)," +
+                          "radial-gradient(circle at 10% 88%, rgba(168,85,247,0.8) 0%, transparent 38%)",
+                      }}
+                    />
+                    <span className="relative">
+                      {m.text || (busy ? <ThinkingDots /> : null)}
+                    </span>
                   </div>
                 </motion.div>
               );

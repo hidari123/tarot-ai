@@ -209,7 +209,31 @@ console.log("\n【④ P2 体验与工程债】（a11y / 分割 / 字体 / 动效
   check("Canvas 绘制前等待字体加载", /ensureFontsReady/.test(shareCode));
   check("字体栈用系统必有的中文字体", /PingFang SC/.test(shareCode) && /Microsoft YaHei/.test(shareCode));
   const pkg = readFileSync("package.json", "utf-8");
-  check("死依赖 @fontsource/noto-serif-sc 已移除", !/noto-serif-sc/.test(pkg));
+  /**
+   * ⚠️ 2026-11-05 视觉重设计：这个断言的**含义变了**（不是简单删掉）。
+   *
+   * ⚠️ 原来：断言 noto-serif-sc 是"死依赖"（装了但没用 → 白占体积）。
+   *   当时的结论是"正文用系统字体就够了"。
+   *
+   * ⚠️ 现在：视觉重设计需要**中文衬线体**（Noto Serif SC）——
+   *   正文全是系统默认无衬线是"廉价感"的最大来源。
+   *   → 依赖变成"活依赖"，但必须守两条：
+   *     ① 真的被引用（layout.tsx import）—— 否则又是死依赖
+   *     ② 只引 chinese-simplified 子集（不是全量 1632 分片）
+   */
+  const layoutSrc = readFileSync("src/app/layout.tsx", "utf-8");
+  check(
+    "noto-serif-sc 是活依赖（layout 真的引入了）",
+    /noto-serif-sc/.test(pkg) && /@fontsource\/noto-serif-sc/.test(layoutSrc)
+  );
+  check(
+    "noto-serif-sc 只引 chinese-simplified 子集（避免打进 1632 个分片）",
+    /noto-serif-sc\/chinese-simplified-400\.css/.test(layoutSrc) &&
+      !/noto-serif-sc\/400\.css/.test(layoutSrc)
+  );
+  check("字体角色系统已建立（body 用衬线 + .font-ui 用于 UI）",
+    /--font-serif: "Noto Serif SC"/.test(readFileSync("src/app/globals.css", "utf-8")) &&
+      /\.font-ui/.test(readFileSync("src/app/globals.css", "utf-8")));
 
   // ⑳ 动效降级
   const css = readFileSync("src/app/globals.css", "utf-8");

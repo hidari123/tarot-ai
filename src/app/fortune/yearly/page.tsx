@@ -1,8 +1,10 @@
-﻿import type { Metadata } from "next";
+import type { Metadata } from "next";
 import { Suspense } from "react";
 import { connection } from "next/server";
 import Link from "next/link";
 import CelestialBackdrop from "@/components/CelestialBackdrop";
+import TarotCardFrame from "@/components/TarotCardFrame";
+import CelestialPanel, { ArcaneTag } from "@/components/CelestialPanel";
 import { buildYearContent } from "@/lib/fortune/server";
 import { cardsOfTheYear } from "@/lib/fortune/deterministic";
 
@@ -49,47 +51,35 @@ async function YearlyContent() {
         </p>
       </header>
 
-      {/* 主题牌 */}
-      <section className="flex flex-col sm:flex-row gap-6 items-center sm:items-start mb-12">
-        <div className="shrink-0 w-[160px] sm:w-[190px]">
-          <div
-            className="relative rounded-2xl overflow-hidden border border-amber-400/30 shadow-[0_0_45px_rgba(217,119,6,0.22)]"
-            style={{ aspectRatio: "2 / 3" }}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={theme.card.image}
-              alt={`${theme.card.nameZh}${theme.reversed ? "（逆位）" : ""}`}
-              className={`w-full h-full object-cover ${theme.reversed ? "rotate-180" : ""}`}
-            />
-          </div>
-          <p
-            className="text-center mt-3 text-lg text-amber-100/90 tracking-widest"
-            style={{ fontFamily: "'Ma Shan Zheng', serif" }}
-          >
-            {theme.card.nameZh}
-          </p>
-          <p className="text-center text-[10px] text-amber-300/45 mt-0.5">年度主题牌</p>
+      {/* 主题牌（2026-11-05：改用 TarotCardFrame 金框 + 玻璃面板） */}
+      <section className="flex flex-col sm:flex-row gap-8 items-center sm:items-start mb-14">
+        <div className="shrink-0">
+          <TarotCardFrame
+            src={theme.card.image}
+            alt={`${theme.card.nameZh}${theme.reversed ? "（逆位）" : ""}`}
+            reversed={theme.reversed}
+            tone="gold"
+            width={190}
+            label={theme.card.nameZh}
+          />
+          <p className="text-center text-[10px] text-amber-300/45 mt-2">年度主题牌</p>
         </div>
 
         <div className="flex-1">
-          <div className="rounded-2xl border border-amber-400/15 bg-amber-900/10 backdrop-blur-sm p-5">
+          <CelestialPanel tone="gold" padding="p-6">
             {fortune.themeKeywords.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-4">
                 {fortune.themeKeywords.map((k) => (
-                  <span
-                    key={k}
-                    className="px-2.5 py-0.5 rounded-full border border-amber-400/30 bg-amber-500/10 text-[11px] text-amber-200/80"
-                  >
+                  <ArcaneTag key={k} tone="gold">
                     {k}
-                  </span>
+                  </ArcaneTag>
                 ))}
               </div>
             )}
-            <div className="text-sm sm:text-[15px] leading-[1.9] text-amber-50/80 whitespace-pre-line">
+            <div className="text-[15px] leading-[2] text-amber-50/82 whitespace-pre-line">
               {fortune.themeText}
             </div>
-          </div>
+          </CelestialPanel>
         </div>
       </section>
 
@@ -100,21 +90,18 @@ async function YearlyContent() {
         </h2>
         <div className="grid gap-3 sm:grid-cols-2">
           {fortune.months.map((m) => (
-            <article
-              key={m.month}
-              className="rounded-xl border border-white/8 bg-purple-950/15 p-4 hover:border-purple-400/25 transition-colors"
-            >
+            <CelestialPanel key={m.month} tone="gold" padding="p-4">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] tracking-[0.2em] text-purple-200/60">{m.month} 月</span>
-                <span className="text-[11px] text-purple-300/45">
+                <span className="text-[11px] tracking-[0.2em] text-amber-200/65">{m.month} 月</span>
+                <span className="text-[11px] text-purple-200/55">
                   {m.nameZh}
                   {m.reversed ? "（逆）" : ""}
                 </span>
               </div>
-              <p className="text-[13px] leading-[1.85] text-purple-100/65 whitespace-pre-line">
+              <p className="text-[13px] leading-[1.9] text-purple-100/72 whitespace-pre-line">
                 {m.text}
               </p>
-            </article>
+            </CelestialPanel>
           ))}
         </div>
       </section>

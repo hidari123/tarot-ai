@@ -117,35 +117,88 @@ function AgentStatusBar({ phase }: { phase: Phase | null }) {
   const curIdx = phase && PHASE_ORDER.includes(phase as Phase) ? PHASE_ORDER.indexOf(phase as Phase) : -1;
 
   return (
-    <div className="flex items-center gap-1.5 flex-wrap justify-center">
+    /**
+     * ⚠️ 2026-11-05 视觉重设计：从「药丸步骤条」改成「符文路径」。
+     *
+     * ⚠️ 为什么改：
+     *   原来是一排圆角药丸 + "→" 箭头 —— 那是一个 **loading 步骤条**
+     *   （像 CI 进度条），完全没有"仪轨"的感觉。
+     *   → 改成：符文节点 + 发光连线（连续的光带 = 一条路）。
+     *   节点是符文（每个阶段一个符号），当前节点有呼吸光。
+     */
+    <div className="flex items-center gap-0 flex-wrap justify-center">
       {order.map((p, i) => {
         const active = i === curIdx;
         const past = i < curIdx;
         return (
-          <div key={p} className="flex items-center gap-1.5">
-            {i > 0 && <span className={`text-[10px] ${past ? "text-purple-400/70" : "text-zinc-700"}`}>→</span>}
+          <div key={p} className="flex items-center">
+            {i > 0 && (
+              /* 连线：已走过的是亮色光带，未走的是暗线 */
+              <span
+                className="w-5 sm:w-7 h-px mx-0.5 transition-colors duration-500"
+                style={{
+                  background: past
+                    ? "linear-gradient(90deg, rgba(212,175,55,0.6), rgba(168,85,247,0.5))"
+                    : "rgba(120,113,150,0.22)",
+                  boxShadow: past ? "0 0 6px rgba(168,85,247,0.4)" : undefined,
+                }}
+              />
+            )}
+            {/* 节点：符文 + 标题 */}
             <div
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] md:text-xs transition-all duration-500 ${
-                active
-                  ? "bg-purple-900/50 border border-purple-400/60 text-purple-100 shadow-[0_0_16px_rgba(168,85,247,0.35)]"
-                  : past
-                  ? "bg-purple-950/40 border border-purple-500/25 text-purple-300/80"
-                  : "bg-zinc-900/40 border border-zinc-800 text-zinc-600"
-              }`}
+              className="flex items-center gap-1.5 px-1.5 transition-all duration-500"
+              style={{ opacity: active ? 1 : past ? 0.82 : 0.42 }}
             >
-              <Icon name={PHASE_TEXT[p].icon} size={13} />
-              <span>{PHASE_TEXT[p].title}</span>
-              {active && <span className="animate-pulse">…</span>}
+              <span
+                className={`w-6 h-6 rounded-full flex items-center justify-center transition-all duration-500 ${
+                  active ? "animate-pulse" : ""
+                }`}
+                style={{
+                  border: `1px solid ${
+                    active
+                      ? "rgba(212,175,55,0.75)"
+                      : past
+                        ? "rgba(168,85,247,0.45)"
+                        : "rgba(120,113,150,0.22)"
+                  }`,
+                  background: active
+                    ? "radial-gradient(circle at 34% 28%, rgba(120,72,190,0.85), rgba(20,10,42,0.9))"
+                    : past
+                      ? "rgba(30,18,58,0.7)"
+                      : "rgba(16,12,30,0.5)",
+                  boxShadow: active
+                    ? "0 0 16px rgba(212,175,55,0.45)"
+                    : past
+                      ? "0 0 8px rgba(139,92,246,0.2)"
+                      : undefined,
+                }}
+              >
+                <Icon
+                  name={PHASE_TEXT[p].icon}
+                  size={12}
+                  className={active ? "text-amber-100" : past ? "text-purple-200/80" : "text-purple-300/40"}
+                />
+              </span>
+              <span
+                className={`text-[11px] md:text-xs tracking-[0.1em] whitespace-nowrap ${
+                  active ? "text-amber-100" : past ? "text-purple-200/75" : "text-purple-300/40"
+                }`}
+              >
+                {PHASE_TEXT[p].title}
+              </span>
             </div>
           </div>
         );
       })}
       {/* 横切状态徽章：wait_user / error 不属于流程步骤，单独追加显示 */}
       {phase && !PHASE_ORDER.includes(phase as Phase) && phase !== null && PHASE_TEXT[phase] && (
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10px] text-amber-300/60">→</span>
+        <div className="flex items-center">
+          <span
+            className="w-5 sm:w-7 h-px mx-0.5"
+            style={{ background: "rgba(212,175,55,0.35)" }}
+          />
           <div
-            className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] md:text-xs animate-pulse ${
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] md:text-xs animate-pulse ${
               phase === "error"
                 ? "bg-rose-900/40 border border-rose-400/50 text-rose-100"
                 : "bg-amber-900/40 border border-amber-400/50 text-amber-100"
