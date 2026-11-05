@@ -2,6 +2,24 @@ import type { Metadata, Viewport } from "next";
 import "@fontsource/cinzel/400.css";
 import "@fontsource/cinzel/600.css";
 import "@fontsource/ma-shan-zheng/400.css";
+/**
+ * ⚠️ 中文衬线体（2026-11-05 视觉重设计 · 第 1 批）
+ *
+ * ⚠️ 为什么需要它：
+ *   之前正文全是**系统默认无衬线**（--font-geist-sans 其实没被加载），
+ *   这是"廉价感"最大的来源 —— 灵性/占卜内容的排版应该用衬线体（有书籍感）。
+ *
+ * ⚠️ 只引入 **chinese-simplified** 子集（不是全量 1632 个分片）：
+ *   全量包会把每个 unicode 区段都打进 CSS → 构建产物体积暴涨。
+ *   chinese-simplified 子集是**单个字体文件**（体积可控），
+ *   且我们只写简体中文。
+ *
+ * ⚠️ 字重只取 400 与 600：
+ *   解读正文 400（可读性最好）、标题 600（有重量感）。
+ *   700+ 对衬线体在深色背景上容易显脏。
+ */
+import "@fontsource/noto-serif-sc/chinese-simplified-400.css";
+import "@fontsource/noto-serif-sc/chinese-simplified-600.css";
 import "./globals.css";
 import PwaRegister from "@/components/PwaRegister";
 import MotionProvider from "@/components/MotionProvider";

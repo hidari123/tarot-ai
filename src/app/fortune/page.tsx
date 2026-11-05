@@ -1,7 +1,8 @@
-import type { Metadata } from "next";
+﻿import type { Metadata } from "next";
 import { Suspense } from "react";
 import { connection } from "next/server";
 import Link from "next/link";
+import CelestialBackdrop from "@/components/CelestialBackdrop";
 import Icon from "@/components/icons";
 import { dateKey } from "@/lib/fortune/deterministic";
 
@@ -99,13 +100,7 @@ async function FortuneEntries() {
 export default function FortuneIndexPage() {
   return (
     <main className="min-h-[100dvh] relative overflow-hidden">
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background:
-            "radial-gradient(ellipse at 50% 20%, rgba(124,58,237,0.16), transparent 55%)",
-        }}
-      />
+      <CelestialBackdrop tint="rgba(212, 175, 55, 0.16)" />
 
       <div className="relative z-10 max-w-2xl mx-auto px-5 py-10 sm:py-16">
         <nav className="mb-10 text-sm">

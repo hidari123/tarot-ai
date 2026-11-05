@@ -1,10 +1,83 @@
 @import "tailwindcss";
 
+/**
+ * ⚠️ 字体角色系统（2026-11-05 视觉重设计 · 第 1 批）
+ *
+ * ⚠️ 为什么要有"角色"而不是各处直接写 font-family：
+ *   之前 20+ 处组件各写各的 fontFamily（Cinzel / Ma Shan Zheng / 系统默认），
+ *   结果是**正文用系统无衬线**（最廉价的那个）→ 整体观感散。
+ *   → 现在明确三个角色，全站只从这三个里选：
+ *     · display —— 英文装饰标题（Cinzel，衬线、古典）
+ *     · serif   —— 中文正文与牌名（Noto Serif SC，书籍感）
+ *     · sans    —— UI 小字/标签/按钮（系统无衬线，与衬线正文形成对比）
+ *
+ * ⚠️ 为什么中文正文用 Noto Serif SC 而不是 Ma Shan Zheng：
+ *   Ma Shan Zheng 是**手写楷体**（适合 3~8 个字的大标题），
+ *   用它排长文会非常难读。两者定位不同，不该混用。
+ */
 @theme inline {
   --color-background: #05020a;
   --color-foreground: #e8dcc8;
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+
+  /* ⚠️ 原 --font-sans 指向 var(--font-geist-sans)，但那个变量从未被定义
+     → 实际回退到系统默认。改为显式的角色变量。 */
+  --font-display: "Cinzel", Georgia, "Times New Roman", serif;
+  --font-serif: "Noto Serif SC", "Songti SC", "SimSun", Georgia, serif;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
+
+  /* ⚠️ 品牌色阶（视觉重设计新增）
+     之前的紫是随手写的 rgba(168,85,247,x)，散落各处。
+     现在收成三个角色：主紫（占卜）、金（牌/仪式/强调）、冷（次要信息）。 */
+  --color-mystic-50: #f5f3ff;
+  --color-mystic-200: #ddd6fe;
+  --color-mystic-400: #a78bfa;
+  --color-mystic-500: #8b5cf6;
+  --color-mystic-700: #6d28d9;
+  --color-mystic-900: #2e1065;
+
+  --color-arcane-gold: #d4af37;
+  --color-arcane-gold-soft: #e8c87a;
+  --color-arcane-gold-dim: #8a7328;
+}
+
+/* ------------------------------------------------------------------ */
+/* 通用排版工具类                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ⚠️ 正文默认衬线（2026-11-05）
+ *
+ * ⚠️ 为什么给 body 设衬线而不是逐个组件改：
+ *   解读正文是产品的主体，而它出现在很多组件里（对话气泡、运势卡片、
+ *   神谕消息、分享卡…）。逐个改容易漏，且以后新增组件会忘。
+ *   → 在 body 层设一次，UI 小字用 .font-ui 覆盖。
+ */
+body {
+  font-family: var(--font-serif);
+  font-feature-settings: "kern" 1;
+}
+
+/**
+ * UI 小字（标签/按钮/元信息）—— 无衬线，与衬线正文形成对比
+ * ⚠️ 为什么不直接用 Tailwind 的 font-sans：
+ *   Tailwind 的 font-sans 会生成 font-family: var(--font-sans)，
+ *   而 --font-sans 现在是我们定义的 ui-sans-serif 栈 —— 行为一致，
+ *   但显式命名 .font-ui 让意图更清楚（"这是 UI 不是正文"）。
+ */
+.font-ui {
+  font-family: var(--font-sans);
+}
+
+/** 英文装饰标题 */
+.font-display {
+  font-family: var(--font-display);
+}
+
+/** 中文大标题（手写楷体，仅少量使用） */
+.font-brush {
+  font-family: "Ma Shan Zheng", cursive;
 }
 
 /* ------------------------------------------------------------------ */
@@ -61,10 +134,77 @@
   animation: spin-slow 110s linear infinite;
 }
 
+/**
+ * 星象魔法阵专用旋转（2026-11-05 视觉重设计）
+ *
+ * ⚠️⚠️ 为什么**不能**复用上面的 spin-slow：
+ *   旧的 spin-slow 关键帧里带 `translate(-50%, -50%)` ——
+ *   那是因为旧实现（.magic-ring-*）用 `absolute + left:50% + top:50%` 定位，
+ *   需要 translate 才能把圆心对到中心。
+ *   而新实现（AstralCircle）用的是 `inset-0 + flex 居中`，
+ *   **已经居中过了** → 再叠一个 translate(-50%,-50%) 就会整体偏移！
+ *   ⚠️ 实测症状：魔法阵中心偏左约 218px（截图发现）。
+ *
+ * ⚠️ 这类"复用旧动画类"的坑很隐蔽：动画本身跑得好好的，
+ *   只是**位移**错了 —— 不看截图根本发现不了。
+ */
+@keyframes astral-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes astral-spin-reverse {
+  from { transform: rotate(360deg); }
+  to { transform: rotate(0deg); }
+}
+.astral-spin {
+  animation: astral-spin 140s linear infinite;
+}
+.astral-spin-reverse {
+  animation: astral-spin-reverse 110s linear infinite;
+}
+.astral-spin-mid {
+  animation: astral-spin 80s linear infinite;
+}
+.astral-spin-slow {
+  animation: astral-spin-reverse 100s linear infinite;
+}
+
 /* 星光闪烁 */
 @keyframes twinkle {
   0%, 100% { opacity: 0.15; }
   50% { opacity: 0.9; }
+}
+
+/**
+ * 星云漂移（2026-11-05 视觉重设计）
+ *
+ * ⚠️ 为什么用 translate + scale 而不是 rotate：
+ *   旋转会让色斑的"硬边"转出来（渐变的中心偏移可见），
+ *   而平移 + 轻微缩放始终保持柔和。
+ *
+ * ⚠️ 为什么时长各不相同（44s / 58s / 67s）：
+ *   时长相同 = 两团云会周期性地"对齐"再分开，产生可见的节奏感。
+ *   互质周期 → 永远不会重复 → 看起来是真实的天体漂移。
+ */
+@keyframes nebula-drift-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(4%, -3%) scale(1.08); }
+  66% { transform: translate(-3%, 4%) scale(0.95); }
+}
+@keyframes nebula-drift-b {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  40% { transform: translate(-5%, 3%) scale(1.06); }
+  75% { transform: translate(3%, -4%) scale(0.96); }
+}
+
+/**
+ * 水晶球光晕呼吸（2026-11-05 视觉重设计）
+ * ⚠️ 幅度必须很小（0.90 → 1.06）——
+ *   幅度大就变成"呼吸的灯泡"，廉价且干扰视线。
+ */
+@keyframes orb-breathe {
+  0%, 100% { opacity: 0.72; transform: scale(0.94); }
+  50% { opacity: 1; transform: scale(1.06); }
 }
 
 /* 渐变文字流光 */

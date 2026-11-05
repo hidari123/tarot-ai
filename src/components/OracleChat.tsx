@@ -1,10 +1,11 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import Icon from "@/components/icons";
 import KnowledgePanel, { type RagHitView } from "@/components/KnowledgePanel";
+import CelestialBackdrop from "@/components/CelestialBackdrop";
 
 /**
  * 神谕（Oracle）—— 免抽牌的对话式塔罗向导（2026-11-04 D 方向）
@@ -267,7 +268,9 @@ export default function OracleChat() {
   ];
 
   return (
-    <div className="min-h-[100dvh] flex flex-col">
+    <div className="min-h-[100dvh] flex flex-col relative">
+      {/* ⚠️ 2026-11-05 视觉重设计：统一的深空背景（神谕偏冷蓝 —— 冷光更有"清明的凝视"感） */}
+      <CelestialBackdrop tint="rgba(99, 102, 241, 0.16)" />
       {/* 顶栏 */}
       <header className="shrink-0 border-b border-white/6 bg-[#0d0a18]/70 backdrop-blur-sm sticky top-0 z-20">
         <div className="max-w-3xl mx-auto px-5 py-3 flex items-center justify-between">
@@ -293,7 +296,7 @@ export default function OracleChat() {
         className="flex-1 overflow-y-auto"
         style={{ scrollBehavior: "smooth" }}
       >
-        <div className="max-w-3xl mx-auto px-5 py-6 space-y-5">
+        <div className="relative z-10 max-w-3xl mx-auto px-5 py-6 space-y-5">
           {/* 开场白 */}
           {messages.length === 0 && (
             <div className="pt-8">
@@ -418,14 +421,14 @@ export default function OracleChat() {
 
         {/* 典籍面板 */}
         {showKnowledge && hits.length > 0 && (
-          <div className="max-w-3xl mx-auto px-5 pb-6">
+          <div className="relative z-10 max-w-3xl mx-auto px-5 pb-6">
             <KnowledgePanel hits={hits} />
           </div>
         )}
       </div>
 
       {/* 输入区 */}
-      <div className="shrink-0 border-t border-white/6 bg-[#0d0a18]/80 backdrop-blur-sm">
+      <div className="relative z-10 shrink-0 border-t border-white/6 bg-[#0d0a18]/80 backdrop-blur-sm">
         <div className="max-w-3xl mx-auto px-5 py-3">
           <div className="flex items-end gap-2">
             <textarea

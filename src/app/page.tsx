@@ -5,6 +5,14 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import StardustCursor from "@/components/StardustCursor";
+/**
+ * ⚠️ 2026-11-05 视觉重设计：新的视觉基底
+ *   · CelestialBackdrop —— 深空星云背景（含噪点/景深/暗角）
+ *   · AstralCircle —— 真 SVG 星象魔法阵
+ */
+import CelestialBackdrop from "@/components/CelestialBackdrop";
+import OracleOrb from "@/components/OracleOrb";
+import PersonaOrb from "@/components/PersonaOrb";
 import AgentTrace, { type ToolCall, type RoundInfo } from "@/components/AgentTrace";
 import KnowledgePanel, { type RagHitView } from "@/components/KnowledgePanel";
 import CitedReading from "@/components/CitedReading";
@@ -85,53 +93,11 @@ const PHASE_ORDER: Phase[] = ["analyze", "draw", "retrieve", "interpret", "revie
 
 /* ---------------- 星空 & 魔法阵 ---------------- */
 
-function StarField() {
-  // 星点在挂载后生成（客户端专属）：Math.random 不能进预渲染
-  const [stars, setStars] = useState<Array<{ x: number; y: number; s: number; d: number; delay: number }>>([]);
-  useEffect(() => {
-    // Next.js 16 预渲染禁用 Math.random（会被烘进静态壳），必须 defer 到客户端 effect
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setStars(
-      Array.from({ length: 90 }, () => ({
-        x: Math.random() * 100,
-        y: Math.random() * 100,
-        s: Math.random() * 2.2 + 0.6,
-        d: Math.random() * 4 + 2,
-        delay: Math.random() * 4,
-      }))
-    );
-  }, []);
-  if (stars.length === 0) return null;
-  return (
-    <div className="absolute inset-0 overflow-hidden pointer-events-none">
-      {stars.map((st, i) => (
-        <span
-          key={i}
-          className="absolute rounded-full bg-purple-200"
-          style={{
-            left: `${st.x}%`,
-            top: `${st.y}%`,
-            width: st.s,
-            height: st.s,
-            animation: `twinkle ${st.d}s ease-in-out ${st.delay}s infinite`,
-            boxShadow: "0 0 4px rgba(216,180,254,0.8)",
-          }}
-        />
-      ))}
-    </div>
-  );
-}
-
-function MagicCircle() {
-  return (
-    <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none">
-      <div className="magic-ring-1 absolute top-1/2 left-1/2 w-[900px] h-[900px] rounded-full border-2 border-dashed" style={{ borderColor: "rgba(139,92,246,0.14)" }} />
-      <div className="magic-ring-2 absolute top-1/2 left-1/2 w-[640px] h-[640px] rounded-full border" style={{ borderColor: "rgba(168,85,247,0.12)" }} />
-      <div className="magic-ring-3 absolute top-1/2 left-1/2 w-[420px] h-[420px] rounded-full border-2" style={{ borderColor: "rgba(216,180,254,0.08)" }} />
-      <div className="absolute text-7xl text-purple-400/10 rune-breathe select-none">✦</div>
-    </div>
-  );
-}
+/**
+ * ⚠️ 2026-11-05 视觉重设计：原来的 StarField 与 MagicCircle 已被替换。
+ *   · StarField  → CelestialBackdrop（含星云/噪点/景深/暗角）
+ *   · MagicCircle → AstralCircle（真 SVG：刻度/八芒星/星座环/元素符号）
+ */
 
 /* ---------------- Agent 状态条 ---------------- */
 
@@ -1689,8 +1655,20 @@ export default function TarotApp() {
             兜底见 globals.css 的 @supports not (height: 100dvh)。
       */}
       <StardustCursor />
-      <StarField />
-      <MagicCircle />
+      {/**
+       * ⚠️ 2026-11-05 视觉重设计：星云背景 + 真 SVG 魔法阵。
+       * ⚠️ ⚠️ 魔法阵**由 CelestialBackdrop 承载**（作为它的第 8 层）：
+       *   页面级定位（absolute/fixed + 百分比）会因为祖先的 transform /
+       *   filter / backdrop-filter 而偏移 —— 实测连试三种都跑偏。
+       *   → 让已经是 inset-0 的背景层做 flex 居中 → 位置永远正确。
+       * ⚠️ active：占卜进行中 → 魔法阵亮起（视觉上"仪式在运转"）。
+       */}
+      <CelestialBackdrop
+        showCircle
+        circleSize={700}
+        circleIntensity={0.72}
+        circleActive={stage !== "input"}
+      />
 
       {/* ---------- 环境音控制（固定右上角）----------
         ⚠️ 位置选择：固定在视口右上 —— 它是全局设置而不是内容流的一部分，
@@ -1721,62 +1699,91 @@ export default function TarotApp() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.4, duration: 0.8 }}
-        className="mt-3 text-lg md:text-xl text-purple-300/60 z-10 tracking-[0.2em]"
+        className="mt-3 text-lg md:text-xl text-purple-200/75 z-10 tracking-[0.18em]"
         style={{ fontFamily: "'Ma Shan Zheng', serif" }}
       >
         倾听星辰的低语 · 窥探命运的轨迹
       </motion.p>
 
-      <div className="h-8" />
+      {/* ---------- 水晶球主视觉（2026-11-05 视觉重设计）----------
+          ⚠️ 为什么放在标题下、输入框上：
+            之前首页所有元素权重相同 → 视线无处停留 → "很基础"。
+            → 现在有明确的视觉中心：球体承载"你要问的事"，
+              而占卜师头像、输入框、入口都围绕它排布。
+          ⚠️ 为什么只在 input 阶段显示：
+            进入占卜后对话流才是主角，球会抢戏。 */}
+      {stage === "input" && (
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.2, duration: 0.9, ease: "easeOut" }}
+          className="z-10 my-8"
+        >
+          <OracleOrb size={190} />
+        </motion.div>
+      )}
 
-      {/* ---------- 运势入口（2026-11-04 C 方向）----------
+      <div className="h-4" />
+
+      {/* ---------- 运势入口（2026-11-04 C 方向 · 2026-11-05 视觉重设计）----------
           ⚠️ 竞品对标：Tarot Run 的顶栏有「每日塔罗」，Tarotap 有 5 种运势。
           ⚠️ 为什么放在副标题下（而不是右上角）：
             右上是音乐按钮（固定不动），这里是**内容流**的一部分 ——
-            用户刚进站、正准备提问，此时看到"今天也有牌"能降低"必须提问才能用"的门槛。 */}
+            用户刚进站、正准备提问，此时看到"今天也有牌"能降低"必须提问才能用"的门槛。
+          ⚠️ 2026-11-05：从「文字胶囊」改成「图标卡片」——
+            胶囊只有一行小字，在深色背景上几乎看不见（截图实测）；
+            卡片有图标 + 标题 + 说明 → 既是入口，也是产品能力的展示。 */}
       {stage === "input" && (
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.25, duration: 0.6 }}
-          className="w-full max-w-xl z-10 -mt-2 mb-6"
+          className="w-full max-w-2xl z-10 -mt-2 mb-7"
         >
-          <div className="flex items-center gap-2 flex-wrap justify-center">
-            <Link
-              href="/daily"
-              className="group inline-flex items-center gap-2 px-3.5 py-2 rounded-full border border-purple-400/25 bg-purple-950/25 backdrop-blur-sm hover:border-purple-400/50 hover:bg-purple-900/30 transition-all"
-            >
-              <Icon name="moon" size={14} className="text-purple-300/70 group-hover:text-purple-200" />
-              <span className="text-[11px] tracking-[0.15em] text-purple-200/70 group-hover:text-purple-100">
-                今日之牌
-              </span>
-            </Link>
-            <Link
-              href="/fortune"
-              className="group inline-flex items-center gap-2 px-3.5 py-2 rounded-full border border-white/8 bg-white/[0.03] backdrop-blur-sm hover:border-purple-400/30 hover:bg-purple-900/20 transition-all"
-            >
-              <Icon name="orbit" size={14} className="text-purple-300/50 group-hover:text-purple-200" />
-              <span className="text-[11px] tracking-[0.15em] text-purple-300/55 group-hover:text-purple-100">
-                运势专区
-              </span>
-            </Link>
-            {/**
-              * ⚠️ 2026-11-04 D 方向：问神谕入口
-              *   竞品（Tarot Run 的 Oracle）把它放在最显眼的位置 ——
-              *   因为它**不需要用户先想清楚问题**（占卜需要），
-              *   是最低门槛的入口。
-              * ⚠️ 放在运势之后（而不是最前）——
-              *   占卜才是本站的主产品，神谕是补充路径。
-              */}
-            <Link
-              href="/oracle"
-              className="group inline-flex items-center gap-2 px-3.5 py-2 rounded-full border border-white/8 bg-white/[0.03] backdrop-blur-sm hover:border-purple-400/30 hover:bg-purple-900/20 transition-all"
-            >
-              <Icon name="crystal" size={14} className="text-purple-300/50 group-hover:text-purple-200" />
-              <span className="text-[11px] tracking-[0.15em] text-purple-300/55 group-hover:text-purple-100">
-                问神谕
-              </span>
-            </Link>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {[
+              { href: "/daily", icon: "moon" as const, title: "今日之牌", desc: "今天与你有关的那张牌" },
+              { href: "/fortune", icon: "orbit" as const, title: "运势专区", desc: "每日 · 月 · 季 · 年运" },
+              { href: "/oracle", icon: "crystal" as const, title: "问神谕", desc: "不必抽牌，也能问" },
+            ].map((e) => (
+              <Link
+                key={e.href}
+                href={e.href}
+                className="group relative rounded-2xl border border-white/8 bg-purple-950/25 backdrop-blur-md px-4 py-4 transition-all duration-300 hover:border-purple-400/40 hover:bg-purple-900/30 hover:-translate-y-1"
+                style={{
+                  boxShadow:
+                    "0 6px 26px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.05)",
+                }}
+              >
+                {/* 悬停时的金色边光 */}
+                <span
+                  className="absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
+                  style={{
+                    boxShadow: "0 0 26px rgba(212,175,55,0.20)",
+                    border: "1px solid rgba(212,175,55,0.28)",
+                  }}
+                />
+                <div className="flex items-start gap-3">
+                  <span
+                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors duration-300 group-hover:border-amber-400/50"
+                    style={{
+                      border: "1px solid rgba(168,85,247,0.30)",
+                      background: "radial-gradient(circle at 34% 28%, rgba(76,29,149,0.7), rgba(12,6,26,0.8))",
+                    }}
+                  >
+                    <Icon name={e.icon} size={16} className="text-purple-200/80 group-hover:text-amber-200" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-[13px] tracking-[0.12em] text-purple-50/90 group-hover:text-amber-50">
+                      {e.title}
+                    </span>
+                    <span className="block text-[10px] text-purple-300/40 mt-0.5 leading-snug">
+                      {e.desc}
+                    </span>
+                  </span>
+                </div>
+              </Link>
+            ))}
           </div>
         </motion.div>
       )}
@@ -1789,26 +1796,25 @@ export default function TarotApp() {
           transition={{ delay: 0.3, duration: 0.7 }}
           className="w-full max-w-xl z-10"
         >
-          {/* 人格选择 */}
-          <div className="mb-5">
-            <p className="text-xs text-purple-300/50 mb-2 tracking-wider">选择你的占卜师</p>
-            <div className="grid grid-cols-3 gap-2">
-              {personas.map((p) => (
-                <motion.button
+          {/* ---------- 人格选择（2026-11-05 视觉重设计）----------
+              ⚠️ 从「方块卡片」改成「圆形符文头像」：
+                六个同样的方块摆在那儿 → 视觉权重相同、没有主次、没有"人"的感觉。
+                圆形徽章是神秘学语境里最自然的载体，且天然有聚焦感。 */}
+          <div className="mb-7">
+            <p className="text-[11px] tracking-[0.28em] text-purple-300/40 mb-4 text-center">
+              选 择 你 的 占 卜 师
+            </p>
+            <div className="flex justify-center gap-4 sm:gap-6 flex-wrap">
+              {personas.map((p, pi) => (
+                <PersonaOrb
                   key={p.id}
-                  whileHover={{ scale: 1.03, y: -2 }}
-                  whileTap={{ scale: 0.97 }}
+                  id={p.id}
+                  name={p.name}
+                  tagline={p.desc}
+                  selected={persona?.id === p.id}
                   onClick={() => setPersona(p)}
-                  className={`rounded-2xl border px-3 py-3 text-left transition-all ${
-                    persona?.id === p.id
-                      ? "border-purple-400/70 bg-purple-900/40 shadow-[0_0_20px_rgba(168,85,247,0.3)]"
-                      : "border-purple-500/20 bg-purple-950/20 hover:border-purple-400/40"
-                  }`}
-                >
-                  <div className="text-xl mb-1">{p.emoji}</div>
-                  <div className="text-sm text-purple-100/90" style={{ fontFamily: "'Ma Shan Zheng', serif" }}>{p.name}</div>
-                  <div className="text-[10px] text-purple-300/50 mt-0.5 leading-tight">{p.desc}</div>
-                </motion.button>
+                  index={pi}
+                />
               ))}
             </div>
           </div>

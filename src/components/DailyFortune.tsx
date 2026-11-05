@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo } from "react";
 import Icon from "@/components/icons";
 import { buildDailyContent } from "@/lib/fortune/build";
+import CelestialBackdrop from "@/components/CelestialBackdrop";
 
 /**
  * 每日之牌 —— 内容展示
@@ -34,14 +35,9 @@ export default function DailyFortune({ dateParam }: { dateParam: string }) {
 
   return (
     <main className="min-h-[100dvh] relative overflow-hidden">
-      {/* 背景 */}
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background:
-            "radial-gradient(ellipse at 50% 25%, rgba(124,58,237,0.18), transparent 55%), radial-gradient(ellipse at 80% 80%, rgba(59,130,246,0.08), transparent 50%)",
-        }}
-      />
+      {/* ⚠️ 2026-11-05 视觉重设计：统一的深空背景
+          （运势页用**金色**主光源 —— 牌与运势是"金色的"，占卜页是"紫色的"） */}
+      <CelestialBackdrop tint="rgba(212, 175, 55, 0.16)" />
 
       <div className="relative z-10 max-w-3xl mx-auto px-5 py-10 sm:py-16">
         {/* 顶部导航 */}
