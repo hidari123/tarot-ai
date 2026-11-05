@@ -63,3 +63,7 @@ scripts/dev/.out/
 # 提交信息临时文件（脚本生成，用完即删）
 COMMIT_EDITMSG.tmp
 
+
+# 视觉重设计的调试截图（不入库）
+shots/
+
