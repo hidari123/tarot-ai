@@ -739,9 +739,29 @@ export async function* runAgent(
           roundToolNames.push("close_reading(拦截)");
           continue;
         }
+        /**
+         * ⚠️⚠️ 快速模式的收束守卫（2026-11-06 修复）
+         *
+         * ⚠️ 症状（用户报告）：
+         *   快速一问模式下"三张牌面都出了，然后又走抽牌流程、图翻不过来，
+         *   最后报错说达到最大轮次"。
+         *
+         * ⚠️ 根因：
+         *   这个守卫检查的是 `slot.reading`（interpret_card 的产物）。
+         *   而**快速模式 `perCardGated: false` → 不做 interpret_card**
+         *   （一次讲完 3 张，见下方 quickMode 分支）→ `slot.reading` 永远是空。
+         *   → 守卫永远拦截 close_reading → 模型反复重试（翻牌/抽牌/再收束）
+         *   → 撞 max_rounds。
+         *
+         * ⚠️ 修复：
+         *   快速模式的完成条件应该是「**牌已揭示**」（reveal）而不是「已解读」（reading）。
+         *   深度模式保持原样（必须逐张 interpret 完才能收束）。
+         */
+        const quickCloseMode = !modeProfile(session.mode ?? "deep").perCardGated;
         const missingSlots = session.drawnCards.filter((d) => {
           const slot = session.cardReadings.find((r) => r.cardId === d.card.id);
-          return !slot?.reading;
+          // 快速模式：揭示即可（reading 不会来）；深度模式：必须解读过
+          return quickCloseMode ? !slot?.reveal : !slot?.reading;
         });
         if (missingSlots.length > 0) {
           const missing = missingSlots.map((d) => `第${session.drawnCards.indexOf(d) + 1}张「${d.card.nameZh}」`);
@@ -749,14 +769,39 @@ export async function* runAgent(
             role: "tool",
             tool_call_id: tc.id,
             content: JSON.stringify({
-              error: "还有牌没讲完，不能收束",
+              error: quickCloseMode ? "还有牌没翻开，不能收束" : "还有牌没讲完，不能收束",
               missing,
-              hint: `请先对 ${missing.join("、")} 依次 reveal_card + interpret_card，全部讲完后再 close_reading。`,
+              hint: quickCloseMode
+                ? `请先对 ${missing.join("、")} 依次 reveal_card（快速模式一次讲完，不需要 interpret_card），全部翻开后再 close_reading。`
+                : `请先对 ${missing.join("、")} 依次 reveal_card + interpret_card，全部讲完后再 close_reading。`,
             }),
           });
-          yield { type: "phase", phase: "interpret", label: `还有 ${missing.length} 张牌没讲——继续翻牌` };
+          yield {
+            type: "phase",
+            phase: "interpret",
+            label: quickCloseMode ? `还有 ${missing.length} 张牌没翻开——继续` : `还有 ${missing.length} 张牌没讲——继续翻牌`,
+          };
           roundToolNames.push("close_reading(拦截)");
           continue;
+        }
+
+        /**
+         * ⚠️⚠️ 快速模式兜底（2026-11-06）
+         *
+         * ⚠️ 为什么需要：
+         *   快速模式不强制 interpret_all_cards（模型偶尔直接跳到 close_reading）。
+         *   之前守卫要求 `slot.reading` → 直接拦截 → 模型反复重试 → 撞 max_rounds。
+         *   → 现在快速模式只要**牌已揭示**就允许收束；
+         *     若某张牌缺 reading，用**它的牌面叙述**兜底填上
+         *     （保证 dashboard / 分享卡 / 复盘都有内容）。
+         */
+        if (quickCloseMode) {
+          for (const d of session.drawnCards) {
+            const sl = session.cardReadings.find((r) => r.cardId === d.card.id);
+            if (!sl?.reading && sl?.reveal) {
+              sl.reading = sl.reveal.narrative || d.card.description || "";
+            }
+          }
         }
         const closing = String(args.closing || "").trim();
         const question = String(args.question || "这三段里，哪一段最贴近你现在的状态？").trim();

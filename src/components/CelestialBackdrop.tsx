@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState } from "react";
 import AstralCircle from "@/components/AstralCircle";
@@ -158,6 +158,75 @@ export default function CelestialBackdrop({
           loading="eager"
           decoding="async"
         />
+      )}
+
+      {/**
+       * ---- 层 1.6：动态星云流转（2026-11-06）----
+       * ⚠️ 用户要求："背景也希望是动态效果的，有星云流转的感觉"。
+       *
+       * ⚠️ 为什么用 **conic-gradient + 旋转** 做流动：
+       *   AI 底图是静态的 → 页面还是"死的"。
+       *   而"星云流转"的本质是**色带在缓慢旋转/漂移**。
+       *   → conic-gradient 天然是螺旋色带（角度渐变），
+       *     旋转它 = 螺旋在转 = 典型的星云流动感。
+       *   → 三层不同色相 + 不同周期 → 相对运动 → 看不出规律。
+       * ⚠️ 为什么用 mix-blend-mode: screen：
+       *   亮色叠加在暗底上才"发光"；normal 混合只会覆盖。
+       * ⚠️ 为什么 opacity 这么低（0.10~0.16）：
+       *   这是**氛围层**不是主体 → 一点点就够。太亮会盖过 AI 底图的细节。
+       */}
+      {image && (
+        <>
+          <div
+            className="absolute pointer-events-none"
+            style={{
+              left: "-18%",
+              top: "-12%",
+              width: "76%",
+              height: "76%",
+              borderRadius: "50%",
+              background:
+                "conic-gradient(from 0deg, rgba(139,92,246,0) 0deg, rgba(139,92,246,0.55) 55deg, rgba(76,29,149,0.28) 140deg, rgba(139,92,246,0) 230deg, rgba(168,85,247,0.42) 300deg, rgba(139,92,246,0) 360deg)",
+              filter: "blur(70px)",
+              mixBlendMode: "screen",
+              opacity: 0.16,
+              animation: "nebula-drift-a 76s ease-in-out infinite",
+            }}
+          />
+          <div
+            className="absolute pointer-events-none"
+            style={{
+              right: "-16%",
+              bottom: "-14%",
+              width: "66%",
+              height: "66%",
+              borderRadius: "50%",
+              background:
+                "conic-gradient(from 140deg, rgba(59,130,246,0) 0deg, rgba(59,130,246,0.48) 70deg, rgba(30,64,175,0.22) 170deg, rgba(59,130,246,0) 260deg, rgba(147,51,234,0.34) 320deg, rgba(59,130,246,0) 360deg)",
+              filter: "blur(76px)",
+              mixBlendMode: "screen",
+              opacity: 0.13,
+              animation: "nebula-drift-b 92s ease-in-out infinite reverse",
+            }}
+          />
+          {/* 金色的暖光流转（呼应牌背/魔法阵的金） */}
+          <div
+            className="absolute pointer-events-none"
+            style={{
+              left: "22%",
+              top: "-22%",
+              width: "52%",
+              height: "52%",
+              borderRadius: "50%",
+              background:
+                "conic-gradient(from 200deg, rgba(212,175,55,0) 0deg, rgba(212,175,55,0.40) 80deg, rgba(212,175,55,0) 190deg, rgba(240,217,138,0.30) 280deg, rgba(212,175,55,0) 360deg)",
+              filter: "blur(84px)",
+              mixBlendMode: "screen",
+              opacity: 0.10,
+              animation: "nebula-drift-a 64s ease-in-out infinite reverse",
+            }}
+          />
+        </>
       )}
 
       {/* ---- 层 2：主光源（顶部中央） ----

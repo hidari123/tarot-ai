@@ -38,8 +38,13 @@ export default function DailyFortune({ dateParam }: { dateParam: string }) {
   return (
     <main className="min-h-[100dvh] relative overflow-hidden">
       {/* ⚠️ 2026-11-05 视觉重设计：统一的深空背景
-          （运势页用**金色**主光源 —— 牌与运势是"金色的"，占卜页是"紫色的"） */}
-      <CelestialBackdrop tint="rgba(212, 175, 55, 0.16)" />
+          （运势页用**金色**主光源 —— 牌与运势是"金色的"，占卜页是"紫色的"）
+          ⚠️ 2026-11-06：接入 AI 生成的每日背景（暖紫调，与主页同体系） */}
+      <CelestialBackdrop
+        tint="rgba(212, 175, 55, 0.16)"
+        image="/images/celestial/bg-daily.webp"
+        imagePosition="center center"
+      />
 
       <div className="relative z-10 max-w-3xl mx-auto px-5 py-10 sm:py-16">
         {/* 顶部导航 */}

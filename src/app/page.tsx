@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
@@ -11,7 +11,7 @@ import StardustCursor from "@/components/StardustCursor";
  *   · AstralCircle —— 真 SVG 星象魔法阵
  */
 import CelestialBackdrop from "@/components/CelestialBackdrop";
-import OracleOrb from "@/components/OracleOrb";
+import CelestialOrb from "@/components/CelestialOrb";
 import PersonaOrb from "@/components/PersonaOrb";
 import AgentTrace, { type ToolCall, type RoundInfo } from "@/components/AgentTrace";
 import KnowledgePanel, { type RagHitView } from "@/components/KnowledgePanel";
@@ -1781,7 +1781,7 @@ export default function TarotApp() {
           transition={{ delay: 0.2, duration: 0.9, ease: "easeOut" }}
           className="z-10 my-8"
         >
-          <OracleOrb size={190} />
+          <CelestialOrb size={230} />
         </motion.div>
       )}
 
@@ -1819,9 +1819,27 @@ export default function TarotApp() {
            */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {[
-              { href: "/daily", icon: "moon" as const, title: "今日之牌", desc: "今天与你有关的那张牌" },
-              { href: "/fortune", icon: "orbit" as const, title: "运势专区", desc: "每日 · 月 · 季 · 年运" },
-              { href: "/oracle", icon: "crystal" as const, title: "问神谕", desc: "不必抽牌，也能问" },
+              {
+                href: "/daily",
+                icon: "moon" as const,
+                img: "/images/celestial/icon-daily.webp",
+                title: "今日之牌",
+                desc: "今天与你有关的那张牌",
+              },
+              {
+                href: "/fortune",
+                icon: "orbit" as const,
+                img: "/images/celestial/icon-fortune.webp",
+                title: "运势专区",
+                desc: "每日 · 月 · 季 · 年运",
+              },
+              {
+                href: "/oracle",
+                icon: "crystal" as const,
+                img: "/images/celestial/icon-oracle.webp",
+                title: "问神谕",
+                desc: "不必抽牌，也能问",
+              },
             ].map((e) => (
               <Link
                 key={e.href}
@@ -1841,8 +1859,11 @@ export default function TarotApp() {
                 />
                 <div className="flex items-start gap-3">
                   {/**
-                   * ⚠️ 图标圈：金色描边 + 深底 + 金色图标。
-                   * ⚠️ 为什么不用紫底紫图标：那是"同色系叠同色系"，对比度≈0。
+                   * ⚠️ 2026-11-06：图标改用 **AI 生成的金线图标**（月+书 / 轨道 / 眼），
+                   *   背景黑底已被 sharp 抠成透明（按亮度转 alpha）。
+                   * ⚠️ 为什么不用原来的 Icon 组件：
+                   *   线性图标是"UI 元素"，而这页是"占卜室"——
+                   *   AI 出的**手绘感金线纹样**与魔法阵/牌背是同一套视觉语言。
                    */}
                   <span
                     className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all duration-300"
@@ -1853,7 +1874,13 @@ export default function TarotApp() {
                       boxShadow: "0 0 14px rgba(212,175,55,0.18)",
                     }}
                   >
-                    <Icon name={e.icon} size={16} className="text-amber-200/90" />
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={e.img}
+                      alt=""
+                      className="w-[22px] h-[22px] object-contain"
+                      style={{ filter: "drop-shadow(0 0 4px rgba(240,217,138,0.5))" }}
+                    />
                   </span>
                   <span className="min-w-0">
                     <span className="block text-[13px] tracking-[0.12em] text-[rgba(255,248,235,0.96)] group-hover:text-amber-50">
@@ -1977,19 +2004,62 @@ export default function TarotApp() {
               </button>
             </div>
             <motion.button
-              whileHover={{ scale: 1.04 }}
-              whileTap={{ scale: 0.96 }}
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
               onClick={startDivination}
               /**
-               * ⚠️ 2026-11-06：按钮从**紫渐变**改成**金渐变**。
-               * ⚠️ 为什么：紫色按钮在紫色背景上 = 又一个同色系元素（用户反馈的核心问题）。
-               *   → 改成金色渐变 → 它变成页面里最亮的可点击物（正确的视觉优先级：
-               *     主操作应该最醒目），同时与魔法阵/牌背的金统一。
+               * ⚠️ 2026-11-06：按钮改成「AI 生成的巴洛克金框 + 文字」。
+               * ⚠️ 为什么：
+               *   原来的金色渐变按钮是"现代 UI"风格，和整页的古典气质割裂。
+               *   用户明确要求"带底纹的那种" → CSS 只能做渐变/边框，
+               *   做不出新艺术风格的卷草纹 → 用 AI 出的金框图。
+               *
+               * ⚠️ 实现方式：底框图 absolute 铺满（object-cover），
+               *   中间是半透明深底 → 文字压在深底上，金框在四周。
+               * ⚠️ 为什么文字底要半透明深色：
+               *   AI 图中间是深蓝底，但我们要保证文字对比度 →
+               *   自己叠一层更深的半透明黑 → 文字清晰且仍透出一点底色。
                */
-              className="px-8 py-4 rounded-2xl bg-gradient-to-r from-[#c9a227] via-[#e3c264] to-[#c9a227] text-[#2a1a05] text-lg font-medium shadow-[0_0_32px_rgba(212,175,55,0.45)] hover:shadow-[0_0_46px_rgba(240,217,138,0.60)] transition-shadow"
-              style={{ fontFamily: "'Ma Shan Zheng', serif" }}
+              className="relative px-10 py-4 rounded-2xl overflow-hidden transition-shadow"
+              style={{
+                boxShadow: "0 0 34px rgba(212,175,55,0.42), 0 8px 24px rgba(0,0,0,0.5)",
+              }}
             >
-              开始占卜
+              {/* 金框底纹 */}
+              {/**
+               * ⚠️ 2026-11-06 修复："图片没展示全，左右两侧是黑色的"。
+               * ⚠️ 根因：按钮是**小尺寸**（~160×56），底图是 16:9 大图 →
+               *   object-cover 裁切把左右卷草角饰裁掉，只剩中间 → 看着像黑边。
+               * ⚠️ 修法：
+               *   ① 素材阶段 trim 掉黑边，只留金色框线
+               *   ② 页面用 **object-fill**（拉伸填满）而不是 cover → 框线完整
+               *   ③ 叠一层暗色渐变把中间压暗 → 文字对比度够
+               */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/images/celestial/btn-gold.webp"
+                alt=""
+                className="absolute inset-0 w-full h-full object-fill pointer-events-none"
+                style={{ filter: "brightness(1.1)" }}
+              />
+              {/* 中间深底（保证文字对比度） */}
+              <span
+                className="absolute inset-[10%] rounded-xl pointer-events-none"
+                style={{
+                  background:
+                    "linear-gradient(160deg, rgba(26,16,48,0.94), rgba(9,5,20,0.97))",
+                }}
+              />
+              {/* 文字 */}
+              <span
+                className="relative text-[#f6e4a8] text-lg font-medium tracking-[0.1em]"
+                style={{
+                  fontFamily: "'Ma Shan Zheng', serif",
+                  textShadow: "0 1px 8px rgba(212,175,55,0.45)",
+                }}
+              >
+                开始占卜
+              </span>
             </motion.button>
           </div>
           {error && (
