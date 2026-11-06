@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 /**
  * 星象魔法阵（2026-11-05 视觉重设计 · 第 1 批）
@@ -195,8 +195,8 @@ export default function AstralCircle({
             cy={c}
             r={c * 0.935}
             fill="none"
-            stroke="rgba(212,175,55,0.22)"
-            strokeWidth="1"
+            stroke="rgba(240,217,138,0.42)"
+            strokeWidth="1.2"
           />
           {ticks.map((t, i) => (
             <line
@@ -205,8 +205,8 @@ export default function AstralCircle({
               y1={t.y1}
               x2={t.x2}
               y2={t.y2}
-              stroke={t.major ? "rgba(212,175,55,0.42)" : "rgba(212,175,55,0.22)"}
-              strokeWidth={t.major ? 1.4 : 0.8}
+              stroke={t.major ? "rgba(245,225,155,0.85)" : "rgba(212,175,55,0.48)"}
+              strokeWidth={t.major ? 1.6 : 0.9}
             />
           ))}
         </g>
@@ -225,14 +225,21 @@ export default function AstralCircle({
             const rot = (i * 30 + 90).toString();
             return (
               <g key={i} transform={`translate(${x} ${y}) rotate(${rot})`}>
+                {/**
+                 * ⚠️ 2026-11-06：星座符号加辉光滤镜。
+                 * ⚠️ 为什么：符号是魔法阵里**语义最重要**的元素（十二星座），
+                 *   但原来只是 stroke 0.50 的细线 → 在深紫底上很暗。
+                 * → 提亮 + 加 glow 滤镜（让线条有"发光"感，而不是"画的线"）。
+                 */}
                 <path
                   d={d}
                   transform="scale(1.15)"
                   fill="none"
-                  stroke="rgba(212,175,55,0.50)"
-                  strokeWidth="1.1"
+                  stroke="rgba(245,228,170,0.92)"
+                  strokeWidth="1.4"
                   strokeLinecap="round"
                   strokeLinejoin="round"
+                  filter="url(#ac-glow)"
                 />
               </g>
             );
@@ -249,7 +256,7 @@ export default function AstralCircle({
             cy={c}
             r={c * 0.7}
             fill="none"
-            stroke="rgba(212,175,55,0.18)"
+            stroke="rgba(167,139,250,0.32)"
             strokeWidth="1"
           />
           {dashes.map((d, i) => (
@@ -259,7 +266,7 @@ export default function AstralCircle({
               y1={d.y1}
               x2={d.x2}
               y2={d.y2}
-              stroke="rgba(240,217,138,0.20)"
+              stroke="rgba(196,181,253,0.42)"
               strokeWidth="1"
             />
           ))}
@@ -277,10 +284,11 @@ export default function AstralCircle({
                 d={d}
                 transform="scale(1.25)"
                 fill="none"
-                stroke="rgba(240,217,138,0.38)"
-                strokeWidth="1.2"
+                stroke="rgba(245,225,155,0.70)"
+                strokeWidth="1.4"
                 strokeLinecap="round"
                 strokeLinejoin="round"
+                filter="url(#ac-glow)"
               />
             </g>
           );
@@ -292,26 +300,32 @@ export default function AstralCircle({
           className="astral-spin-slow"
           style={{ transformOrigin: `${c}px ${c}px` }}
         >
-          <rect
-            x={c - c * 0.4}
-            y={c - c * 0.4}
-            width={c * 0.8}
-            height={c * 0.8}
-            fill="none"
-            stroke="rgba(212,175,55,0.18)"
-            strokeWidth="1"
-            transform={`rotate(45 ${c} ${c})`}
-          />
-          <rect
-            x={c - c * 0.4}
-            y={c - c * 0.4}
-            width={c * 0.8}
-            height={c * 0.8}
-            fill="none"
-            stroke="rgba(212,175,55,0.12)"
-            strokeWidth="1"
-            transform={`rotate(0 ${c} ${c})`}
-          />
+        {/**
+         * ⚠️ 2026-11-06：八芒星从「暗金」改成「紫金双色」。
+         * ⚠️ 为什么：原来两层都是暗金（0.18 / 0.12）→ 与其他金色元素混成一片，
+         *   整圈阵看起来"只有一种颜色"（用户反馈"太单调"）。
+         * → 45° 那层用**紫**（呼应背景）、0° 那层用**亮金** → 有层次有对比。
+         */}
+        <rect
+          x={c - c * 0.4}
+          y={c - c * 0.4}
+          width={c * 0.8}
+          height={c * 0.8}
+          fill="none"
+          stroke="rgba(167,139,250,0.40)"
+          strokeWidth="1.2"
+          transform={`rotate(45 ${c} ${c})`}
+        />
+        <rect
+          x={c - c * 0.4}
+          y={c - c * 0.4}
+          width={c * 0.8}
+          height={c * 0.8}
+          fill="none"
+          stroke="rgba(245,225,155,0.55)"
+          strokeWidth="1.3"
+          transform={`rotate(0 ${c} ${c})`}
+        />
         </g>
 
         {/* ---- L6 内核光点（不转） ----

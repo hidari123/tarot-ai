@@ -136,10 +136,10 @@ export default function PersonaOrb({
         </div>
       </div>
 
-      {/* 名字 */}
+      {/* 名字（⚠️ 2026-11-06：紫白 → 金白，对比度更高） */}
       <div
         className={`text-[12px] tracking-[0.12em] transition-colors ${
-          selected ? "text-amber-100" : "text-purple-100/65 group-hover:text-purple-50"
+          selected ? "text-amber-100" : "text-[rgba(240,232,255,0.82)] group-hover:text-amber-50"
         }`}
         style={{ fontFamily: "'Ma Shan Zheng', serif" }}
       >
@@ -149,7 +149,7 @@ export default function PersonaOrb({
       {/* 一句话描述（选中时才显示，避免首页太满） */}
       {tagline && (
         <div
-          className={`text-[9.5px] text-purple-300/45 text-center leading-snug max-w-[112px] transition-opacity duration-300 ${
+          className={`text-[9.5px] text-[rgba(196,181,253,0.55)] text-center leading-snug max-w-[112px] transition-opacity duration-300 ${
             selected ? "opacity-100" : "opacity-0 group-hover:opacity-100"
           }`}
         >

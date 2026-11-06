@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
@@ -1793,6 +1793,21 @@ export default function TarotApp() {
           transition={{ delay: 0.25, duration: 0.6 }}
           className="w-full max-w-2xl z-10 -mt-2 mb-7"
         >
+          {/**
+           * ⚠️ 2026-11-06 对比度修正（用户反馈："背景是紫色的，上面图标文字模块又都是紫色的 对比度太差"）。
+           *
+           * ⚠️ 根因：**紫底 + 紫组件 + 紫文字** = 三者同色系 → 全部糊在一起。
+           *   截图实测：入口卡片的 `bg-purple-950/25` 叠在紫背景上几乎看不出边界，
+           *   文字 `text-purple-300/40` 更是有字形都看不清。
+           *
+           * ⚠️ 解法（颜色分工）：
+           *   · **背景层**  保持紫色（深空氛围）
+           *   · **容器层**  深色实底（近黑紫 rgba(9,5,20,.78)）+ 玻璃模糊 → 有明确边界
+           *   · **描边层**  金色（rgba(212,175,55,.28)）→ 与紫底分离
+           *   · **图标层**  金色实心圈 + 金色图标 → 视觉焦点
+           *   · **文字层**  标题近白（琥珀白）、描述提亮到 68%
+           *   → 一句话：**背景紫、容器深、描边金、图标金、文字白**。
+           */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {[
               { href: "/daily", icon: "moon" as const, title: "今日之牌", desc: "今天与你有关的那张牌" },
@@ -1802,35 +1817,40 @@ export default function TarotApp() {
               <Link
                 key={e.href}
                 href={e.href}
-                className="group relative rounded-2xl border border-white/8 bg-purple-950/25 backdrop-blur-md px-4 py-4 transition-all duration-300 hover:border-purple-400/40 hover:bg-purple-900/30 hover:-translate-y-1"
+                className="group relative rounded-2xl border border-[rgba(212,175,55,0.26)] bg-[rgba(9,5,20,0.78)] backdrop-blur-md px-4 py-4 transition-all duration-300 hover:border-[rgba(240,217,138,0.55)] hover:-translate-y-1"
                 style={{
                   boxShadow:
-                    "0 6px 26px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.05)",
+                    "0 8px 30px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.07)",
                 }}
               >
                 {/* 悬停时的金色边光 */}
                 <span
                   className="absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
                   style={{
-                    boxShadow: "0 0 26px rgba(212,175,55,0.20)",
-                    border: "1px solid rgba(212,175,55,0.28)",
+                    boxShadow: "0 0 30px rgba(212,175,55,0.32), inset 0 0 20px rgba(212,175,55,0.08)",
                   }}
                 />
                 <div className="flex items-start gap-3">
+                  {/**
+                   * ⚠️ 图标圈：金色描边 + 深底 + 金色图标。
+                   * ⚠️ 为什么不用紫底紫图标：那是"同色系叠同色系"，对比度≈0。
+                   */}
                   <span
-                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors duration-300 group-hover:border-amber-400/50"
+                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all duration-300"
                     style={{
-                      border: "1px solid rgba(168,85,247,0.30)",
-                      background: "radial-gradient(circle at 34% 28%, rgba(76,29,149,0.7), rgba(12,6,26,0.8))",
+                      border: "1px solid rgba(212,175,55,0.45)",
+                      background:
+                        "radial-gradient(circle at 34% 28%, rgba(120,72,190,0.55), rgba(10,6,22,0.9))",
+                      boxShadow: "0 0 14px rgba(212,175,55,0.18)",
                     }}
                   >
-                    <Icon name={e.icon} size={16} className="text-purple-200/80 group-hover:text-amber-200" />
+                    <Icon name={e.icon} size={16} className="text-amber-200/90" />
                   </span>
                   <span className="min-w-0">
-                    <span className="block text-[13px] tracking-[0.12em] text-purple-50/90 group-hover:text-amber-50">
+                    <span className="block text-[13px] tracking-[0.12em] text-[rgba(255,248,235,0.96)] group-hover:text-amber-50">
                       {e.title}
                     </span>
-                    <span className="block text-[10px] text-purple-300/40 mt-0.5 leading-snug">
+                    <span className="block text-[10px] text-[rgba(203,190,255,0.68)] mt-0.5 leading-snug">
                       {e.desc}
                     </span>
                   </span>
@@ -1854,7 +1874,7 @@ export default function TarotApp() {
                 六个同样的方块摆在那儿 → 视觉权重相同、没有主次、没有"人"的感觉。
                 圆形徽章是神秘学语境里最自然的载体，且天然有聚焦感。 */}
           <div className="mb-7">
-            <p className="text-[11px] tracking-[0.28em] text-purple-300/40 mb-4 text-center">
+            <p className="text-[11px] tracking-[0.28em] text-[rgba(212,175,55,0.72)] mb-4 text-center">
               选 择 你 的 占 卜 师
             </p>
             {/**
@@ -1885,7 +1905,7 @@ export default function TarotApp() {
               "快速一问 vs 深度解读"是两种不同的**产品**，不是同一个东西的快慢版。
               放在后面就变成了"已经开始了才告诉我会等很久"（预期错配）。 */}
           <div className="flex items-center gap-2 mb-3 flex-wrap">
-            <span className="text-[11px] tracking-[0.2em] text-purple-300/40">占卜方式</span>
+            <span className="text-[11px] tracking-[0.2em] text-[rgba(212,175,55,0.62)]">占卜方式</span>
             {(Object.keys(MODE_PROFILES) as DivinationMode[]).map((m) => {
               const p = MODE_PROFILES[m];
               const active = mode === m;
@@ -1909,15 +1929,20 @@ export default function TarotApp() {
                 </button>
               );
             })}
-            <span className="text-[10px] text-purple-300/30 ml-1">
+            <span className="text-[10px] text-[rgba(196,181,253,0.55)] ml-1">
               {MODE_PROFILES[mode].tagline}
             </span>
           </div>
 
           <div className="flex flex-col sm:flex-row gap-3">
             <div className="relative flex-1">
+              {/**
+               * ⚠️ 2026-11-06 对比度修正：
+               *   原来 `bg-purple-950/30` + `border-purple-500/30` 叠在紫背景上 → 输入框边界不清。
+               * → 改为**深色实底 + 金色描边**，聚焦时金色发光（与魔法阵呼应）。
+               */}
               <input
-                className="w-full px-5 py-4 pr-12 text-lg rounded-2xl bg-purple-950/30 backdrop-blur-md border border-purple-500/30 text-purple-50 placeholder-purple-300/40 focus:outline-none focus:border-purple-400/70 focus:shadow-[0_0_24px_rgba(168,85,247,0.25)] transition-all"
+                className="w-full px-5 py-4 pr-12 text-lg rounded-2xl bg-[rgba(9,5,20,0.82)] backdrop-blur-md border border-[rgba(212,175,55,0.32)] text-[rgba(255,250,240,0.96)] placeholder-[rgba(190,178,235,0.42)] focus:outline-none focus:border-[rgba(240,217,138,0.75)] focus:shadow-[0_0_30px_rgba(212,175,55,0.30)] transition-all"
                 style={{ fontFamily: "'Ma Shan Zheng', serif" }}
                 placeholder="在此写下你的困惑…"
                 // ⚠️ P2-⑮：placeholder 不是可访问名称 —— 屏幕阅读器读不到。
@@ -1932,7 +1957,7 @@ export default function TarotApp() {
                 onClick={startVoice}
                 title="语音输入"
                 className={`absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center transition-all ${
-                  listening ? "bg-rose-500/30 text-rose-300 animate-pulse" : "text-purple-300/60 hover:text-purple-200"
+                  listening ? "bg-rose-500/30 text-rose-300 animate-pulse" : "text-[rgba(203,190,255,0.75)] hover:text-amber-200"
                 }`}
               >
                 {listening ? (
@@ -1946,7 +1971,13 @@ export default function TarotApp() {
               whileHover={{ scale: 1.04 }}
               whileTap={{ scale: 0.96 }}
               onClick={startDivination}
-              className="px-8 py-4 rounded-2xl bg-gradient-to-r from-purple-700 to-indigo-700 text-white text-lg font-medium shadow-[0_0_28px_rgba(139,92,246,0.45)] hover:shadow-[0_0_40px_rgba(139,92,246,0.65)] transition-shadow"
+              /**
+               * ⚠️ 2026-11-06：按钮从**紫渐变**改成**金渐变**。
+               * ⚠️ 为什么：紫色按钮在紫色背景上 = 又一个同色系元素（用户反馈的核心问题）。
+               *   → 改成金色渐变 → 它变成页面里最亮的可点击物（正确的视觉优先级：
+               *     主操作应该最醒目），同时与魔法阵/牌背的金统一。
+               */
+              className="px-8 py-4 rounded-2xl bg-gradient-to-r from-[#c9a227] via-[#e3c264] to-[#c9a227] text-[#2a1a05] text-lg font-medium shadow-[0_0_32px_rgba(212,175,55,0.45)] hover:shadow-[0_0_46px_rgba(240,217,138,0.60)] transition-shadow"
               style={{ fontFamily: "'Ma Shan Zheng', serif" }}
             >
               开始占卜
@@ -2013,7 +2044,7 @@ export default function TarotApp() {
               </div>
             </div>
           )}
-          <p className="mt-5 text-center text-purple-300/40 text-sm tracking-wide">
+          <p className="mt-5 text-center text-[rgba(196,181,253,0.60)] text-sm tracking-wide">
             {persona ? `${persona.emoji} ${persona.name}将主持这场占卜` : "AI 占卜师与你对话澄清 · 亲手选牌 · 典籍引用 · 审校质检"}
           </p>
         </motion.div>
