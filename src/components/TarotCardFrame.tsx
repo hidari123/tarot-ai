@@ -2,6 +2,7 @@
 
 import { motion } from "framer-motion";
 import { useState } from "react";
+import TarotCardBack from "@/components/TarotCardBack";
 
 /**
  * 塔罗牌框（2026-11-05 视觉重设计 · 第 2 批）
@@ -148,7 +149,10 @@ export default function TarotCardFrame({
               />
             </>
           ) : (
-            <TarotCardBack />
+            /* ⚠️ 2026-11-06：牌背纹样抽成独立组件（TarotCardBack）
+               —— 它现在有三个使用方（牌框 / 水晶球 / 运势页），
+               纹样是资产，不能复制三份。 */
+            <TarotCardBack className="w-full h-full" />
           )}
         </div>
 
@@ -170,65 +174,5 @@ export default function TarotCardFrame({
         </p>
       )}
     </div>
-  );
-}
-
-/**
- * 牌背（真 SVG 几何纹样）
- *
- * ⚠️ 为什么自己画而不是用图片：
- *   78 张牌面图都是彩色的，但没有牌背素材。
- *   → 画一个**几何纹样 + 中央符号 + 双层边框**的牌背，
- *     视觉上与牌面（古典油画）形成呼应又不抢戏。
- */
-function TarotCardBack() {
-  return (
-    <svg viewBox="0 0 200 300" className="w-full h-full" preserveAspectRatio="xMidYMid slice">
-      <defs>
-        <radialGradient id="tb-bg" cx="50%" cy="42%" r="70%">
-          <stop offset="0%" stopColor="#241346" />
-          <stop offset="60%" stopColor="#150b2e" />
-          <stop offset="100%" stopColor="#0a0618" />
-        </radialGradient>
-        <pattern id="tb-diamond" width="20" height="20" patternUnits="userSpaceOnUse">
-          <path d="M10 0 L20 10 L10 20 L0 10 Z" fill="none" stroke="rgba(168,85,247,0.20)" strokeWidth="0.7" />
-        </pattern>
-      </defs>
-
-      <rect width="200" height="300" fill="url(#tb-bg)" />
-      <rect width="200" height="300" fill="url(#tb-diamond)" />
-
-      {/* 双层边框 */}
-      <rect x="9" y="9" width="182" height="282" rx="6" fill="none" stroke="rgba(212,175,55,0.42)" strokeWidth="1.4" />
-      <rect x="15" y="15" width="170" height="270" rx="4" fill="none" stroke="rgba(168,85,247,0.30)" strokeWidth="0.8" />
-
-      {/* 中央符号（星 + 月） */}
-      <g transform="translate(100 150)" opacity="0.72">
-        <path
-          d="M0 -46 L11 -13 L46 -14 L18 7 L28 41 L0 21 L-28 41 L-18 7 L-46 -14 L-11 -13 Z"
-          fill="none"
-          stroke="rgba(212,175,55,0.55)"
-          strokeWidth="1.4"
-          strokeLinejoin="round"
-        />
-        <circle r="20" fill="none" stroke="rgba(168,85,247,0.45)" strokeWidth="1" />
-        <circle r="27" fill="none" stroke="rgba(168,85,247,0.22)" strokeWidth="0.7" strokeDasharray="3 5" />
-      </g>
-
-      {/* 四角小星（SVG path —— 不用字符，避免字体缺失变豆腐块） */}
-      {[
-        [30, 30],
-        [170, 30],
-        [30, 270],
-        [170, 270],
-      ].map(([x, y], i) => (
-        <path
-          key={i}
-          d="M0,-6 L1.7,-1.7 L6,0 L1.7,1.7 L0,6 L-1.7,1.7 L-6,0 L-1.7,-1.7 Z"
-          transform={`translate(${x} ${y})`}
-          fill="rgba(212,175,55,0.42)"
-        />
-      ))}
-    </svg>
   );
 }

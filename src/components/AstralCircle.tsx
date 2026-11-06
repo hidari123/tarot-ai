@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 /**
  * 星象魔法阵（2026-11-05 视觉重设计 · 第 1 批）
@@ -169,9 +169,9 @@ export default function AstralCircle({
         <defs>
           {/* 径向渐变：让环有"发光"而不是"线条" */}
           <radialGradient id="ac-core" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="rgba(216,180,254,0.5)" />
-            <stop offset="45%" stopColor="rgba(168,85,247,0.14)" />
-            <stop offset="100%" stopColor="rgba(168,85,247,0)" />
+            <stop offset="0%" stopColor="rgba(240,217,138,0.55)" />
+            <stop offset="45%" stopColor="rgba(212,175,55,0.16)" />
+            <stop offset="100%" stopColor="rgba(212,175,55,0)" />
           </radialGradient>
           <filter id="ac-glow" x="-50%" y="-50%" width="200%" height="200%">
             <feGaussianBlur stdDeviation="3" result="blur" />
@@ -195,7 +195,7 @@ export default function AstralCircle({
             cy={c}
             r={c * 0.935}
             fill="none"
-            stroke="rgba(168,85,247,0.20)"
+            stroke="rgba(212,175,55,0.22)"
             strokeWidth="1"
           />
           {ticks.map((t, i) => (
@@ -205,7 +205,7 @@ export default function AstralCircle({
               y1={t.y1}
               x2={t.x2}
               y2={t.y2}
-              stroke={t.major ? "rgba(212,175,55,0.42)" : "rgba(168,85,247,0.20)"}
+              stroke={t.major ? "rgba(212,175,55,0.42)" : "rgba(212,175,55,0.22)"}
               strokeWidth={t.major ? 1.4 : 0.8}
             />
           ))}
@@ -249,7 +249,7 @@ export default function AstralCircle({
             cy={c}
             r={c * 0.7}
             fill="none"
-            stroke="rgba(168,85,247,0.16)"
+            stroke="rgba(212,175,55,0.18)"
             strokeWidth="1"
           />
           {dashes.map((d, i) => (
@@ -259,7 +259,7 @@ export default function AstralCircle({
               y1={d.y1}
               x2={d.x2}
               y2={d.y2}
-              stroke="rgba(196,181,253,0.16)"
+              stroke="rgba(240,217,138,0.20)"
               strokeWidth="1"
             />
           ))}
@@ -277,7 +277,7 @@ export default function AstralCircle({
                 d={d}
                 transform="scale(1.25)"
                 fill="none"
-                stroke="rgba(196,181,253,0.34)"
+                stroke="rgba(240,217,138,0.38)"
                 strokeWidth="1.2"
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -298,7 +298,7 @@ export default function AstralCircle({
             width={c * 0.8}
             height={c * 0.8}
             fill="none"
-            stroke="rgba(168,85,247,0.16)"
+            stroke="rgba(212,175,55,0.18)"
             strokeWidth="1"
             transform={`rotate(45 ${c} ${c})`}
           />
@@ -323,11 +323,11 @@ export default function AstralCircle({
           cx={c}
           cy={c}
           r={c * 0.035}
-          fill="rgba(233,213,255,0.30)"
+          fill="rgba(240,217,138,0.34)"
           filter="url(#ac-glow)"
           opacity={op(0.7)}
         />
-        <circle cx={c} cy={c} r={c * 0.075} fill="none" stroke="rgba(216,180,254,0.18)" strokeWidth="1" />
+        <circle cx={c} cy={c} r={c * 0.075} fill="none" stroke="rgba(240,217,138,0.20)" strokeWidth="1" />
       </svg>
     </div>
   );

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 /**
  * 视觉回归截图（2026-11-05 视觉重设计）
  *
@@ -131,7 +131,7 @@ try {
     mobile: false,
   });
 
-  const url = `http://localhost:3000${pathArg}`;
+  const url = pathArg.startsWith("http") ? pathArg : `http://localhost:3000${pathArg}`;
   await send("Page.navigate", { url });
   // ⚠️ 真实等待（不是虚拟时间）—— 让动画与数据都跑完
   await sleep(Number(waitMs));

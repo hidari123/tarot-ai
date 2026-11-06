@@ -2,6 +2,7 @@
 
 import { motion, useMotionValue, useSpring, useTransform } from "framer-motion";
 import { useRef } from "react";
+import TarotCardBack from "@/components/TarotCardBack";
 
 /**
  * 占卜水晶球（2026-11-05 视觉重设计 · 第 3 批 · 首页主视觉）
@@ -141,17 +142,17 @@ export default function OracleOrb({
           />
         </motion.div>
 
-        {/* ---- A 轻量版：球内三张微型悬浮牌（A 方案的核心）----
-             ⚠️ 为什么球里要放牌：
-               球本身是"通用"隐喻（水晶球可以装任何东西），
-               而我们是**塔罗**产品 —— 球里浮着三张牌，一眼就知道这是塔罗，
-               不用任何文字解释。
-             ⚠️ 为什么"三张"：
-               对应我们的三张牌牌阵（过去/当下/未来）→ 语义一致。
-             ⚠️ 为什么极小（26px）且半透明：
-               它们是**暗示**不是主角 —— 主角是球的光影。
-               太大就变成"三张小图片贴在球上"，反而假。 */}
-        <FloatingCards />
+        {/* ---- 球内主牌（2026-11-06 改版：一张精致牌背居中）----
+             ⚠️⚠️ 为什么从「三张公转小牌」改成「一张牌背居中」：
+               ① **尺寸是物理限制**：190px 的球里放三张牌，每张只有 ~40px →
+                  再怎么调也看不清是牌，只剩"几张脏色块"（用户反馈"还是有点丑"）。
+               ② **竞品的答案**（2026-11-06 实测截图）：
+                  Tarot Run 的中心是**一张牌背**，牌背本身是极繁曼陀罗纹样；
+                  左右各一张倾斜的**线框**牌背暗示牌阵。
+                  → 他们的"高级感"来自**单件物品的细节**，不是"塞一堆东西"。
+               ③ **焦点**：一张牌居中 = 视线有落点；三张公转 = 视线无处停留。
+               → 所以：一张牌背 + 有厚度 + 缓慢呼吸 = 一件被玻璃罩住的物品。 */}
+        <CentralCard />
 
         {/* 内部星点 */}
         <div
@@ -202,27 +203,15 @@ export default function OracleOrb({
           }}
         />
 
-        {/* ---- A 轻量版：中央"问题之核"（脉动光点）----
-             ⚠️ 为什么需要：
-               球需要一个**焦点**，否则视线无处停留（"空"）。
-               而"脉动"= 活的 = 有东西在里面运行。
-             ⚠️ 为什么放中心而不是别的位置：
-               中心 = 球的重心 → 视觉焦点；且与魔法阵内核重叠时
-               会形成"阵中之心"的呼应。 */}
-        <motion.div
-          className="absolute left-1/2 top-1/2 rounded-full"
-          style={{
-            width: 26,
-            height: 26,
-            marginLeft: -13,
-            marginTop: -13,
-            background:
-              "radial-gradient(circle, rgba(255,255,255,0.92) 0%, rgba(216,180,254,0.55) 32%, rgba(139,92,246,0.18) 62%, transparent 78%)",
-            filter: "blur(0.5px)",
-          }}
-          animate={{ scale: [1, 1.22, 1], opacity: [0.85, 1, 0.85] }}
-          transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
-        />
+        {/**
+         * ⚠️ 2026-11-06：原来的「中央问题之核」（球心的脉动白点）已移除。
+         *
+         * ⚠️ 为什么移除：
+         *   球心现在是**牌**的位置 → 白点会打在牌面上，
+         *   变成"牌上有个亮点"（像坏点/反光瑕疵），反而脏。
+         * → 光核的语义移到**牌下方**（CentralCard 里的光池），
+         *   牌"落"在光上 → 更有体积感，且不遮挡主体。
+         */}
 
         {/* 内圈边缘光 */}
         <div
@@ -293,95 +282,92 @@ export default function OracleOrb({
 }
 
 /**
- * 球内三张微型悬浮牌（A 轻量版 · 2026-11-05）
+ * 球内主牌（2026-11-06）
  *
- * ⚠️ 为什么用 **SVG** 而不是绝对定位的 div：
- *   百分比 translate 相对的是**元素自身尺寸**（牌的宽/高），
- *   而轨道半径是相对**球直径**的 → 两者单位不同，
- *   用 div 做轨道必然算不准（实测：三张牌全挤在球心附近）。
- *   → 改成 SVG：视口 100×100，轨道半径直接用 viewBox 单位 → 精确。
+ * ⚠️ 为什么是**一张牌背**（而不是牌面）：
+ *   牌面是 78 张具体的牌 → 每张都不同 → 球的内容会"每天不一样"，
+ *   而且用户可能认出那张牌（"这是死神牌？"）→ 干扰首页的通用性。
+ *   → 牌背是**中性的容器**：它代表"还没揭示的命运"，
+ *     而且它的曼陀罗纹样本身就是视觉主体（竞品的做法）。
  *
- * ⚠️ 为什么用**固定的牌面图**（而非随机）：
- *   球是首页首屏 —— 每次刷新显示不同的牌会让人以为"变了"，
- *   而且我们**没有**为球做"每日牌"的语义。
- *   → 固定三张经典的牌（愚人/女祭司/世界），稳定且有辨识度。
+ * ⚠️ 为什么要有**厚度**（右侧一道亮边 + 底部暗边）：
+ *   没有厚度 = 一张贴图；有厚度 = 一张实体卡片躺在球里。
+ *   这个差别比任何细节都重要。
  *
- * ⚠️ 为什么是**公转**而非静止：
- *   静止的东西会被当成"背景图"；缓慢公转会被当成"活的"。
- *   公转周期必须**很长**（26 秒一轮）—— 快了会显得廉价。
- *
- * ⚠️ 为什么牌要**半透明 + 有景深**（远的小而暗）：
- *   球是玻璃，里面的东西应该被玻璃"罩住" → 有雾化感。
+ * ⚠️ 为什么**倾斜 -7°**：
+ *   完全正面的牌会显得像 UI 元素（证件照），
+ *   微微倾斜才有"随意摊在桌上"的感觉。
  */
-function FloatingCards() {
-  /** 三张牌的固定图（public/images/cards 下的经典牌） */
-  const CARDS = [
-    { src: "/images/cards/Fool.jpg", angle: -90 },
-    { src: "/images/cards/High_Priestess.jpg", angle: 30 },
-    { src: "/images/cards/World.jpg", angle: 150 },
-  ];
-  /** 轨道半径（viewBox 单位，球半径 = 50） */
-  const R = 27;
-  /** 牌的宽（viewBox 单位） */
-  const CARD_W = 15;
-
+function CentralCard() {
   return (
-    <motion.svg
-      className="absolute inset-0 w-full h-full"
-      viewBox="0 0 100 100"
-      animate={{ rotate: 360 }}
-      transition={{ duration: 26, repeat: Infinity, ease: "linear" }}
-      style={{ transformOrigin: "50% 50%" }}
+    <motion.div
+      className="absolute inset-0 flex items-center justify-center"
+      initial={{ opacity: 0, scale: 0.86 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 1.1, delay: 0.35, ease: "easeOut" }}
     >
-      {CARDS.map((c, i) => {
-        const a = (c.angle * Math.PI) / 180;
-        const x = 50 + R * Math.cos(a);
-        const y = 50 + R * Math.sin(a);
-        // 景深：牌在"背面"时（角度 90~270）更暗更小
-        const depth = (Math.sin(a) + 1) / 2; // 0=后 1=前
-        const scale = 0.72 + depth * 0.38;
-        const opacity = 0.32 + depth * 0.55;
-        const h = CARD_W * 1.5;
-        return (
-          <g key={i} transform={`translate(${x} ${y}) rotate(${c.angle + 90}) scale(${scale})`}>
-            {/* 牌（金边 + 微光） */}
-            <rect
-              x={-CARD_W / 2}
-              y={-h / 2}
-              width={CARD_W}
-              height={h}
-              rx="0.8"
-              fill="#0d0720"
-              stroke="rgba(212,175,55,0.75)"
-              strokeWidth="0.4"
-              opacity={opacity}
-            />
-            {/* 牌面图（用 image 元素） */}
-            <image
-              href={c.src}
-              x={-CARD_W / 2 + 0.3}
-              y={-h / 2 + 0.3}
-              width={CARD_W - 0.6}
-              height={h - 0.6}
-              preserveAspectRatio="xMidYMid slice"
-              opacity={opacity}
-              clipPath="inset(0 round 0.5px)"
-            />
-            {/* 背面的牌要压暗（让景深更明显） */}
-            {depth < 0.45 && (
-              <rect
-                x={-CARD_W / 2}
-                y={-h / 2}
-                width={CARD_W}
-                height={h}
-                rx="0.8"
-                fill="rgba(10,4,24,0.55)"
-                opacity={0.45 - depth * 0.45}
-              />
-            )}
-          </g>
-        );
-      })}
-    </motion.svg>
+      {/* 呼吸（很慢，幅度很小 —— 大幅度会显得廉价） */}
+      <motion.div
+        style={{ width: "48%", aspectRatio: "2 / 3", position: "relative" }}
+        animate={{ scale: [1, 1.025, 1], y: [0, -2, 0] }}
+        transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
+      >
+        {/* 牌（倾斜 + 有厚度） */}
+        <div
+          className="absolute inset-0"
+          style={{
+            transform: "rotate(-7deg) perspective(700px) rotateY(-9deg)",
+            transformStyle: "preserve-3d",
+            borderRadius: "6px",
+            overflow: "hidden",
+            boxShadow:
+              // 厚度：右侧亮边（受光）
+              "inset -3px 0 5px rgba(233,213,255,0.34), " +
+              // 底部暗边
+              "inset 0 -3px 6px rgba(0,0,0,0.62), " +
+              // 悬浮影
+              "0 12px 30px rgba(0,0,0,0.62), 0 0 34px rgba(212,175,55,0.20)",
+          }}
+        >
+          <TarotCardBack className="w-full h-full" />
+          {/**
+           * ⚠️ 压暗层：牌背在球里会被玻璃"罩住"，
+           *   直接显示原色太亮 → 看起来像贴在球面上的贴纸。
+           *   ⚠️ 为什么用 multiply 而不是降低 opacity：
+           *   opacity 会让**整个牌**变半透明（纹样也淡）；
+           *   multiply 只压暗亮度、保留纹样的对比度。
+           */}
+          <div
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              background: "rgba(18,10,38,0.42)",
+              mixBlendMode: "multiply",
+            }}
+          />
+          {/* 玻璃罩的高光（牌在球里 → 也会被球的高光影响） */}
+          <div
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              background:
+                "linear-gradient(118deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.03) 26%, transparent 46%)",
+            }}
+          />
+        </div>
+
+        {/* 牌下方的光池（让牌"落"在光上，而不是浮着） */}
+        <motion.div
+          className="absolute left-1/2 -bottom-4 -translate-x-1/2 rounded-[50%]"
+          style={{
+            width: "84%",
+            height: "20%",
+            background:
+              "radial-gradient(ellipse, rgba(212,175,55,0.38) 0%, rgba(139,92,246,0.18) 42%, transparent 72%)",
+            filter: "blur(8px)",
+          }}
+          animate={{ opacity: [0.7, 1, 0.7], scaleX: [0.94, 1.04, 0.94] }}
+          transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
+        />
+      </motion.div>
+    </motion.div>
   );
 }

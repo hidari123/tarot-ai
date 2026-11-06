@@ -1857,7 +1857,14 @@ export default function TarotApp() {
             <p className="text-[11px] tracking-[0.28em] text-purple-300/40 mb-4 text-center">
               选 择 你 的 占 卜 师
             </p>
-            <div className="flex justify-center gap-4 sm:gap-6 flex-wrap">
+            {/**
+             * ⚠️ 2026-11-06：排列从 flex-wrap 改成 grid-cols-5。
+             * ⚠️ 为什么：flex-wrap 下 5 个徽章是「4 + 1」——
+             *   最后一个孤零零掉到第二行 → 视觉断裂（截图实测）。
+             * → grid-cols-5 保证一行五个、间距均匀。
+             *   移动端用 grid-cols-3（第二行两个居中）。
+             */}
+            <div className="grid grid-cols-3 sm:grid-cols-5 gap-x-3 gap-y-5 justify-items-center max-w-[560px] mx-auto">
               {personas.map((p, pi) => (
                 <PersonaOrb
                   key={p.id}
