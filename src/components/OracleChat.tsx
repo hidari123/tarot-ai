@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -271,7 +271,10 @@ export default function OracleChat() {
   return (
     <div className="min-h-[100dvh] flex flex-col relative">
       {/* ⚠️ 2026-11-05 视觉重设计：统一的深空背景（神谕偏冷蓝 —— 冷光更有"清明的凝视"感） */}
-      <CelestialBackdrop tint="rgba(99, 102, 241, 0.16)" />
+      <CelestialBackdrop tint="rgba(99, 102, 241, 0.16)" 
+        image="/images/celestial/bg-oracle.webp"
+        imagePosition="center center"
+      />
       {/* 顶栏 */}
       <header className="shrink-0 border-b border-white/6 bg-[#0d0a18]/70 backdrop-blur-sm sticky top-0 z-20">
         <div className="max-w-3xl mx-auto px-5 py-3 flex items-center justify-between">

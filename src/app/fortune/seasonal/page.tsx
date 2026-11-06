@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+﻿import type { Metadata } from "next";
 import { Suspense } from "react";
 import { connection } from "next/server";
 import Link from "next/link";
@@ -117,7 +117,10 @@ export default function SeasonalPage() {
   return (
     <main className="min-h-[100dvh] relative overflow-hidden">
       {/* ⚠️ 2026-11-05 视觉重设计：统一的深空背景（四季偏青绿） */}
-      <CelestialBackdrop tint="rgba(16, 185, 129, 0.13)" />
+      <CelestialBackdrop tint="rgba(16, 185, 129, 0.13)" 
+        image="/images/celestial/bg-fortune.webp"
+        imagePosition="center center"
+      />
 
       <div className="relative z-10 max-w-3xl mx-auto px-5 py-10 sm:py-16">
         <nav className="mb-10 flex items-center justify-between text-sm">

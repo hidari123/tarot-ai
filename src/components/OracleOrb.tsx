@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { motion, useMotionValue, useSpring, useTransform } from "framer-motion";
 import { useRef } from "react";
@@ -329,7 +329,11 @@ function CentralCard() {
               "0 12px 30px rgba(0,0,0,0.62), 0 0 34px rgba(212,175,55,0.20)",
           }}
         >
-          <TarotCardBack className="w-full h-full" />
+          <TarotCardBack
+            className="w-full h-full"
+            image="/images/celestial/card-back.webp"
+            imageStyle={{ filter: "saturate(0.92) brightness(0.8)" }}
+          />
           {/**
            * ⚠️ 压暗层：牌背在球里会被玻璃"罩住"，
            *   直接显示原色太亮 → 看起来像贴在球面上的贴纸。
@@ -340,7 +344,7 @@ function CentralCard() {
           <div
             className="absolute inset-0 pointer-events-none"
             style={{
-              background: "rgba(18,10,38,0.42)",
+              background: "rgba(14,8,32,0.5)",
               mixBlendMode: "multiply",
             }}
           />

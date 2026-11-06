@@ -10,6 +10,10 @@
  *     ③ 运势页的牌背缩略
  *   → 纹样是**资产**，不能复制三份（改一次要改三处）。
  *
+ * ⚠️ 2026-11-06：优先使用 **AI 生成的牌背**（真金箔卷草纹 + 中央曼陀罗日轮）。
+ *   AI 生成的精细度远超手写 SVG path（金箔的明暗变化、卷草的曲线张力）。
+ *   → 但保留 SVG 版作为 fallback（图片未生成/加载失败时不至于空白）。
+ *
  * ⚠️ 纹样设计参考（竞品实测截图 2026-11-06）：
  *   Tarot Run 的牌背是**极繁曼陀罗**（几十条同心线 + 放射线 + 装饰卷草），
  *   在深色背景上是整页的视觉主体 —— 它的"高级感"来自纹样的密度，
@@ -30,6 +34,35 @@ export default function TarotCardBack({
   /** 宽度（viewBox 内部用 200×300 坐标，这里只是给容器用） */
   className = "",
   /** 是否显示中央符号（8 芒星） */
+  showCore = true,
+  /**
+   * ⚠️ AI 牌背图路径（传入则优先用它）
+   * ⚠️ 为什么做成参数而不是写死：
+   *   牌背图在三个使用方里尺寸需求不同（水晶球里要压暗、牌框里要原色），
+   *   让调用方决定用哪张 + 怎么叠效果。
+   */
+  image,
+  /** 图片的额外样式（叠暗度等） */
+  imageStyle,
+}: {
+  className?: string;
+  showCore?: boolean;
+  image?: string;
+  imageStyle?: React.CSSProperties;
+}) {
+  // ⚠️ 有 AI 图 → 渲染图；否则渲染 SVG fallback
+  if (image) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={image} alt="" className={className} style={imageStyle} />
+    );
+  }
+  return <TarotCardBackSvg className={className} showCore={showCore} />;
+}
+
+/** 牌背的 SVG 版本（fallback + 也被 TarotCardFrame 直接引用） */
+function TarotCardBackSvg({
+  className = "",
   showCore = true,
 }: {
   className?: string;

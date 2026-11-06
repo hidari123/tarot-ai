@@ -46,6 +46,25 @@ const PERSONA_SIGNS: string[] = [
   "M12 10.5c-2.2 0-3.6-1.4-3.6-3.1C8.4 5.7 10 4.6 12 4.6s3.6 1.1 3.6 2.8c0 1.7-1.4 3.1-3.6 3.1Z M8.8 9.4C6.6 9.4 5 7.9 5 6.1c0-1.5 1.3-2.5 3-2.5 1.9 0 3.4 1.3 3.4 3.1 0 1.5-1.1 2.7-2.6 2.7Z M15.2 9.4c2.2 0 3.8-1.5 3.8-3.3 0-1.6-1.3-2.5-3-2.5-1.9 0-3.4 1.3-3.4 3.1 0 1.5 1.1 2.7 2.6 2.7Z M12 10.5v9.5 M12 20c-1.5 0-2.5-1-2.5-2.2",
 ];
 
+/**
+ * 占卜师头像图（AI 生成 · 2026-11-06）
+ *
+ * ⚠️ 为什么用 AI 插画而不是符号：
+ *   符号（星盘/心/羽毛）表达的是"职能"，插画表达的是"**人**"。
+ *   占卜师是有性格的角色（用户能想象他/她的样子）→ 插画更能建立这种连接。
+ *   而且 AI 生成的古典油画风紫金配色，与魔法阵/牌背是同一套视觉语言。
+ *
+ * ⚠️ 顺序必须与占卜师列表的**声明顺序**一致（按 index 映射，不按 id 关键词 ——
+ *   之前的 id 关键词匹配踩过坑：实际 id 是 mystic/healer/blade…，不含 moon/leaf）。
+ */
+const PERSONA_IMAGES: Record<number, string> = {
+  0: "/images/celestial/persona-moon.webp",
+  1: "/images/celestial/persona-heart.webp",
+  2: "/images/celestial/persona-quill.webp",
+  3: "/images/celestial/persona-compass.webp",
+  4: "/images/celestial/persona-druid.webp",
+};
+
 export interface PersonaOrbProps {
   id: string;
   name: string;
@@ -67,6 +86,7 @@ export default function PersonaOrb({
 }: PersonaOrbProps) {
   const i = ((index % PERSONA_SIGNS.length) + PERSONA_SIGNS.length) % PERSONA_SIGNS.length;
   const path = PERSONA_SIGNS[i];
+  const img = PERSONA_IMAGES[index];
   // ⚠️ id 只用于 key/调试
   void id;
 
@@ -99,8 +119,15 @@ export default function PersonaOrb({
           </>
         )}
 
+        {/**
+         * ⚠️ 2026-11-06：AI 插画头像 + 符号 fallback。
+         * ⚠️ 为什么保留符号：
+         *   · 图片加载失败/未生成时不至于空白
+         *   · 符号在 54px 的圆里其实更"图标化"，插画在更大的尺寸才好看
+         * → 头像放大到 64px（插画需要足够像素才能看出细节）
+         */}
         <div
-          className="relative w-[54px] h-[54px] rounded-full flex items-center justify-center transition-all duration-300"
+          className="relative w-[64px] h-[64px] rounded-full flex items-center justify-center transition-all duration-300 overflow-hidden"
           style={{
             /**
              * ⚠️ 统一底色（不再五色相）。
@@ -119,20 +146,34 @@ export default function PersonaOrb({
               : "0 0 12px rgba(139,92,246,0.12), inset 0 1px 0 rgba(255,255,255,0.05)",
           }}
         >
-          {/* 符号：1.3px 线条（比纯 1px 稍粗 —— 26px 的图标用 1px 在深底上会糊） */}
-          <svg
-            viewBox="0 0 24 24"
-            width="30"
-            height="30"
-            fill="none"
-            stroke={selected ? "rgba(240,217,138,0.95)" : "rgba(203,190,255,0.78)"}
-            strokeWidth="1.3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="transition-colors duration-300"
-          >
-            <path d={path} />
-          </svg>
+          {img ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={img}
+              alt={name}
+              className="w-full h-full object-cover object-top"
+              style={{
+                filter: selected
+                  ? "saturate(1.08) brightness(1.04)"
+                  : "saturate(0.86) brightness(0.88)",
+                transition: "filter .35s ease",
+              }}
+            />
+          ) : (
+            /* fallback：符号（1.3px 线条 —— 纯 1px 在这个尺寸会糊） */
+            <svg
+              viewBox="0 0 24 24"
+              width="30"
+              height="30"
+              fill="none"
+              stroke={selected ? "rgba(240,217,138,0.95)" : "rgba(203,190,255,0.78)"}
+              strokeWidth="1.3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d={path} />
+            </svg>
+          )}
         </div>
       </div>
 

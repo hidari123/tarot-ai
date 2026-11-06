@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+﻿import type { Metadata } from "next";
 import { Suspense } from "react";
 import { connection } from "next/server";
 import Link from "next/link";
@@ -115,7 +115,10 @@ async function MonthlyContent() {
 export default function MonthlyPage() {
   return (
     <main className="min-h-[100dvh] relative overflow-hidden">
-      <CelestialBackdrop tint="rgba(212, 175, 55, 0.16)" />
+      <CelestialBackdrop tint="rgba(212, 175, 55, 0.16)" 
+        image="/images/celestial/bg-fortune.webp"
+        imagePosition="center center"
+      />
 
       <div className="relative z-10 max-w-3xl mx-auto px-5 py-10 sm:py-16">
         <nav className="mb-10 flex items-center justify-between text-sm">

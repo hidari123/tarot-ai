@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
@@ -1716,11 +1716,20 @@ export default function TarotApp() {
        *   → 让已经是 inset-0 的背景层做 flex 居中 → 位置永远正确。
        * ⚠️ active：占卜进行中 → 魔法阵亮起（视觉上"仪式在运转"）。
        */}
+      {/**
+       * ⚠️ 2026-11-06：接入 AI 生成的背景素材。
+       * · 背景图：真实星云（AI 生成，23KB WebP）—— CSS 渐变做不出絮状结构
+       * · 魔法阵：AI 生成的古典星盘刻蚀图（比 CSS SVG 精细几个量级）
+       * ⚠️ 魔法阵的 opacity 由 CelestialBackdrop 内部乘 0.3 → 保持"淡"
+       */}
       <CelestialBackdrop
         showCircle
-        circleSize={700}
+        circleSize={620}
         circleIntensity={0.72}
         circleActive={stage !== "input"}
+        image="/images/celestial/bg-home.webp"
+        imagePosition="center center"
+        circleImage="/images/celestial/magic-circle.png"
       />
 
       {/* ---------- 环境音控制（固定右上角）----------

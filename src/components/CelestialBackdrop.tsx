@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import AstralCircle from "@/components/AstralCircle";
@@ -60,6 +60,19 @@ export default function CelestialBackdrop({
   circleIntensity = 0.75,
   /** 魔法阵是否"激活"（亮起） */
   circleActive = false,
+  /**
+   * ⚠️ AI 生成的背景图（2026-11-06）
+   * ⚠️ 为什么加这个开关：
+   *   CSS 渐变做不出"絮状星云结构"（纯渐变的破绽就是"太干净"），
+   *   AI 生成的星云有真实的纤维走向与颗粒感。
+   * → 传了 image 就用它当底图，并**自动关掉 CSS 星云与 CSS 星点**
+   *   （两层叠加会显脏，且 AI 图里的星点更真实）。
+   */
+  image,
+  /** 背景图的光位（AI 出图时主体常在某个角落，cover 裁切时靠它取景） */
+  imagePosition = "center center",
+  /** AI 生成的魔法阵图（有则优先于 CSS SVG 版） */
+  circleImage,
   className = "",
 }: {
   tint?: string;
@@ -68,13 +81,20 @@ export default function CelestialBackdrop({
   circleSize?: number;
   circleIntensity?: number;
   circleActive?: boolean;
+  image?: string;
+  imagePosition?: string;
+  circleImage?: string;
   className?: string;
 }) {
   const [stars, setStars] = useState<Star[]>([]);
+  /** ⚠️ 有 AI 背景图时，不再生成 CSS 星点（避免两层叠加显脏） */
+  const useCssStars = !image;
 
   useEffect(() => {
     // ⚠️ 必须 defer 到客户端 effect：
     //   Next.js 16 预渲染禁用 Math.random（会被烘进静态壳 → 所有页面星图一样）。
+    // ⚠️ 有 AI 背景图时跳过（AI 图自带真实星点）。
+    if (!useCssStars) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setStars(
       STAR_COUNTS.flatMap((count, depth) =>
@@ -93,7 +113,7 @@ export default function CelestialBackdrop({
         })
       )
     );
-  }, []);
+  }, [useCssStars]);
 
   return (
     <div
@@ -117,12 +137,38 @@ export default function CelestialBackdrop({
         style={{ background: "linear-gradient(180deg, #0b0618 0%, #07040f 45%, #05020a 100%)" }}
       />
 
-      {/* ---- 层 2：主光源（顶部中央） ---- */}
+      {/**
+       * ---- 层 1.5：AI 星云底图（2026-11-06）----
+       * ⚠️ 为什么插在底色之上、其他层之下：
+       *   它是"底"，但不能是"最底"（最底是纯色 → 边缘会看到色块接缝）。
+       *   放这里 → 上面的暗角/噪点能作用在它身上 → 融进页面。
+       *
+       * ⚠️ 为什么用 <img> 而不是 CSS background-image：
+       *   · <img> 可以加 <picture>/srcset 做响应式（移动端用小图）
+       *   · background-image 无法做 srcset
+       *   · Next 的 next/image 对背景图没有优化路径
+       */}
+      {image && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={image}
+          alt=""
+          className="absolute inset-0 w-full h-full object-cover"
+          style={{ objectPosition: imagePosition }}
+          loading="eager"
+          decoding="async"
+        />
+      )}
+
+      {/* ---- 层 2：主光源（顶部中央） ----
+           ⚠️ 有 AI 底图时减弱 —— AI 图已经自带光影，
+             再叠一层渐变会把它"洗平"。 */}
       {showPrimary && (
         <div
           className="absolute inset-0"
           style={{
             background: `radial-gradient(ellipse 70% 50% at 50% -8%, ${tint}, transparent 70%)`,
+            opacity: image ? 0.45 : 1,
           }}
         />
       )}
@@ -140,28 +186,34 @@ export default function CelestialBackdrop({
       />
 
       {/* ---- 层 4：星云（3 团缓慢漂移的大色斑） ----
-           ⚠️ blur-3xl + 极低透明度 = 有体积的"气体"而不是色块 */}
-      <div
-        className="absolute -left-1/4 top-[15%] w-[70vw] h-[70vw] rounded-full opacity-[0.09] blur-3xl"
-        style={{
-          background: "radial-gradient(circle, #7c3aed 0%, transparent 68%)",
-          animation: "nebula-drift-a 44s ease-in-out infinite",
-        }}
-      />
-      <div
-        className="absolute -right-1/4 top-[35%] w-[60vw] h-[60vw] rounded-full opacity-[0.07] blur-3xl"
-        style={{
-          background: "radial-gradient(circle, #2563eb 0%, transparent 68%)",
-          animation: "nebula-drift-b 58s ease-in-out infinite",
-        }}
-      />
-      <div
-        className="absolute bottom-[-15%] left-[25%] w-[55vw] h-[55vw] rounded-full opacity-[0.06] blur-3xl"
-        style={{
-          background: "radial-gradient(circle, #a21caf 0%, transparent 68%)",
-          animation: "nebula-drift-a 67s ease-in-out infinite reverse",
-        }}
-      />
+           ⚠️ blur-3xl + 极低透明度 = 有体积的"气体"而不是色块
+           ⚠️ 2026-11-06：有 AI 底图时**整层关闭** ——
+             AI 星云本身就是有结构的星云，再叠 CSS 色斑会显脏。 */}
+      {!image && (
+        <>
+          <div
+            className="absolute -left-1/4 top-[15%] w-[70vw] h-[70vw] rounded-full opacity-[0.09] blur-3xl"
+            style={{
+              background: "radial-gradient(circle, #7c3aed 0%, transparent 68%)",
+              animation: "nebula-drift-a 44s ease-in-out infinite",
+            }}
+          />
+          <div
+            className="absolute -right-1/4 top-[35%] w-[60vw] h-[60vw] rounded-full opacity-[0.07] blur-3xl"
+            style={{
+              background: "radial-gradient(circle, #2563eb 0%, transparent 68%)",
+              animation: "nebula-drift-b 58s ease-in-out infinite",
+            }}
+          />
+          <div
+            className="absolute bottom-[-15%] left-[25%] w-[55vw] h-[55vw] rounded-full opacity-[0.06] blur-3xl"
+            style={{
+              background: "radial-gradient(circle, #a21caf 0%, transparent 68%)",
+              animation: "nebula-drift-a 67s ease-in-out infinite reverse",
+            }}
+          />
+        </>
+      )}
 
       {/* ---- 层 5：星尘（三档景深） ---- */}
       {stars.length > 0 && (
@@ -193,23 +245,55 @@ export default function CelestialBackdrop({
       />
 
       {/* ---- 层 7：暗角（把视线收进中心） ----
-           ⚠️ 这一层制造"景深"：边缘压暗 → 中心内容浮出来。 */}
+           ⚠️ 这一层制造"景深"：边缘压暗 → 中心内容浮出来。
+           ⚠️ 2026-11-06：有 AI 底图时**加强**中心保护 ——
+             AI 图中心可能正好有亮星云，而文字/水晶球就在那儿
+             → 需要更深的中心压暗来保证可读性。 */}
       <div
         className="absolute inset-0"
         style={{
-          background:
-            "radial-gradient(ellipse 75% 65% at 50% 45%, transparent 35%, rgba(2, 1, 6, 0.55) 100%)",
+          background: image
+            ? "radial-gradient(ellipse 68% 58% at 50% 44%, rgba(3,2,8,0.78) 0%, rgba(3,2,8,0.55) 45%, rgba(2,1,6,0.72) 100%)"
+            : "radial-gradient(ellipse 75% 65% at 50% 45%, transparent 35%, rgba(2, 1, 6, 0.55) 100%)",
         }}
       />
 
-      {/* ---- 层 8：星象魔法阵（可选） ----
+      {/* ---- 层 8：星象魔法阵（可选）----
            ⚠️ 为什么魔法阵要放在**这个宿主里面**（而不是页面里自己定位）：
              页面级定位（absolute/fixed + 百分比）会因为祖先的 transform /
              filter / backdrop-filter 而偏移（实测三次都跑偏）。
-             → 让这个已经是 inset-0 的层做 flex 居中 → 位置永远正确。 */}
+             → 让这个已经是 inset-0 的层做 flex 居中 → 位置永远正确。
+           ⚠️ 2026-11-06：优先用 **AI 生成的星盘图**（真实刻蚀质感，
+             比 CSS 画的精细几个量级），没有图时才退回 CSS 的 SVG 版本。
+           ⚠️ AI 魔法阵必须**很淡**（circleIntensity × 0.3）：
+             它在星云上只是"精密仪器"的一层叠加，不能抢主角。 */}
       {showCircle && (
         <div className="absolute inset-0 flex items-center justify-center">
-          <AstralCircle size={circleSize} intensity={circleIntensity} active={circleActive} />
+          {circleImage ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={circleImage}
+              alt=""
+              className="pointer-events-none select-none"
+              style={{
+                width: circleSize,
+                height: circleSize,
+                /**
+                 * ⚠️ 2026-11-06：整体再压暗（0.3 → 0.22）。
+                 * ⚠️ 为什么要压到这么淡：
+                 *   AI 星盘图的黄道符号非常清晰，如果不压暗会**抢主角**
+                 *   （用户要的是"淡魔法阵做叠加装饰，不抢戏"）。
+                 *   → 靠 opacity + 轻微模糊让它退成"底纹"，
+                 *   但轮廓还在（这是"精密仪器"感的关键）。
+                 */
+                opacity: circleIntensity * 0.22,
+                filter: "drop-shadow(0 0 24px rgba(212,175,55,0.20)) blur(0.4px)",
+                animation: "astral-spin 220s linear infinite",
+              }}
+            />
+          ) : (
+            <AstralCircle size={circleSize} intensity={circleIntensity} active={circleActive} />
+          )}
         </div>
       )}
     </div>
