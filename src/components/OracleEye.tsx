@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { motion } from "framer-motion";
 
@@ -79,7 +79,6 @@ export default function OracleEye({
          *   大部分时间睁着，偶尔眨一下（人眼的自然节奏）；
          *   active（思考中）眨眼更频繁 → 有"正在观察"的紧迫感。
          */}
-        {/* eslint-disable-next-line @next/next/no-img-element */}
         <motion.img
           src="/images/celestial/oracle-eye.webp"
           alt=""

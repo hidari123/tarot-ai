@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { motion, useMotionValue, useSpring } from "framer-motion";
 import { useRef } from "react";
@@ -48,8 +48,8 @@ export default function CelestialOrb({
         const el = ref.current;
         if (!el) return;
         const r = el.getBoundingClientRect();
-        mx.set((e.clientX - r.left) / r.width - 0.5);
-        my.set((e.clientY - r.top) / r.height - 0.5);
+        mx.set(((e.clientX - r.left) / r.width - 0.5) * parallax);
+        my.set(((e.clientY - r.top) / r.height - 0.5) * parallax);
       }}
       onPointerLeave={() => {
         mx.set(0);

@@ -99,6 +99,12 @@ jobs:
           #    重点防守卫死锁 —— 快速模式跳过呼召，若守卫仍检查全部前置，
           #    选牌会被永久拦截（只在选快速模式时复现，深度模式完全正常）
           npx tsx scripts/verify-divination-mode.mjs
+          # ⚠️ 快速模式收束守卫（2026-11-06）：
+          #    重点守 close_reading 的守卫按模式分支 ——
+          #    快速模式不做 interpret_card，若守卫仍检查 slot.reading
+          #    → 永远拦截 → 模型反复重试 → 撞 max_rounds
+          #    （真实流程由 scripts/dev/e2e-quick.mjs 手动验证）
+          npx tsx scripts/verify-quick-mode.mjs
           # ⚠️ 运势矩阵（2026-11-04）：每日 / 周 / 月 / 季 / 年运流年
           #    重点守确定性（同一天永远同一张牌）与客户端/服务端分层
           #    （客户端组件间接引入 better-sqlite3 会让构建失败）
