@@ -179,21 +179,66 @@ const TASKS = [
   },
 
   /**
-   * 开始占卜按钮底纹
-   * ⚠️⚠️ 2026-11-06 放弃 AI 图，改用 CSS（实测教训）：
-   *   AI 出的"金框"图有三个无法解决的问题：
-   *     ① 中间是**深蓝底**（不是纯黑）→ 抠图后残留成蓝灰噪点
-   *     ② 框线是**宽扁**的（3:1），塞进小按钮要拉伸 → 变形
-   *     ③ 尺寸/透明通道让 PNG8/WebP 都压不到小体积
-   *   → 按钮底纹改用 CSS（渐变 + 金边 + 卷草感的 box-shadow），
-   *     AI 图留给真正需要"精细纹样"的地方（水晶球 / 神谕之眼 / 牌背 / 魔法阵）。
+   * 开始占卜按钮 —— 两张配套图（普通态 / hover 发光态）
+   * ⚠️ 用户要求："开始占卜那个按钮还是要图片，不要 css 的边框了，
+   *   图片可以设计成两个，一个普通的，一个 hover 上去发光"。
+   *
+   * ⚠️ 为什么文案**不烧进图片**：
+   *   · 位图文字在高分屏/缩放下会糊
+   *   · 无法被屏幕阅读器朗读（无障碍）
+   *   · 字体与全站不统一（我们用马善政楷书）
+   *   → 图片只提供**纹样**，文字用 HTML 叠在中间。
+   *
+   * ⚠️⚠️ 为什么必须用 **cornerFlood**（边缘连通抠底）：
+   *   这两张图的**中心是深蓝底**（不是纯黑），亮度 30~60；
+   *   而金色框线亮度 120~250。
+   *   → 单纯亮度阈值分不开（阈值高了框线还在但底也还在）。
+   *   → 但**中心深蓝底不与边缘连通**（被金框围住），
+   *     而**外围纯黑**与边缘连通。
+   *   → 先用 cornerFlood 抠掉外围黑，再用 luminanceAlpha 把中心深蓝也变透明。
+   *
+   * ⚠️ 为什么两张图都用 square:false（保持宽扁比例）：
+   *   按钮约 3:1，正方形化会把框线拉成方的。
+   *
+   * ⚠️⚠️ 为什么**不裁剪**（cropToContent 省略）：
+   *   AI 画的框线只有 2~3px 宽（1280px 原图上），
+   *   裁到最小包围盒再缩到 720 → 框线只剩 1px → alpha 稀薄 → 看起来"很淡"
+   *   （实测：实心像素只有 147 个）。
+   *   → 保留完整画面（不裁）→ 缩放后框线虽细但**连续可见**，
+   *     而且外围的黑会被 cornerFlood 抠掉。
    */
   {
-    src: "btn_gold.jpg",
-    out: "btn-gold.webp",
-    width: 640,
-    quality: 86,
-    trim: { threshold: 14 },
+    src: "btn_normal.jpg",
+    out: "btn-normal.webp",
+    width: 720,
+    quality: 88,
+    cornerFlood: { threshold: 95 },
+    luminanceAlpha: {
+      threshold: 38,
+      boost: 0.5,
+      tint: { from: [150, 116, 36], to: [250, 232, 176] },
+    },
+    /**
+     * ⚠️ 必须裁掉上下空白：
+     *   AI 出的图是 16:9，但框只占中间一条 → 按钮是 3:1，
+     *   object-cover 裁掉左右但**上下大片留白** → 框缩在中间一小块（截图实测）。
+     *   → 裁到框的包围盒 → 图片变成 3:1 的框 → 正好贴合按钮。
+     * ⚠️ square:false：框是宽扁的，正方形化会拉变形。
+     */
+    cropToContent: { threshold: 62, square: false },
+  },
+  {
+    src: "btn_hover.jpg",
+    out: "btn-hover.webp",
+    width: 720,
+    quality: 88,
+    cornerFlood: { threshold: 95 },
+    luminanceAlpha: {
+      threshold: 38,
+      boost: 0.38,
+      tint: { from: [176, 136, 44], to: [255, 246, 208] },
+    },
+    cropToContent: { threshold: 62, square: false },
   },
 
   /** 分享卡背景（竖版） */
@@ -452,7 +497,13 @@ for (const t of TASKS) {
       // 冷色像素（R < B）直接判为背景
       if (warmOnly && r < b) norm = 0;
       if (tint) {
-        const lum01 = Math.min(1, lum / 255);
+        /**
+         * ⚠️⚠️ 为什么用 **归一化亮度**而不是原始 lum：
+         *   用 lum/255 → 原图亮度 100~180 的框线只映射到 39%~70% 的暗金
+         *   → 抠出来的框线**太淡**（截图实测：几乎看不见）。
+         *   → 改成扣除阈值后的归一化值 → 框线两端都能到亮金。
+         */
+        const lum01 = Math.min(1, Math.max(0, (lum - th) / (255 - th)));
         const [r0, g0, b0] = tint.from;
         const [r1, g1, b1] = tint.to;
         rawData[i] = Math.round(r0 + (r1 - r0) * lum01);

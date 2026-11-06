@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
@@ -2006,35 +2006,58 @@ export default function TarotApp() {
               whileTap={{ scale: 0.97 }}
               onClick={startDivination}
               /**
-               * ⚠️ 2026-11-06：按钮改成「CSS 金属渐变 + 文字」。
-               * ⚠️ 为什么放弃 AI 金框图（用户反馈："这三个图片怎么变成了横条"）：
-               *   ① AI 出的框是**宽扁 3:1**，塞进小按钮要拉伸 → 变形
-               *   ② 中间是**深蓝底**（不是纯黑）→ 抠图后残留成"横条/噪点"
-               *   ③ 透明通道让体积也压不下去
-               *   → 按钮改用纯 CSS：斜向金属渐变 + 金色描边 + 内高光 + 外发光。
-               *   AI 图留给真正需要精细纹样处（水晶球 / 神谕之眼 / 牌背 / 魔法阵）。
+               * ⚠️ 2026-11-06：按钮改成「AI 生成的两张配套图」。
+               * ⚠️ 用户要求："开始占卜那个按钮还是要图片，我的意思是不要 css 的边框了，
+               *   图片可以设计成两个，一个普通的，一个 hover 上去发光"。
                *
-               * ⚠️ 为什么用**三层渐变**模拟金属：
-               *   一层渐变 = 塑料；斜向高光带 + 底部暗带 + 顶部亮线 = 有厚度。
+               * ⚠️ 实现：
+               *   · 默认显示 `btn-normal.webp`（静态金框）
+               *   · hover 时淡入 `btn-hover.webp`（带辉光的那张）
+               *   · 两张图**叠放**（absolute inset-0），用 opacity 切换
+               *   · 文字用 HTML 渲染在图片中央（不烧进图：位图字会糊、
+               *     无法朗读、字体与全站不统一）
+               * ⚠️ 为什么**去掉 CSS border**：
+               *   边框由图片提供 → 再加 CSS 边框会叠成两层框线（用户明确要求去掉）。
                */
-              className="relative px-10 py-4 rounded-2xl transition-all"
+              /**
+               * ⚠️ 为什么用 **aspect-ratio 锁比例 + object-cover**：
+               *   ① 底图是 2:1 → 按钮用 aspect-ratio: 2/1 → 形状与图完全一致
+               *   ② object-cover 在同比例下等价于"不拉伸"，框线完整
+               *   ⚠️ 为什么不用 object-fill：
+               *   按钮的实际尺寸（内容 + padding）不会精确等于 2:1
+               *   → fill 会把框线横向拉伸 → 卷草角饰变形（截图实测：框被压扁）。
+               *   ⚠️ 为什么不用 object-contain：
+               *   contain 会让图在按钮里居中留边 → 框线不贴按钮边缘（有空隙）。
+               *   → **让按钮的形状跟随图片**（aspect-ratio），图片铺满它。
+               */
+              className="group relative aspect-[2/1] w-[196px] shrink-0 transition-all"
               style={{
+                // 按钮自身的深底（图片透明处透出它，保证文字可读）
                 background:
-                  "linear-gradient(150deg, rgba(120,84,18,0.95) 0%, rgba(206,164,66,0.95) 22%, rgba(246,224,160,0.95) 38%, rgba(196,152,54,0.95) 56%, rgba(126,88,20,0.95) 78%, rgba(178,138,44,0.95) 100%)",
-                border: "1px solid rgba(240,217,138,0.75)",
-                boxShadow:
-                  // 外发光
-                  "0 0 30px rgba(212,175,55,0.45), 0 8px 24px rgba(0,0,0,0.5), " +
-                  // 内侧顶部高光（金属的"上边缘反光"）
-                  "inset 0 1px 0 rgba(255,255,255,0.55), inset 0 -2px 6px rgba(90,60,10,0.45)",
+                  "radial-gradient(ellipse 70% 90% at 50% 50%, rgba(30,18,58,0.96), rgba(10,6,22,0.98))",
+                boxShadow: "0 8px 26px rgba(0,0,0,0.55)",
               }}
             >
-              {/* 文字（深色 → 在亮金底上对比度更好） */}
+              {/* 默认态：静态金框 */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/images/celestial/btn-normal.webp"
+                alt=""
+                className="absolute inset-0 w-full h-full object-cover pointer-events-none transition-opacity duration-300"
+              />
+              {/* hover 态：发光金框（淡入） */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/images/celestial/btn-hover.webp"
+                alt=""
+                className="absolute inset-0 w-full h-full object-cover pointer-events-none opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+              />
+              {/* 文字（HTML 渲染 → 清晰、可朗读、字体统一） */}
               <span
-                className="relative text-[#2a1a05] text-lg font-medium tracking-[0.1em]"
+                className="relative text-[#f6e4a8] text-lg font-medium tracking-[0.14em]"
                 style={{
                   fontFamily: "'Ma Shan Zheng', serif",
-                  textShadow: "0 1px 0 rgba(255,255,255,0.35)",
+                  textShadow: "0 0 14px rgba(212,175,55,0.55), 0 1px 2px rgba(0,0,0,0.8)",
                 }}
               >
                 开始占卜
