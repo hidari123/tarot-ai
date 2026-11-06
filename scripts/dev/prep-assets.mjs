@@ -105,19 +105,26 @@ const TASKS = [
 
   /**
    * 三个入口图标
-   * ⚠️ 用户反馈："今日之牌的图标外面还有白色的底色，周围没有透明化完全"。
-   * ⚠️ 根因：JPEG 压缩把纯黑底压成了**深灰**（亮度 16~47）→
-   *   线性映射下这些像素拿到 alpha 15~90 → 叠在深色卡片上就是一层"白雾"。
-   *   实测三个图标的"半透明区"占 34~48%。
-   * ⚠️ 修复：用 **boost（gamma < 1）** 把中间调狠狠压下去 ——
-   *   亮度刚过阈值的 → alpha 极低（几乎全透明）；只有真正亮的金线才实。
-   *   → boost 0.35：阈值附近彻底清空，只留下清晰的金线。
+   * ⚠️ 用户反馈（第二轮）："今日之牌的图标外面还有白色的底色 / 还是有四个边角"。
+   * ⚠️ 根因（实测采样）：
+   *   icon_daily 的**四角是米白色**（亮度 250+），
+   *   而模型把图标画在**黑圆**里 → 图 = 黑圆 + 米白方块背景。
+   *   → 亮度阈值分不开"米白底"和"金色线"（米白比金线还亮）。
+   * ⚠️ 解法：**边缘连通抠底**（cornerFlood）
+   *   从四个角出发，只把**与角连通的高亮区域**判为背景。
+   *   → 米白底与四角连通 → 被抠掉
+   *   → 金色线被黑圆包围，与角不连通 → 完整保留
+   *   ⚠️ 为什么不用"亮度阈值"：
+   *   米白(250) 比金线(200) 还亮 → 任何阈值都会把两者一起留下或一起删。
+   *   → 必须用**连通性**而不是亮度来区分。
    */
   {
     src: "icon_daily.jpg",
     out: "icon-daily.webp",
     width: 128,
     quality: 92,
+    /** 边缘连通抠底：高于此亮度的、与四角连通的像素 = 背景 */
+    cornerFlood: { threshold: 90 },
     luminanceAlpha: { threshold: 52, boost: 0.35, tint: { from: [138, 106, 30], to: [246, 224, 160] } },
     cropToContent: { threshold: 80 },
   },
@@ -227,10 +234,82 @@ for (const t of TASKS) {
   // ② 取原始像素（后续操作都在这份 raw 上做，全程不丢 alpha 通道）
   let rawData = null;
   let rawInfo = null;
-  if (t.cropToContent || t.luminanceAlpha) {
+  if (t.cropToContent || t.luminanceAlpha || t.cornerFlood) {
     const r = await img.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     rawData = Buffer.from(r.data);
     rawInfo = r.info;
+  }
+
+  /**
+   * ②.5 边缘连通抠底（cornerFlood）
+   *
+   * ⚠️⚠️ 为什么需要这个（用户反馈"今日之牌图标还有四个边角"）：
+   *   icon_daily 的构图是「黑圆 + 米白方块背景」——
+   *   模型的 prompt 里写了 "on pure black background"，但它同时画了个黑圆，
+   *   圆外是**米白色**（亮度 250+，比金线还亮）。
+   *   → 任何**亮度阈值**都分不开"米白底"和"金色线"。
+   *
+   * ⚠️ 解法：**连通性**而非亮度：
+   *   从图像四个角出发做 flood fill，
+   *   只把**与角连通且亮度 > 阈值**的像素标为"背景"。
+   *   → 米白底与四角连通 → 被抠掉
+   *   → 金色线被黑圆包住，与角不连通 → 完整保留
+   *
+   * ⚠️ 为什么是 4 邻域（不是 8 邻域）：
+   *   8 邻域会沿对角线"漏"进黑圆里的缝隙 → 误伤图形。
+   *   4 邻域更保守。
+   */
+  if (t.cornerFlood && rawData && rawInfo) {
+    const th = t.cornerFlood.threshold ?? 90;
+    const W = rawInfo.width;
+    const H = rawInfo.height;
+    const CH = rawInfo.channels;
+    /** 背景标记（1 = 背景） */
+    const isBg = new Uint8Array(W * H);
+    /** 待处理队列（用数组模拟栈，避免大图内存爆） */
+    const stack = [];
+    const pushIf = (x, y) => {
+      if (x < 0 || y < 0 || x >= W || y >= H) return;
+      const p = y * W + x;
+      if (isBg[p]) return;
+      const i = p * CH;
+      const lum = 0.299 * rawData[i] + 0.587 * rawData[i + 1] + 0.114 * rawData[i + 2];
+      if (lum <= th) return; // 暗像素 → 不是背景（是黑圆或图形）
+      isBg[p] = 1;
+      stack.push(p);
+    };
+    // 四个角作为种子
+    pushIf(0, 0);
+    pushIf(W - 1, 0);
+    pushIf(0, H - 1);
+    pushIf(W - 1, H - 1);
+    // 边缘也作为种子（米白底常常从边缘渗进来）
+    for (let x = 0; x < W; x++) {
+      pushIf(x, 0);
+      pushIf(x, H - 1);
+    }
+    for (let y = 0; y < H; y++) {
+      pushIf(0, y);
+      pushIf(W - 1, y);
+    }
+    // BFS
+    while (stack.length > 0) {
+      const p = stack.pop();
+      const x = p % W;
+      const y = (p / W) | 0;
+      pushIf(x + 1, y);
+      pushIf(x - 1, y);
+      pushIf(x, y + 1);
+      pushIf(x, y - 1);
+    }
+    // 标记出来的背景像素 → 直接把 RGB 压到 0（后续 luminanceAlpha 会判为全透明）
+    for (let p = 0; p < isBg.length; p++) {
+      if (!isBg[p]) continue;
+      const i = p * CH;
+      rawData[i] = 0;
+      rawData[i + 1] = 0;
+      rawData[i + 2] = 0;
+    }
   }
 
   // ③ 按亮像素包围盒裁掉四周空白（必须在缩放之前 —— 坐标系问题）
