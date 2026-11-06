@@ -164,16 +164,18 @@ export default function CelestialBackdrop({
        * ---- 层 1.6：动态星云流转（2026-11-06）----
        * ⚠️ 用户要求："背景也希望是动态效果的，有星云流转的感觉"。
        *
-       * ⚠️ 为什么用 **conic-gradient + 旋转** 做流动：
-       *   AI 底图是静态的 → 页面还是"死的"。
-       *   而"星云流转"的本质是**色带在缓慢旋转/漂移**。
-       *   → conic-gradient 天然是螺旋色带（角度渐变），
-       *     旋转它 = 螺旋在转 = 典型的星云流动感。
-       *   → 三层不同色相 + 不同周期 → 相对运动 → 看不出规律。
+       * ⚠️⚠️ 为什么之前"没出现"（用户反馈）：
+       *   ① 用了 `nebula-drift-a/b` —— 那两个 keyframes 只有**平移**（±5%），
+       *      肉眼几乎看不出变化；而且它们是给纯色模糊斑设计的。
+       *   ② opacity 只有 0.10~0.16 → 太淡。
+       *   ③ conic-gradient 的螺旋不**旋转**就等于静态。
+       * → 改用专用的 `celestial-swirl-*`（真的旋转）+ 提高可见度。
+       *
        * ⚠️ 为什么用 mix-blend-mode: screen：
        *   亮色叠加在暗底上才"发光"；normal 混合只会覆盖。
-       * ⚠️ 为什么 opacity 这么低（0.10~0.16）：
-       *   这是**氛围层**不是主体 → 一点点就够。太亮会盖过 AI 底图的细节。
+       * ⚠️ 为什么三个周期互质（97 / 131 / 163 秒）：
+       *   相同周期 → 几团云会周期性地对齐 → 看出规律。
+       *   互质 → 永不重复 → 看起来是真实的天体漂移。
        */}
       {image && (
         <>
@@ -186,11 +188,11 @@ export default function CelestialBackdrop({
               height: "76%",
               borderRadius: "50%",
               background:
-                "conic-gradient(from 0deg, rgba(139,92,246,0) 0deg, rgba(139,92,246,0.55) 55deg, rgba(76,29,149,0.28) 140deg, rgba(139,92,246,0) 230deg, rgba(168,85,247,0.42) 300deg, rgba(139,92,246,0) 360deg)",
-              filter: "blur(70px)",
+                "conic-gradient(from 0deg, rgba(139,92,246,0) 0deg, rgba(139,92,246,0.75) 55deg, rgba(76,29,149,0.40) 140deg, rgba(139,92,246,0) 230deg, rgba(168,85,247,0.58) 300deg, rgba(139,92,246,0) 360deg)",
+              filter: "blur(64px)",
               mixBlendMode: "screen",
-              opacity: 0.16,
-              animation: "nebula-drift-a 76s ease-in-out infinite",
+              opacity: 0.30,
+              animation: "celestial-swirl-a 97s linear infinite",
             }}
           />
           <div
@@ -202,11 +204,11 @@ export default function CelestialBackdrop({
               height: "66%",
               borderRadius: "50%",
               background:
-                "conic-gradient(from 140deg, rgba(59,130,246,0) 0deg, rgba(59,130,246,0.48) 70deg, rgba(30,64,175,0.22) 170deg, rgba(59,130,246,0) 260deg, rgba(147,51,234,0.34) 320deg, rgba(59,130,246,0) 360deg)",
-              filter: "blur(76px)",
+                "conic-gradient(from 140deg, rgba(59,130,246,0) 0deg, rgba(59,130,246,0.68) 70deg, rgba(30,64,175,0.34) 170deg, rgba(59,130,246,0) 260deg, rgba(147,51,234,0.48) 320deg, rgba(59,130,246,0) 360deg)",
+              filter: "blur(70px)",
               mixBlendMode: "screen",
-              opacity: 0.13,
-              animation: "nebula-drift-b 92s ease-in-out infinite reverse",
+              opacity: 0.26,
+              animation: "celestial-swirl-b 131s linear infinite",
             }}
           />
           {/* 金色的暖光流转（呼应牌背/魔法阵的金） */}
@@ -219,11 +221,11 @@ export default function CelestialBackdrop({
               height: "52%",
               borderRadius: "50%",
               background:
-                "conic-gradient(from 200deg, rgba(212,175,55,0) 0deg, rgba(212,175,55,0.40) 80deg, rgba(212,175,55,0) 190deg, rgba(240,217,138,0.30) 280deg, rgba(212,175,55,0) 360deg)",
-              filter: "blur(84px)",
+                "conic-gradient(from 200deg, rgba(212,175,55,0) 0deg, rgba(212,175,55,0.58) 80deg, rgba(212,175,55,0) 190deg, rgba(240,217,138,0.44) 280deg, rgba(212,175,55,0) 360deg)",
+              filter: "blur(78px)",
               mixBlendMode: "screen",
-              opacity: 0.10,
-              animation: "nebula-drift-a 64s ease-in-out infinite reverse",
+              opacity: 0.20,
+              animation: "celestial-swirl-c 163s linear infinite",
             }}
           />
         </>

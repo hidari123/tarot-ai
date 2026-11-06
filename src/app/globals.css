@@ -198,6 +198,37 @@ body {
 }
 
 /**
+ * 星云流转（2026-11-06）
+ *
+ * ⚠️⚠️ 为什么不能复用 nebula-drift-a/b：
+ *   那两个 keyframes 只有**平移 + 缩放**（±5% 位移）→ 幅度太小，
+ *   肉眼几乎看不出变化（用户反馈"动态星云效果没出现"）。
+ *   而且它们是给**纯色模糊斑**用的（靠位移制造"气体在飘"的错觉），
+ *   而星云流转层是 **conic-gradient 螺旋** → 必须真的**旋转**才能看出在转。
+ *
+ * ⚠️ 为什么用 `rotate` 而不是 `translate`：
+ *   conic-gradient 的角度是相对元素自身的 → 元素旋转 = 螺旋跟着转。
+ *   → 这才是真正的"星云在流转"。
+ *
+ * ⚠️ 为什么三个周期互质（97 / 131 / 163 秒）：
+ *   相同周期 → 几团云会周期性地对齐 → 看出规律。
+ *   互质 → 永不重复 → 看起来是真实的天体漂移。
+ */
+@keyframes celestial-swirl-a {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+@keyframes celestial-swirl-b {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(-360deg); }
+}
+@keyframes celestial-swirl-c {
+  0% { transform: rotate(0deg) scale(1); }
+  50% { transform: rotate(180deg) scale(1.12); }
+  100% { transform: rotate(360deg) scale(1); }
+}
+
+/**
  * 水晶球光晕呼吸（2026-11-05 视觉重设计）
  * ⚠️ 幅度必须很小（0.90 → 1.06）——
  *   幅度大就变成"呼吸的灯泡"，廉价且干扰视线。

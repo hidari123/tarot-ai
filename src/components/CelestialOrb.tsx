@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { motion, useMotionValue, useSpring } from "framer-motion";
 import { useRef } from "react";
@@ -6,22 +6,21 @@ import { useRef } from "react";
 /**
  * 占卜水晶球 · 动态版（2026-11-06）
  *
- * ⚠️ 用户给的参考图（紫发神谕师手捧水晶球）：
- *   关键特征不是"球"，而是**球里的活**：
+ * ⚠️ 用户参考图：紫发神谕师**手从下面托着**水晶球
+ *   要求："手在下面拖着、不要太写实、透明底"。
+ *
+ * ⚠️⚠️ 为什么静态图不够：
+ *   参考图的"活"来自四层叠加，静态图只有一层：
  *     · 内部有星云在**流动/旋转**（不是静态贴图）
  *     · 球心有一个**炽烈的光源**在呼吸
  *     · 玻璃表面有**流动的高光**
  *     · 球体随鼠标**视差**位移
- *   → 用 CSS/JS 实现这四层动态，而不是靠"把一张图做成 GIF"。
+ *   → 用 CSS/JS 实现这四层，而不是把静态图做成 GIF。
  *
  * ⚠️ 为什么不用 GIF / 视频：
  *   · GIF 无法响应鼠标
  *   · 视频体积大且要等加载
  *   → framer-motion + CSS 动画：零额外流量、可交互、可降级。
- *
- * ⚠️ 为什么球心要有"炽烈光源"：
- *   没有它，球就是"一个发光的球体"；
- *   有了它，球就是"**里面有什么在燃烧**"——有生命力、有方向感。
  */
 export default function CelestialOrb({
   size = 230,
@@ -72,9 +71,11 @@ export default function CelestialOrb({
         transition={{ duration: 5.5, repeat: Infinity, ease: "easeInOut" }}
       />
 
-      {/* ---- 玻璃球体（AI 素材 + 动态高光） ----
-           ⚠️ 为什么球体的静态图放在最下层：
-             动态层（内部星云旋转、核心光、流动高光）都要画在它上面。 */}
+      {/**
+       * ---- AI 水晶球（主体）----
+       * ⚠️ 素材已用 sharp 抠成**透明底**（亮度转 alpha）→ 直接叠即可，
+       *   不需要 mix-blend-mode（那会污染整个背景）。
+       */}
       <motion.div
         className="absolute inset-0 flex items-center justify-center"
         style={{ x: sx, y: sy }}
@@ -85,51 +86,57 @@ export default function CelestialOrb({
           alt="水晶球"
           className="w-full h-full object-contain pointer-events-none"
           style={{
-            filter: "drop-shadow(0 0 46px rgba(139,92,246,0.45))",
+            filter: "drop-shadow(0 0 40px rgba(139,92,246,0.42))",
           }}
         />
       </motion.div>
 
       {/**
-       * ---- 动态层 ①：内部星云环（旋转 + 反向双层）----
-       * ⚠️ 为什么用 conic-gradient 而不是图片：
-       *   参考图的"流动感"来自**螺旋状的色带**在转 →
-       *   conic-gradient 天然就是螺旋色带（角度渐变）。
-       *   两层反向旋转 → 产生"星系相对运动"的错觉。
+       * ---- 动态层 ①：球内的螺旋星云（只覆盖球体区域）----
+       * ⚠️ 为什么定位在 top 42% / left 50%：
+       *   手捧图里球在**画面中心偏上**（球心约在 42% 高度处）。
+       *   → 动态层必须跟着球心走，否则光会浮在手上。
+       * ⚠️ 为什么用 conic-gradient：
+       *   角度渐变天然是螺旋色带 → 旋转它 = 螺旋在转 = 星云流动感。
+       *   两层反向 + 不同周期 → 相对运动 → 看不出规律。
        */}
       <motion.div
         className="absolute pointer-events-none"
         style={{
-          left: "16%",
-          top: "12%",
-          width: "68%",
-          height: "68%",
+          left: "50%",
+          top: "42%",
+          width: "38%",
+          height: "38%",
+          marginLeft: "-19%",
+          marginTop: "-19%",
           borderRadius: "50%",
           background:
-            "conic-gradient(from 0deg, rgba(216,180,254,0.00) 0deg, rgba(216,180,254,0.55) 40deg, rgba(129,140,248,0.30) 120deg, rgba(216,180,254,0.00) 200deg, rgba(192,132,252,0.42) 280deg, rgba(216,180,254,0.00) 360deg)",
-          filter: "blur(9px)",
+            "conic-gradient(from 0deg, rgba(216,180,254,0) 0deg, rgba(216,180,254,0.55) 45deg, rgba(129,140,248,0.32) 130deg, rgba(216,180,254,0) 220deg, rgba(192,132,252,0.45) 300deg, rgba(216,180,254,0) 360deg)",
+          filter: "blur(7px)",
           mixBlendMode: "screen",
-          opacity: 0.62,
+          opacity: 0.55,
         }}
         animate={{ rotate: 360 }}
-        transition={{ duration: 24, repeat: Infinity, ease: "linear" }}
+        transition={{ duration: 18, repeat: Infinity, ease: "linear" }}
       />
       <motion.div
         className="absolute pointer-events-none"
         style={{
-          left: "24%",
-          top: "20%",
-          width: "52%",
-          height: "52%",
+          left: "50%",
+          top: "42%",
+          width: "28%",
+          height: "28%",
+          marginLeft: "-14%",
+          marginTop: "-14%",
           borderRadius: "50%",
           background:
-            "conic-gradient(from 180deg, rgba(59,130,246,0.00) 0deg, rgba(59,130,246,0.40) 90deg, rgba(59,130,246,0.00) 190deg, rgba(217,119,6,0.28) 290deg, rgba(59,130,246,0.00) 360deg)",
-          filter: "blur(11px)",
+            "conic-gradient(from 160deg, rgba(59,130,246,0) 0deg, rgba(59,130,246,0.45) 100deg, rgba(59,130,246,0) 210deg, rgba(217,119,6,0.30) 300deg, rgba(59,130,246,0) 360deg)",
+          filter: "blur(9px)",
           mixBlendMode: "screen",
-          opacity: 0.5,
+          opacity: 0.45,
         }}
         animate={{ rotate: -360 }}
-        transition={{ duration: 36, repeat: Infinity, ease: "linear" }}
+        transition={{ duration: 27, repeat: Infinity, ease: "linear" }}
       />
 
       {/**
@@ -143,18 +150,18 @@ export default function CelestialOrb({
         style={{
           left: "50%",
           top: "42%",
-          width: "26%",
-          height: "26%",
-          marginLeft: "-13%",
-          marginTop: "-13%",
+          width: "16%",
+          height: "16%",
+          marginLeft: "-8%",
+          marginTop: "-8%",
           borderRadius: "50%",
           background:
-            "radial-gradient(circle, rgba(255,255,255,0.98) 0%, rgba(240,217,138,0.72) 22%, rgba(196,181,253,0.34) 46%, transparent 72%)",
+            "radial-gradient(circle, rgba(255,255,255,0.98) 0%, rgba(240,217,138,0.70) 26%, rgba(196,181,253,0.30) 50%, transparent 74%)",
           filter: "blur(1px)",
           mixBlendMode: "screen",
         }}
-        animate={{ scale: [0.9, 1.22, 0.9], opacity: [0.75, 1, 0.75] }}
-        transition={{ duration: 3.4, repeat: Infinity, ease: "easeInOut" }}
+        animate={{ scale: [0.9, 1.25, 0.9], opacity: [0.8, 1, 0.8] }}
+        transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
       />
       {/* 核心的扩散光晕 */}
       <motion.div
@@ -162,18 +169,18 @@ export default function CelestialOrb({
         style={{
           left: "50%",
           top: "42%",
-          width: "52%",
-          height: "52%",
-          marginLeft: "-26%",
-          marginTop: "-26%",
+          width: "40%",
+          height: "40%",
+          marginLeft: "-20%",
+          marginTop: "-20%",
           borderRadius: "50%",
           background:
-            "radial-gradient(circle, rgba(196,181,253,0.34) 0%, rgba(139,92,246,0.14) 40%, transparent 68%)",
+            "radial-gradient(circle, rgba(196,181,253,0.30) 0%, rgba(139,92,246,0.12) 42%, transparent 68%)",
           filter: "blur(12px)",
           mixBlendMode: "screen",
         }}
-        animate={{ scale: [1, 1.18, 1], opacity: [0.5, 0.9, 0.5] }}
-        transition={{ duration: 3.4, repeat: Infinity, ease: "easeInOut" }}
+        animate={{ scale: [1, 1.18, 1], opacity: [0.55, 0.9, 0.55] }}
+        transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
       />
 
       {/**
@@ -184,42 +191,42 @@ export default function CelestialOrb({
       <motion.div
         className="absolute pointer-events-none"
         style={{
-          left: "14%",
-          top: "10%",
-          width: "34%",
-          height: "24%",
+          left: "40%",
+          top: "28%",
+          width: "18%",
+          height: "12%",
           borderRadius: "50%",
           background:
-            "radial-gradient(ellipse at 40% 40%, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.12) 46%, transparent 70%)",
-          filter: "blur(6px)",
+            "radial-gradient(ellipse at 40% 40%, rgba(255,255,255,0.52) 0%, rgba(255,255,255,0.10) 48%, transparent 72%)",
+          filter: "blur(5px)",
           mixBlendMode: "screen",
         }}
         animate={{
-          x: [0, 16, 4, 0],
-          y: [0, 8, 18, 0],
-          opacity: [0.75, 0.5, 0.85, 0.75],
+          x: [0, 12, 3, 0],
+          y: [0, 6, 14, 0],
+          opacity: [0.7, 0.45, 0.8, 0.7],
         }}
-        transition={{ duration: 14, repeat: Infinity, ease: "easeInOut" }}
+        transition={{ duration: 13, repeat: Infinity, ease: "easeInOut" }}
       />
 
-      {/* ---- 动态层 ④：上升的星尘（从球底升起） ---- */}
-      {[0, 1, 2, 3].map((i) => (
+      {/* ---- 动态层 ④：上升的星尘（从球里升起） ---- */}
+      {[0, 1, 2].map((i) => (
         <motion.span
           key={i}
           className="absolute pointer-events-none rounded-full"
           style={{
-            left: `${38 + i * 8}%`,
-            bottom: "30%",
-            width: 2.4,
-            height: 2.4,
+            left: `${45 + i * 5}%`,
+            top: "44%",
+            width: 2.2,
+            height: 2.2,
             background: "rgba(255,255,255,0.9)",
             boxShadow: "0 0 6px rgba(216,180,254,0.9)",
           }}
-          animate={{ y: [0, -70], opacity: [0, 0.9, 0] }}
+          animate={{ y: [0, -52], opacity: [0, 0.9, 0] }}
           transition={{
-            duration: 5 + i * 0.9,
+            duration: 4.5 + i * 0.9,
             repeat: Infinity,
-            delay: i * 1.3,
+            delay: i * 1.4,
             ease: "easeOut",
           }}
         />

@@ -1,24 +1,30 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 /**
- * AI 素材后处理（2026-11-06）
+ * AI 素材后处理（2026-11-06 重写）
  *
  * ⚠️ 为什么需要这一步：
  *   MiniMax image-01 的输出有几个"不能直接用"的问题：
  *     ① 牌背图带**白边**（模型把牌画在白底上）→ 必须裁掉
- *     ② 头像图有**暗角背景** → 直接用会是方形硬边，需要圆形遮罩或羽化
+ *     ② 主体图（水晶球/神谕之眼）带**黑底或深蓝底** → 必须变透明
  *     ③ JPEG 有块状伪影 + 体积大 → 转 WebP
- *     ④ 尺寸固定 1024² → 我们只需要 128~256px（省流量）
+ *     ④ 尺寸固定 1024² → 我们只需要 128~820px（省流量）
  *
  * ⚠️ 为什么用 sharp 而不是 PS：
  *   这些都是**确定性的批量处理**（裁切 / 缩放 / 转码），
  *   sharp 更快、可写进 CI、无需人工操作。
  *   PS 留给"需要人眼判断的调色"（用户手动做的事）。
  *
+ * ⚠️ 两种抠底方式（各有用武之地，别混用）：
+ *   · luminanceAlpha —— 按亮度映射 alpha。适合"深底 + 亮主体"。
+ *     ⚠️ 必须**在缩放之前**做：缩放会插值淡化细线，亮度掉到阈值下就丢了。
+ *   · cropToContent —— 按亮像素包围盒裁掉四周空白。
+ *
  * 用法：node scripts/dev/prep-assets.mjs
  */
 
 import sharp from "sharp";
 import { mkdirSync, existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
 
 const SRC = "shots/gen";
@@ -32,60 +38,130 @@ mkdirSync(OUT, { recursive: true });
 
 /**
  * 处理清单
- * ⚠️ 每项的 crop/fit 是**人工调过的**（看生成结果决定的），不是通用参数。
+ * ⚠️ 每项的参数都是**人工调过的**（看生成结果决定的），不是通用值。
  */
 const TASKS = [
+  /* ========== 背景 ========== */
   /**
-   * 背景：三张页面背景
+   * 三张页面背景
    * ⚠️ 为什么 resize 到 1920 宽（比原图 1280 大）：
    *   CSS background-size:cover 会把 1280 拉伸到 1920+ → 轻微发虚。
    *   放大到 1920 让它有 1.5x 余量（retina 屏 @2x 才不虚）。
    */
-  {
-    src: "bg_home.jpg",
-    out: "bg-home.webp",
-    width: 1920,
-    quality: 72,
-  },
+  { src: "bg_home.jpg", out: "bg-home.webp", width: 1920, quality: 72 },
   { src: "bg_fortune.jpg", out: "bg-fortune.webp", width: 1920, quality: 72 },
   { src: "bg_oracle.jpg", out: "bg-oracle.webp", width: 1920, quality: 72 },
+  /** 移动端小图（手机流量敏感，1920 纯属浪费） */
+  { src: "bg_home.jpg", out: "bg-home-sm.webp", width: 640, quality: 66 },
+  /** 每日之牌页背景（暖紫调） */
+  { src: "bg_daily.jpg", out: "bg-daily.webp", width: 1920, quality: 72 },
+
+  /* ========== 主体素材（需要抠底） ========== */
 
   /**
-   * 移动端小图（480px）
-   * ⚠️ 为什么单独出：手机流量敏感，1920 的图在手机上纯属浪费。
+   * 水晶球（手捧式 · 2026-11-06）
+   * ⚠️ 用户参考图：紫发神谕师手捧水晶球
+   *   要求："手在下面拖着、不要太写实、透明底"。
+   *
+   * ⚠️ 为什么用**亮度转 alpha**（而不是径向遮罩）：
+   *   这张图的主体（手 + 球）铺满画面，外围才是背景
+   *   → 径向遮罩会把手的边缘切掉。
+   *   → 亮度转 alpha：背景（深蓝，亮度 0~31）→ 透明；
+   *     手（浅粉，亮度 160~220）与球（紫白）完整保留。
+   * ⚠️ 实测亮度分布（1024² 采样）：
+   *   0~31 占 72%（背景）、32~63 占 12%、128+ 占 24%（手与球）
+   *   → 阈值 34：背景全透明，主体完整。
+   *
+   * ⚠️⚠️ 为什么**不能**用 cropToContent：
+   *   这张图的手**超出画面底部**（包围盒一直顶到 y=1023）
+   *   → 裁剪会把手截断，再正方形化 → 主体变形（截图实测：变成条纹矩形）。
+   *   → 保持原始比例，只抠底色即可。
    */
-  { src: "bg_home.jpg", out: "bg-home-sm.webp", width: 640, quality: 66 },
+  {
+    src: "orb_hands.jpg",
+    out: "orb-crystal.webp",
+    width: 820,
+    quality: 82,
+    luminanceAlpha: { threshold: 34 },
+  },
+
+  /**
+   * 神谕之眼（2026-11-06）
+   * ⚠️ 用户要求："透明底 + 眨眼"。
+   * ⚠️ 为什么用亮度转 alpha 而不是径向遮罩：
+   *   这张图的金色光芒**延伸到画面边缘** → 径向遮罩会把光芒切断。
+   *   → 背景（深蓝）→ 透明；金色光芒与虹膜（亮度 140+）→ 保留。
+   * ⚠️ 为什么**不能**用 cropToContent：
+   *   光芒顶到画面边缘 → 裁剪会切掉光芒尖端（正方形化还会变形）。
+   *   → 保持原始比例。
+   */
+  {
+    src: "oracle_eye2.jpg",
+    out: "oracle-eye.webp",
+    width: 620,
+    quality: 82,
+    luminanceAlpha: { threshold: 34 },
+  },
+
+  /**
+   * 三个入口图标
+   * ⚠️ 用户反馈："今日之牌的图标外面还有白色的底色，周围没有透明化完全"。
+   * ⚠️ 根因：JPEG 压缩把纯黑底压成了**深灰**（亮度 16~47）→
+   *   线性映射下这些像素拿到 alpha 15~90 → 叠在深色卡片上就是一层"白雾"。
+   *   实测三个图标的"半透明区"占 34~48%。
+   * ⚠️ 修复：用 **boost（gamma < 1）** 把中间调狠狠压下去 ——
+   *   亮度刚过阈值的 → alpha 极低（几乎全透明）；只有真正亮的金线才实。
+   *   → boost 0.35：阈值附近彻底清空，只留下清晰的金线。
+   */
+  {
+    src: "icon_daily.jpg",
+    out: "icon-daily.webp",
+    width: 128,
+    quality: 92,
+    luminanceAlpha: { threshold: 52, boost: 0.35, tint: { from: [138, 106, 30], to: [246, 224, 160] } },
+    cropToContent: { threshold: 80 },
+  },
+  {
+    src: "icon_fortune.jpg",
+    out: "icon-fortune.webp",
+    width: 128,
+    quality: 92,
+    luminanceAlpha: { threshold: 52, boost: 0.35, tint: { from: [138, 106, 30], to: [246, 224, 160] } },
+    cropToContent: { threshold: 80 },
+  },
+  {
+    src: "icon_oracle.jpg",
+    out: "icon-oracle.webp",
+    width: 128,
+    quality: 92,
+    luminanceAlpha: { threshold: 52, boost: 0.35, tint: { from: [138, 106, 30], to: [246, 224, 160] } },
+    cropToContent: { threshold: 80 },
+  },
+
+  /* ========== 装饰素材 ========== */
 
   /**
    * 魔法阵
    * ⚠️ 为什么用 **PNG8（量化调色板）** 而不是 PNG24 / WebP：
    *   · PNG24 + alpha = 283 KB（alpha 通道无损存储）
    *   · WebP + alpha = 250 KB（alpha 同样基本无损）
-   *   · **PNG8 量化到 64 色调色板** → 约 40~60 KB
-   *     金色线条的颜色数很少（本来就只有金→黑这一个色相），
-   *     量化几乎无损 → 体积降 5 倍，观感一致。
-   *
-   * ⚠️ 为什么要"按亮度转 alpha"而不是"黑色变透明"：
-   *   AI 生成的魔法阵底色不是纯黑，是**深蓝黑**（模型给背景加蓝调）。
-   *   → 简单判黑会留下一整块深蓝圆盘挡住星云。
-   *   → 用亮度连续映射 alpha：暗部淡出，亮部（金线）原样保留。
+   *   · **PNG8 量化到 32 色调色板** → 约 140 KB
+   *     金色线条的颜色数很少（本来就只有金→黑这一个色相），量化几乎无损。
+   * ⚠️ 底色是**深蓝黑**（不是纯黑）→ 不能简单判黑，
+   *   否则会留下一整块深蓝圆盘挡住星云。
    */
   {
     src: "magic_circle.jpg",
     out: "magic-circle.png",
     width: 760,
     png: true,
-    /** 按亮度转 alpha */
     luminanceAlpha: { threshold: 58 },
-    /** 量化到 N 色（256 = 8bit 索引色） */
     colors: 32,
   },
 
   /**
    * 牌背
-   * ⚠️ 为什么需要裁白边：
-   *   模型把牌画在**白底**上（左右和上下都有白边）。
-   *   → 用 trim() 自动裁掉纯白边。
+   * ⚠️ 为什么需要裁白边：模型把牌画在**白底**上（左右和上下都有白边）。
    */
   {
     src: "card_back.jpg",
@@ -96,95 +172,22 @@ const TASKS = [
   },
 
   /**
-   * 五个占卜师头像
-   * ⚠️ 为什么用圆形裁切（而不是方形）：
-   *   头像是圆形徽章（与现在的 PersonaOrb 圆形容器一致）→
-   *   方形图放圆形容器里会有四角露出的黑边。
-   * → 圆形 alpha 遮罩。
-   */
-  { src: "p_moon.jpg", out: "persona-moon.webp", width: 256, quality: 84, circle: true },
-  { src: "p_heart.jpg", out: "persona-heart.webp", width: 256, quality: 84, circle: true },
-  { src: "p_quill.jpg", out: "persona-quill.webp", width: 256, quality: 84, circle: true },
-  { src: "p_compass.jpg", out: "persona-compass.webp", width: 256, quality: 84, circle: true },
-  { src: "p_druid.jpg", out: "persona-druid.webp", width: 256, quality: 84, circle: true },
-
-  /* ========== 2026-11-06 第四批：全套 AI 素材 ========== */
-
-  /** 今日之牌页背景（与主页同体系，暖紫调） */
-  { src: "bg_daily.jpg", out: "bg-daily.webp", width: 1920, quality: 72 },
-
-  /**
-  /**
-   * 水晶球（首页主视觉）
-   * ⚠️⚠️ 为什么用 **径向遮罩** 而不是亮度转 alpha：
-   *   亮度转 alpha 的思路是"黑=透明"，但水晶球**本身就是深紫色**
-   *   （亮度只有 30~60）→ 无论怎么调阈值都会把球体一起吃掉
-   *   （实测：threshold 12 + 开方后，球体几乎完全透明，只剩星盘和底座）。
-   *
-   *   → 换思路：**这个主体是居中的球+底座，外围矩形是背景**
-   *     → 用**径向渐变遮罩**：中心完全不透明，边缘渐隐。
-   *     → 球体（深紫）完整保留，只有黑边被羽化掉。
-   * ⚠️ 为什么遮罩半径比球略大：
-   *   底座比球宽（金座）→ 遮罩要包住底座，否则底座边缘会有黑边。
-   */
-  {
-    src: "orb_crystal.jpg",
-    out: "orb-crystal.webp",
-    width: 760,
-    quality: 80,
-    /** 径向遮罩：中心不透明 → 边缘渐隐 */
-    radialMask: { inner: 0.55, outer: 0.78 },
-  },
-
-  /**
-   * 神谕之眼（同样用径向遮罩）
-   */
-  {
-    src: "oracle_eye.jpg",
-    out: "oracle-eye.webp",
-    width: 560,
-    quality: 80,
-    radialMask: { inner: 0.52, outer: 0.75 },
-  },
-
-  /**
-   * 三个入口图标
-   * ⚠️ 为什么用**亮度转 alpha**（而不是圆形遮罩）：
-   *   这些图标是黑底金线（金线在黑底上）→ 必须抠掉黑底才能放进圆形徽章。
-   *   → 按亮度映射 alpha：金色线保留，黑底透明。
-   */
-  {
-    src: "icon_daily.jpg",
-    out: "icon-daily.webp",
-    width: 128,
-    quality: 92,
-    luminanceAlpha: { threshold: 48 },
-    cropToContent: { threshold: 50 },
-  },
-  {
-    src: "icon_fortune.jpg",
-    out: "icon-fortune.webp",
-    width: 128,
-    quality: 92,
-    luminanceAlpha: { threshold: 48 },
-    cropToContent: { threshold: 50 },
-  },
-  {
-    src: "icon_oracle.jpg",
-    out: "icon-oracle.webp",
-    width: 128,
-    quality: 92,
-    luminanceAlpha: { threshold: 48 },
-    cropToContent: { threshold: 50 },
-  },
-
-  /**
    * 开始占卜按钮底纹
-   * ⚠️ 为什么单独出图而不是用 CSS：
-   *   用户明确要求"带底纹的那种" —— CSS 只能做渐变/边框，
-   *   做不出新艺术风格的卷草纹。→ AI 出图 + CSS 叠加文字。
+   * ⚠️⚠️ 2026-11-06 放弃 AI 图，改用 CSS（实测教训）：
+   *   AI 出的"金框"图有三个无法解决的问题：
+   *     ① 中间是**深蓝底**（不是纯黑）→ 抠图后残留成蓝灰噪点
+   *     ② 框线是**宽扁**的（3:1），塞进小按钮要拉伸 → 变形
+   *     ③ 尺寸/透明通道让 PNG8/WebP 都压不到小体积
+   *   → 按钮底纹改用 CSS（渐变 + 金边 + 卷草感的 box-shadow），
+   *     AI 图留给真正需要"精细纹样"的地方（水晶球 / 神谕之眼 / 牌背 / 魔法阵）。
    */
-  { src: "btn_gold.jpg", out: "btn-gold.webp", width: 640, quality: 84, trim: { threshold: 14 } },
+  {
+    src: "btn_gold.jpg",
+    out: "btn-gold.webp",
+    width: 640,
+    quality: 86,
+    trim: { threshold: 14 },
+  },
 
   /** 分享卡背景（竖版） */
   {
@@ -198,6 +201,13 @@ const TASKS = [
   /** 空状态 / 加载态插画 */
   { src: "empty_state.jpg", out: "empty-state.webp", width: 480, quality: 82 },
   { src: "loading_state.jpg", out: "loading-state.webp", width: 480, quality: 82 },
+
+  /* ========== 占卜师头像（圆形遮罩） ========== */
+  { src: "p_moon.jpg", out: "persona-moon.webp", width: 256, quality: 84, circle: true },
+  { src: "p_heart.jpg", out: "persona-heart.webp", width: 256, quality: 84, circle: true },
+  { src: "p_quill.jpg", out: "persona-quill.webp", width: 256, quality: 84, circle: true },
+  { src: "p_compass.jpg", out: "persona-compass.webp", width: 256, quality: 84, circle: true },
+  { src: "p_druid.jpg", out: "persona-druid.webp", width: 256, quality: 84, circle: true },
 ];
 
 for (const t of TASKS) {
@@ -209,42 +219,37 @@ for (const t of TASKS) {
 
   let img = sharp(srcPath);
 
-  // ① 自动裁掉白边（只对牌背）
+  // ① 自动裁掉白边
   if (t.trim) {
-    img = img.trim({
-      threshold: t.trim.threshold,
-      background: "#ffffff",
-    });
+    img = img.trim({ threshold: t.trim.threshold, background: "#ffffff" });
   }
 
-  /**
-   * ② 裁掉四周的空白，只留图形本身
-   * ⚠️⚠️ 为什么必须在**缩放之前**做：
-   *   包围盒是按像素坐标算的，如果先缩放到 128px 再按原图坐标裁，
-   *   坐标系不一致 → 裁出来是空的。
-   *   → 顺序必须是：裁（原始坐标）→ 缩放。
-   * ⚠️⚠️ 为什么必须用 `.raw()` 手动搬运像素（而不是 extract + toBuffer 往返）：
-   *   extract() 后的 buffer 重新进 pipeline 时 **alpha 通道会丢**
-   *   （实测：alpha max 从 200+ 掉到 148，非零像素只剩 387 个）。
-   *   → 直接在原始 raw 数据上算包围盒，然后**在同一份 raw buffer 上**
-   *     做 alpha 处理与裁剪，全程不丢通道。
-   */
+  // ② 取原始像素（后续操作都在这份 raw 上做，全程不丢 alpha 通道）
   let rawData = null;
   let rawInfo = null;
-  if (t.cropToContent || t.luminanceAlpha || t.radialMask) {
+  if (t.cropToContent || t.luminanceAlpha) {
     const r = await img.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     rawData = Buffer.from(r.data);
     rawInfo = r.info;
   }
 
+  // ③ 按亮像素包围盒裁掉四周空白（必须在缩放之前 —— 坐标系问题）
   if (t.cropToContent && rawData && rawInfo) {
     const th = t.cropToContent.threshold ?? 45;
+    /**
+     * ⚠️⚠️ 为什么必须**忽略边缘一圈**：
+     *   AI 图的四角有 JPEG 噪点/渐变（亮度可能 > 阈值）
+     *   → 包围盒从 (0,0) 开始 → 裁剪等于没裁
+     *   → 整张 1024² 的图被压到 128px → 图案变成"横条"（截图实测）。
+     *   → 只统计**中心 80% 区域**内的亮像素 → 包围盒才是真主体。
+     */
+    const edge = Math.floor(Math.min(rawInfo.width, rawInfo.height) * 0.1);
     let minX = rawInfo.width;
     let minY = rawInfo.height;
     let maxX = 0;
     let maxY = 0;
-    for (let y = 0; y < rawInfo.height; y++) {
-      for (let x = 0; x < rawInfo.width; x++) {
+    for (let y = edge; y < rawInfo.height - edge; y++) {
+      for (let x = edge; x < rawInfo.width - edge; x++) {
         const i = (y * rawInfo.width + x) * rawInfo.channels;
         const lum = 0.299 * rawData[i] + 0.587 * rawData[i + 1] + 0.114 * rawData[i + 2];
         if (lum > th) {
@@ -256,143 +261,149 @@ for (const t of TASKS) {
       }
     }
     if (maxX > minX && maxY > minY) {
-      // 留 4% 边距（避免裁到最外侧的抗锯齿像素）
       const pad = Math.round(Math.max(maxX - minX, maxY - minY) * 0.04);
       const left = Math.max(0, minX - pad);
       const top = Math.max(0, minY - pad);
       const w = Math.min(rawInfo.width - left, maxX - minX + pad * 2);
       const h = Math.min(rawInfo.height - top, maxY - minY + pad * 2);
-      // ⚠️ 在 raw 数据上手动裁剪（保持 alpha）
-      const cropped = Buffer.alloc(w * h * rawInfo.channels);
-      for (let y = 0; y < h; y++) {
-        const srcOff = ((y + top) * rawInfo.width + left) * rawInfo.channels;
-        rawData.copy(cropped, y * w * rawInfo.channels, srcOff, srcOff + w * rawInfo.channels);
-      }
-      rawData = cropped;
-      rawInfo = { ...rawInfo, width: w, height: h };
+      /**
+       * ⚠️⚠️ 为什么用 **sharp.extract()** 而不是手工 Buffer.copy：
+       *   手工拷贝 raw 像素时，**行跨度与缓冲区长度极易不同步**
+       *   （裁剪后 rawInfo.width 变了，但后面 luminanceAlpha 又按新宽度步进）
+       *   → 像素错位 → 输出变成"横条纹"（截图实测，三个图标全废）。
+       *   → 改用 sharp 自己的 extract（它保证像素与尺寸一致）：
+       *     1) 把 raw 重新包回 sharp
+       *     2) extract 裁剪区域
+       *     3) 若要正方形，用 extend 补透明边
+       */
+      let pipeline = sharp(rawData, {
+        raw: { width: rawInfo.width, height: rawInfo.height, channels: rawInfo.channels },
+      }).extract({ left, top, width: w, height: h });
 
       /**
-       * ⚠️ 裁完后做成**正方形**（透明边填充）。
-       * ⚠️ 为什么：图标要放进圆形徽章容器 → 非正方形会变形或留白不均。
-       *   → 取 max(w,h) 作为边长，居中放置，两侧透明补齐。
+       * 做成正方形（图标要放进圆形容器）
+       * ⚠️ 为什么要有 square 这个开关：
+       *   宽扁的图（3:1 的按钮框线）正方形化会把框线拉成方的。
+       *   → 只有"放进圆形容器"的图标才需要正方形化。
        */
-      const side = Math.max(w, h);
-      const squared = Buffer.alloc(side * side * rawInfo.channels);
-      const offX = Math.floor((side - w) / 2);
-      const offY = Math.floor((side - h) / 2);
-      for (let y = 0; y < h; y++) {
-        const srcOff = y * w * rawInfo.channels;
-        const dstOff = ((y + offY) * side + offX) * rawInfo.channels;
-        rawData.copy(squared, dstOff, srcOff, srcOff + w * rawInfo.channels);
+      if (t.cropToContent.square !== false) {
+        const side = Math.max(w, h);
+        const offX = Math.floor((side - w) / 2);
+        const offY = Math.floor((side - h) / 2);
+        /**
+         * ⚠️⚠️⚠️ 关键：extend 后必须**显式指定 png 格式**再 toBuffer。
+         *   ⚠️ 为什么：
+         *   pipeline 的输入是 **raw**（无尺寸元数据）→ toBuffer() 默认输出 raw
+         *   → 得到的 buffer 不含宽高信息
+         *   → `sharp(buffer)` 无法推断尺寸 → 后续 resize/输出全是乱码
+         *   → **输出变成横条纹**（截图实测，三个图标全废）。
+         *   → 指定 `.png()` 后 buffer 自带尺寸 → 下游一切正常。
+         */
+        pipeline = sharp(
+          await pipeline
+            .extend({
+              top: offY,
+              bottom: side - h - offY,
+              left: offX,
+              right: side - w - offX,
+              background: { r: 0, g: 0, b: 0, alpha: 0 },
+            })
+            .png()
+            .toBuffer()
+        );
       }
-      rawData = squared;
-      rawInfo = { ...rawInfo, width: side, height: side };
+
+      // 重新取 raw（尺寸已变）→ 后续 luminanceAlpha 用新尺寸
+      const r2 = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      rawData = Buffer.from(r2.data);
+      rawInfo = r2.info;
+      /**
+       * ⚠️⚠️⚠️ 关键：**必须把裁剪结果写回 img**。
+       *   漏了这一步 → img 仍是**原始未裁剪**的实例
+       *   → 后面 `img.resize(width)` 缩放的是整张 1024² 图
+       *   → 主体（占中间一小块）被压成几像素 → **输出是横条纹**（截图实测）。
+       */
+      img = sharp(rawData, {
+        raw: { width: rawInfo.width, height: rawInfo.height, channels: rawInfo.channels },
+      });
     }
   }
 
-  /**
-   * ③ 按亮度转 alpha（黑/深蓝底 → 透明，金线保留）
-   *
-   * ⚠️⚠️ 为什么必须在**缩放之前**做：
-   *   缩放会对图像做插值，细金线（1~2px）在缩到 128px 后被插值淡化，
-   *   亮度掉到阈值以下 → 整条线被判成背景（实测：alpha 只剩 247 个非零像素）。
-   *   → 顺序必须是：转 alpha（原始分辨率）→ 缩放。
-   *   缩放时 alpha 会被正确插值 → 边缘自然柔和。
-   *
-   * ⚠️ 为什么要"按亮度转 alpha"而不是"黑色变透明"：
-   *   AI 生成的魔法阵底色不是纯黑，是**深蓝黑**（模型给背景加蓝调）。
-   *   → 简单判黑会留下一整块深蓝圆盘挡住星云。
-   *   → 用亮度连续映射 alpha：暗部淡出，亮部（金线）原样保留。
-   *
-   * ⚠️ 为什么保留原色而不是转成纯金色：
-   *   原图的金线有细微的明暗变化（刻蚀的金属质感），
-   *   转成单色会丢掉那层"雕版"感。
-   */
+  // ④ 按亮度转 alpha（必须在缩放之前 —— 缩放会插值淡化细线）
   if (t.luminanceAlpha && rawData && rawInfo) {
     const th = t.luminanceAlpha.threshold;
+    /**
+     * ⚠️⚠️ 为什么需要 boost（gamma）：
+     *   线性映射下，亮度刚过阈值的像素 → alpha 只有 2~5% → 几乎看不见。
+     *   实测：按钮底纹（阈值 60）出来后只剩"噪点"，
+     *   因为金色框线有大量中间调（64~127）全被压成不可见。
+     *   → boost < 1 = 提亮中间调（gamma 校正）。
+     *   ⚠️ boost=1 是线性（图标用这个，保持细腻）；
+     *      boost=0.45 用于按钮（框线要"实"）。
+     */
+    const boost = t.luminanceAlpha.boost ?? 1;
+    /**
+     * ⚠️⚠️ 为什么还要"金色通道"过滤（warmOnly）：
+     *   实测：按钮底纹抠完变成"噪点" —— 因为 AI 图的**中间是深蓝底**
+     *   （亮度 30~50，接近阈值 55），抠完残留成一片蓝灰杂点。
+     *   → 光靠亮度分不开"深蓝底"和"暗金框线"。
+     *   → 用**色相**分：金色满足 R > B（暖色），深蓝满足 B > R。
+     *     只保留 R ≥ B 的像素 → 深蓝底全透明，暗金框线完整。
+     * ⚠️ 为什么用 R≥B 而不是更严格的色相角：
+     *   金框在暗部时色相不稳定（接近灰），
+     *   严格的色相角会把暗金也误杀 → 用简单可解释的 R≥B 最稳。
+     */
+    const warmOnly = t.luminanceAlpha.warmOnly ?? false;
+    /**
+     * ⚠️⚠️ 为什么要有 **tint（金色统一）**：
+     *   抠完底之后，像素虽然 alpha 正确了，但**颜色还是原图的暗金色**
+     *   （JPEG 压缩过的、带蓝调的暗金）→ 叠在深紫底上显得**灰暗发脏**。
+     *   实测：三个入口图标抠完后是"灰色的一团"，不是金色（用户反馈"图标不明显"）。
+     *   → 用原像素的**明度**去驱动一个**统一的金色渐变**：
+     *     暗部 = 深金 #8a6a1e → 亮部 = 亮金 #f6e0a0
+     *   → 既有明暗层次，又是纯金色系。
+     */
+    const tint = t.luminanceAlpha.tint;
     for (let i = 0; i < rawData.length; i += rawInfo.channels) {
-      const lum = 0.299 * rawData[i] + 0.587 * rawData[i + 1] + 0.114 * rawData[i + 2];
-      /**
-       * ⚠️⚠️ 为什么 alpha 用**开方**而不是线性：
-       *   线性映射会把"暗紫球体"（lum≈30~60）也压到接近透明
-       *   → 实测水晶球只剩星盘和底座，球体消失了。
-       *   开方后：lum=30 → (30/255)² ≈ 0.014（几乎透明，纯黑区）
-       *              lum=60 → ≈ 0.055（暗紫仍然可见）
-       *   实际还要配合 threshold 切掉纯黑。
-       * → 通用公式：alpha = ((lum - th) / (255 - th))² ，th 之上再开方。
-       */
-      const norm = lum <= th ? 0 : (lum - th) / (255 - th);
-      const a = Math.min(255, Math.round(Math.sqrt(norm) * 255));
-      rawData[i + rawInfo.channels - 1] = a;
-    }
-    img = sharp(rawData, {
-      raw: { width: rawInfo.width, height: rawInfo.height, channels: rawInfo.channels },
-    });
-  }
-
-  /**
-   * ③.5 径向遮罩（水晶球 / 神谕之眼用）
-   *
-   * ⚠️⚠️ 为什么需要它（亮度转 alpha 的替代方案）：
-   *   这两个主体的**本体就是深色**（水晶球是深紫、眼睛是紫金）
-   *   → "按亮度猜透明"会连主体一起吃掉。
-   *   → 但它们的**构图是确定的**：主体居中，外围矩形是纯黑背景。
-   *   → 用径向渐变遮罩最稳：中心 100% 不透明，边缘渐隐到 0。
-   *
-   * ⚠️ 参数含义（相对半宽/半高）：
-   *   inner = 中心完全不透明的半径比例
-   *   outer = 完全透明的半径比例
-   *   → (inner, outer) 之间线性渐变 → 边缘羽化，无硬切线
-   */
-  if (t.radialMask && rawData && rawInfo) {
-    const { inner, outer } = t.radialMask;
-    const cx = rawInfo.width / 2;
-    const cy = rawInfo.height / 2;
-    // 归一化距离：以图像半宽为基准（正方形图）
-    const maxR = Math.min(cx, cy);
-    for (let y = 0; y < rawInfo.height; y++) {
-      for (let x = 0; x < rawInfo.width; x++) {
-        const dx = (x - cx) / maxR;
-        const dy = (y - cy) / maxR;
-        const d = Math.sqrt(dx * dx + dy * dy);
-        const a = d <= inner ? 1 : d >= outer ? 0 : 1 - (d - inner) / (outer - inner);
-        const i = (y * rawInfo.width + x) * rawInfo.channels;
-        rawData[i + rawInfo.channels - 1] = Math.round(a * 255);
+      const r = rawData[i];
+      const b = rawData[i + 2];
+      const lum = 0.299 * r + 0.587 * rawData[i + 1] + 0.114 * b;
+      let norm = lum <= th ? 0 : (lum - th) / (255 - th);
+      if (norm > 0 && boost !== 1) norm = Math.pow(norm, boost);
+      // 冷色像素（R < B）直接判为背景
+      if (warmOnly && r < b) norm = 0;
+      if (tint) {
+        const lum01 = Math.min(1, lum / 255);
+        const [r0, g0, b0] = tint.from;
+        const [r1, g1, b1] = tint.to;
+        rawData[i] = Math.round(r0 + (r1 - r0) * lum01);
+        rawData[i + 1] = Math.round(g0 + (g1 - g0) * lum01);
+        rawData[i + 2] = Math.round(b0 + (b1 - b0) * lum01);
       }
+      rawData[i + rawInfo.channels - 1] = Math.round(norm * 255);
     }
     img = sharp(rawData, {
       raw: { width: rawInfo.width, height: rawInfo.height, channels: rawInfo.channels },
     });
   }
 
-  // ④ 缩放到目标尺寸
-  img = img.resize({
-    width: t.width,
-    withoutEnlargement: false,
-    fit: "inside",
-  });
+  // ⑤ 缩放到目标尺寸
+  img = img.resize({ width: t.width, withoutEnlargement: false, fit: "inside" });
 
-  // ④ 圆形遮罩（头像）
+  // ⑥ 圆形遮罩（头像）
   if (t.circle) {
     const size = t.width;
     const mask = Buffer.from(
-      `<svg width="${size}" height="${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${
-        size / 2
-      }" fill="#fff"/></svg>`
+      `<svg width="${size}" height="${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${size / 2}" fill="#fff"/></svg>`
     );
     img = sharp(
-      await img
-        .resize(size, size, { fit: "cover", position: "top" })
-        .toBuffer()
+      await img.resize(size, size, { fit: "cover", position: "top" }).toBuffer()
     ).composite([{ input: mask, blend: "dest-in" }]);
   }
 
+  // ⑦ 输出
   const outPath = join(OUT, t.out);
   if (t.png) {
-    /**
-     * ⚠️ colors 参数让 sharp 走 PNG8（索引色）路径 → 体积降 5 倍。
-     * ⚠️ 必须放在最后一步（在 alpha 处理之后），否则量化会破坏 alpha 梯度。
-     */
     await img
       .png({
         compressionLevel: 9,
@@ -404,9 +415,6 @@ for (const t of TASKS) {
     await img.webp({ quality: t.quality ?? 80, effort: 6 }).toFile(outPath);
   }
 
-  // 用 stat 读体积（sharp 的 toBuffer({resolveWithObject}) 返回 info.size）
-  const { size: bytes } = await import("node:fs").then((fs) =>
-    fs.promises.stat(outPath)
-  );
+  const { size: bytes } = await stat(outPath);
   console.log(`✓ ${outPath}  (${Math.round(bytes / 1024)} KB)`);
 }

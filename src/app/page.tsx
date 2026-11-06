@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
@@ -1781,7 +1781,7 @@ export default function TarotApp() {
           transition={{ delay: 0.2, duration: 0.9, ease: "easeOut" }}
           className="z-10 my-8"
         >
-          <CelestialOrb size={230} />
+          <CelestialOrb size={300} />
         </motion.div>
       )}
 
@@ -1859,27 +1859,25 @@ export default function TarotApp() {
                 />
                 <div className="flex items-start gap-3">
                   {/**
-                   * ⚠️ 2026-11-06：图标改用 **AI 生成的金线图标**（月+书 / 轨道 / 眼），
-                   *   背景黑底已被 sharp 抠成透明（按亮度转 alpha）。
-                   * ⚠️ 为什么不用原来的 Icon 组件：
-                   *   线性图标是"UI 元素"，而这页是"占卜室"——
-                   *   AI 出的**手绘感金线纹样**与魔法阵/牌背是同一套视觉语言。
+                   * ⚠️ 2026-11-06：图标改用 **AI 生成的金质纹样**（月+书 / 轨道 / 眼）。
+                   *
+                   * ⚠️⚠️ 为什么**去掉圆圈底**（用户反馈："图标外面还有白色的底色"）：
+                   *   ① AI 出的图标**本身就是完整的圆形纹样**（月+书 / 星盘 / 眼）
+                   *      → 再套一个圆圈 = 圆圈里挤一团金色 → 22px 下糊成一团，
+                   *      边缘的半透明渐变看起来就像"有白底"。
+                   *   ② 图标放大到 30px → 细节看得清。
+                   *   → 去掉底圈，直接放图标 + 金色微光。
                    */}
-                  <span
-                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all duration-300"
-                    style={{
-                      border: "1px solid rgba(212,175,55,0.45)",
-                      background:
-                        "radial-gradient(circle at 34% 28%, rgba(120,72,190,0.55), rgba(10,6,22,0.9))",
-                      boxShadow: "0 0 14px rgba(212,175,55,0.18)",
-                    }}
-                  >
+                  <span className="w-8 h-8 shrink-0 flex items-center justify-center">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={e.img}
                       alt=""
-                      className="w-[22px] h-[22px] object-contain"
-                      style={{ filter: "drop-shadow(0 0 4px rgba(240,217,138,0.5))" }}
+                      className="w-[30px] h-[30px] object-contain"
+                      style={{
+                        filter:
+                          "drop-shadow(0 0 6px rgba(240,217,138,0.55)) drop-shadow(0 0 14px rgba(212,175,55,0.25))",
+                      }}
                     />
                   </span>
                   <span className="min-w-0">
@@ -2008,54 +2006,35 @@ export default function TarotApp() {
               whileTap={{ scale: 0.97 }}
               onClick={startDivination}
               /**
-               * ⚠️ 2026-11-06：按钮改成「AI 生成的巴洛克金框 + 文字」。
-               * ⚠️ 为什么：
-               *   原来的金色渐变按钮是"现代 UI"风格，和整页的古典气质割裂。
-               *   用户明确要求"带底纹的那种" → CSS 只能做渐变/边框，
-               *   做不出新艺术风格的卷草纹 → 用 AI 出的金框图。
+               * ⚠️ 2026-11-06：按钮改成「CSS 金属渐变 + 文字」。
+               * ⚠️ 为什么放弃 AI 金框图（用户反馈："这三个图片怎么变成了横条"）：
+               *   ① AI 出的框是**宽扁 3:1**，塞进小按钮要拉伸 → 变形
+               *   ② 中间是**深蓝底**（不是纯黑）→ 抠图后残留成"横条/噪点"
+               *   ③ 透明通道让体积也压不下去
+               *   → 按钮改用纯 CSS：斜向金属渐变 + 金色描边 + 内高光 + 外发光。
+               *   AI 图留给真正需要精细纹样处（水晶球 / 神谕之眼 / 牌背 / 魔法阵）。
                *
-               * ⚠️ 实现方式：底框图 absolute 铺满（object-cover），
-               *   中间是半透明深底 → 文字压在深底上，金框在四周。
-               * ⚠️ 为什么文字底要半透明深色：
-               *   AI 图中间是深蓝底，但我们要保证文字对比度 →
-               *   自己叠一层更深的半透明黑 → 文字清晰且仍透出一点底色。
+               * ⚠️ 为什么用**三层渐变**模拟金属：
+               *   一层渐变 = 塑料；斜向高光带 + 底部暗带 + 顶部亮线 = 有厚度。
                */
-              className="relative px-10 py-4 rounded-2xl overflow-hidden transition-shadow"
+              className="relative px-10 py-4 rounded-2xl transition-all"
               style={{
-                boxShadow: "0 0 34px rgba(212,175,55,0.42), 0 8px 24px rgba(0,0,0,0.5)",
+                background:
+                  "linear-gradient(150deg, rgba(120,84,18,0.95) 0%, rgba(206,164,66,0.95) 22%, rgba(246,224,160,0.95) 38%, rgba(196,152,54,0.95) 56%, rgba(126,88,20,0.95) 78%, rgba(178,138,44,0.95) 100%)",
+                border: "1px solid rgba(240,217,138,0.75)",
+                boxShadow:
+                  // 外发光
+                  "0 0 30px rgba(212,175,55,0.45), 0 8px 24px rgba(0,0,0,0.5), " +
+                  // 内侧顶部高光（金属的"上边缘反光"）
+                  "inset 0 1px 0 rgba(255,255,255,0.55), inset 0 -2px 6px rgba(90,60,10,0.45)",
               }}
             >
-              {/* 金框底纹 */}
-              {/**
-               * ⚠️ 2026-11-06 修复："图片没展示全，左右两侧是黑色的"。
-               * ⚠️ 根因：按钮是**小尺寸**（~160×56），底图是 16:9 大图 →
-               *   object-cover 裁切把左右卷草角饰裁掉，只剩中间 → 看着像黑边。
-               * ⚠️ 修法：
-               *   ① 素材阶段 trim 掉黑边，只留金色框线
-               *   ② 页面用 **object-fill**（拉伸填满）而不是 cover → 框线完整
-               *   ③ 叠一层暗色渐变把中间压暗 → 文字对比度够
-               */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/images/celestial/btn-gold.webp"
-                alt=""
-                className="absolute inset-0 w-full h-full object-fill pointer-events-none"
-                style={{ filter: "brightness(1.1)" }}
-              />
-              {/* 中间深底（保证文字对比度） */}
+              {/* 文字（深色 → 在亮金底上对比度更好） */}
               <span
-                className="absolute inset-[10%] rounded-xl pointer-events-none"
-                style={{
-                  background:
-                    "linear-gradient(160deg, rgba(26,16,48,0.94), rgba(9,5,20,0.97))",
-                }}
-              />
-              {/* 文字 */}
-              <span
-                className="relative text-[#f6e4a8] text-lg font-medium tracking-[0.1em]"
+                className="relative text-[#2a1a05] text-lg font-medium tracking-[0.1em]"
                 style={{
                   fontFamily: "'Ma Shan Zheng', serif",
-                  textShadow: "0 1px 8px rgba(212,175,55,0.45)",
+                  textShadow: "0 1px 0 rgba(255,255,255,0.35)",
                 }}
               >
                 开始占卜
