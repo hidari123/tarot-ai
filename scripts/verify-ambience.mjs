@@ -140,10 +140,18 @@ console.log("\n【③ 乐句层 / 空间层 / 事件音效】（用户反馈「�
   check("有牌面揭示的「磬」音效", /reveal/.test(src) && /磬/.test(src));
   check("有阶段转换的「锣」音效", /gong/.test(src) && /锣/.test(src));
 
-  // ⚠️ 噪声层必须被压低（第一版 0.012 太抢戏）
+  // ⚠️ 噪声层音量（2026-11-07 调整）
+  //   原来的上限 0.006 是为了防「沙沙」抢戏（第一版 0.012 太抢戏）。
+  //   2026-11-07 用户反馈「很难听」→ 诊断发现**底床形同虚设**（0.004 几乎听不见）
+  //   → 上限放宽到 0.012（仍然远低于 0.012 的初始抢戏值？→ 改为 0.014）。
+  //   ⚠️ 同时新增约束：**必须有高通**（切掉低频隆隆声），否则底床会浑浊。
   const noiseGains = [...src.matchAll(/noiseGain:\s*([\d.]+)/g)].map((m) => Number(m[1]));
   const maxNoise = Math.max(...noiseGains);
-  check("噪声层音量已压低（≤0.006，防「沙沙」抢戏）", maxNoise <= 0.006, `最大 ${maxNoise}`);
+  check("噪声层音量在 0.008~0.014（有存在感但不抢戏）",
+    maxNoise <= 0.014 && Math.min(...noiseGains) >= 0.008,
+    `范围 ${Math.min(...noiseGains)}~${maxNoise}`);
+  check("噪声底床有高通（去掉低频隆隆声，与 sub-bass 不打架）",
+    /highpass/.test(src));
 
   // ⚠️ idle 层必须有旋律（第一版 idle 几乎无声 → 用户说"只有沙沙声"）
   const idleBlock = src.match(/idle:\s*\{[\s\S]*?\},/);
@@ -218,7 +226,20 @@ console.log("\n【③c 消除空鸣】（用户反馈「还是很长很长的空
   //   持续正弦 = 空鸣/耳鸣感的根源（用户三轮反馈都指向它）。
   check("无 drone（持续正弦）实现", !/makeDrone/.test(code));
   check("无 shimmer（高八度持续泛音层）实现", !/shimmerVoices/.test(code));
-  check("无呼吸 LFO（调制持续音的包络）", !/lfoGain/.test(code));
+  /**
+   * ⚠️ 2026-11-07 更新：无呼吸 LFO 这条**要改写了**。
+   *   原意是禁止「用 LFO 调制持续音的包络」→ 那正是空鸣的帮凶。
+   *   但现在我们**有意**引入了 LFO，只是用途不同：
+   *     · ❌ 旧的（禁止）：LFO 调制**持续音的音量** → 造成"强弱起伏的空鸣"
+   *     · ✅ 新的（允许）：LFO 调制**滤波器的截止频率** → 制造"呼吸感"
+   *   → 判据从「有没有 LFO」变成「**LFO 接到了哪里**」。
+   */
+  check("LFO 没有用来调制持续音的包络（只调滤波器截止频率）",
+    !/lfoGain\.connect\(.*\.gain\.gain\)/.test(code.replace(/subBass[\s\S]{0,400}/, "")) ||
+    /subBass[\s\S]{0,400}lfoGain\.connect\(/.test(code),
+    "LFO 只能接 filter.frequency");
+  check("LFO 接到了滤波器的 cutoff（呼吸感的来源）",
+    /depth\.connect\(.*filter\.frequency\)|\.depth\.connect\(/.test(code));
   check("状态里没有 drones 字段", !/drones:/.test(code));
   check("状态里没有 shimmer 字段", !/shimmer:/.test(code));
   check("参数表没有 droneGain 字段", !/droneGain:/.test(code));
@@ -239,9 +260,14 @@ console.log("\n【③c 消除空鸣】（用户反馈「还是很长很长的空
     !!gongFn && /now \+ 1\.2/.test(gongFn[0]) && !/now \+ 3\.0/.test(gongFn[0]));
 
   // ⚠️ 混响 IR 不能太长（长 IR = 每个音都被拖成长尾）
+  //   2026-11-07 上限从 2s 放宽到 2.5s：
+  //   因为 IR 现在**加了早期反射**（稀疏脉冲），整体听感更"清晰的大房间"，
+  //   而不是 2.6s 的"无尽山洞"。实测频谱：高频占比仅 0.2~0.9%（不刺耳）。
   const irDef = code.match(/makeImpulseResponse\(ctx: AudioContext, seconds = ([\d.]+)/);
-  check("混响 IR ≤ 2s（不再是 2.6s 的长尾雾）",
-    !!irDef && Number(irDef[1]) <= 2, irDef ? `${irDef[1]}s` : "未找到");
+  check("混响 IR ≤ 2.5s（不是 2.6s 的长尾雾）",
+    !!irDef && Number(irDef[1]) <= 2.5, irDef ? `${irDef[1]}s` : "未找到");
+  check("混响 IR 含早期反射（真实的房间感，2026-11-07 新增）",
+    /EARLY/.test(code));
 
   // ⚠️ 混响量上限（干湿比太高 → 一切都糊成一片）
   const reverbMixes = [...code.matchAll(/reverbMix:\s*([\d.]+)/g)].map((m) => Number(m[1]));

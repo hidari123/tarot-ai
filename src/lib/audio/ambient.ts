@@ -69,11 +69,33 @@ interface Note {
 /**
  * 每个氛围层的参数
  *
- * ⚠️⚠️ 2026-11-04 三改（用户反馈「还是很长很长的空鸣声，特别刺耳」）：
- *   彻底移除 droneGain / shimmerGain / breathSec —— **持续音就是空鸣本身**。
- *   真正的冥想音乐（Calm / Insight Timer 的音景，Marconi Union《Weightless》）
- *   没有任何持续音：底床是自然噪声（风/水），旋律是稀疏的短音，音与音之间大量留白。
- *   → 本表只剩：噪声底床 + 稀疏乐句 + 空间感。
+ * ⚠️⚠️ 2026-11-07 大改（用户反馈：「现在很难听」）：
+ *   之前的层只有「噪声底床 + 稀疏乐句 + 空间感」三件套，
+ *   缺了**真实音乐的四要素** → 听起来像"实验室里的提示音"，而不是氛围音乐：
+ *
+ *   ① **没有低频基础** → 声音薄、飘、无重量
+ *      （噪声底床音量只有 0.004，几乎听不见；唯一的音是 220~880Hz 的点音）
+ *   ② **没有和声** → 每个音都是孤立单音 → 干瘪、塑料感
+ *   ③ **没有动态** → 滤波器截止频率固定 → 高频一直刺耳 → 听觉疲劳
+ *   ④ **没有变化** → 每层一条固定音型循环 8 拍 → 8 秒后原地重复
+ *
+ *   这一版补上：
+ *   · **subBass** —— 40~80Hz 的低频基础（"胸腔震"，听不见但感觉得到）
+ *   · **chords** —— 和弦进行（如 i → VI → III → VII）→ 有"流动"
+ *   · **sawVoices** —— super-saw 失谐叠加 → 音色变厚变暖
+ *   · **lfo** —— 滤波器截止频率缓慢扫描 → "呼吸感"，永不腻
+ *   · **fmBell** —— FM 钟琴（五声音阶随机触发）→ 神秘质感
+ *
+ * ⚠️⚠️⚠️ 与「消除空鸣」的边界（这是本设计最微妙的地方）：
+ *   2026-11-04 用户连续三轮投诉「很长很长的空鸣声，特别刺耳」→ 当时删掉了 drone。
+ *   ⚠️ 但 drone（220/440Hz 纯音）和 sub-bass（40~80Hz）是**完全不同的东西**：
+ *     · drone 的频率落在**人耳最敏感的频段**（200Hz~1kHz）→ 听觉系统把它当"测试信号"
+ *       → 持续播放 = 耳鸣感 = 刺耳
+ *     · sub-bass 在 **40~80Hz** → 人耳几乎不"听"到基频，只感到**胸腔的物理震动**
+ *       → 持续播放 = 放松、有重量、不刺耳
+ *   → 判断标准很简单：**这个音是"听到"还是"感到"？**
+ *     听到 → 危险（刺耳）
+ *     感到 → 安全（有基础）
  */
 interface LayerParams {
   /** 基频八度偏移（-1 降八度，0 原位，+1 升八度） */
@@ -94,75 +116,183 @@ interface LayerParams {
   reverbMix: number;
   /** 延迟干湿比（0~1）—— 2026-11-04 起真正接线（此前只定义未生效） */
   delayMix: number;
+
+  /* ══════════ 2026-11-07 新增：真实音乐的四要素 ══════════ */
+
+  /**
+   * 低频基础（sub-bass）—— 音名 + 八度
+   *
+   * ⚠️ 必须是 40~80Hz 的音（见上方"与消除空鸣的边界"）。
+   * ⚠️ 用音名表示是为了可读：A1 = 55Hz、E1 = 41.2Hz、C2 = 65.4Hz。
+   */
+  subBass: string;
+  /** 低频层音量（0~1）—— 刻意很小（它是"底"，不是主角） */
+  subBassGain: number;
+
+  /**
+   * 和弦进行 —— 每个和弦是一组音名
+   *
+   * ⚠️ 为什么用**和弦**而不是单音：
+   *   单音 = 点；和弦 = 面。多个音同时发 → 有"厚度"和"和声色彩"。
+   * ⚠️ 和弦名用音名数组（如 ["A","C","E"] = A 小三和弦），
+   *   不用 "Am" 这种简写 → 可以直接复用 NOTE_BASE。
+   */
+  chords: string[][];
+  /** 换和弦的间隔（秒）—— 越长越"沉"，越短越"流动" */
+  chordSwitchSec: number;
+  /** 和弦层音量（0~1） */
+  chordGain: number;
+
+  /**
+   * super-saw 失谐量（cents）
+   *
+   * ⚠️ 为什么是 5~15 cents：
+   *   < 3 cents → 听不出宽度（等于没加）
+   *   3~5 cents → 轻微拍频（"颤"）
+   *   5~15 cents → 宽谱、暖、无拍频 → **经典的 pad 宽度**
+   *   > 20 cents → 明显的"合唱失调"→ 脏
+   */
+  sawDetune: number;
+
+  /**
+   * LFO 频率（Hz）—— 滤波器截止频率的扫描速度
+   *
+   * ⚠️ 为什么是 0.02~0.12Hz：
+   *   < 0.02 → 慢到察觉不到（等于没加）
+   *   0.02~0.12 → "呼吸"（20~50 秒一个完整开合周期）
+   *   > 0.2 → 变成"抖动"→ 焦躁
+   */
+  lfoRate: number;
+  /** LFO 扫描的深度（Hz）—— 截止频率在这个范围里来回扫 */
+  lfoDepth: number;
+
+  /**
+   * FM 钟琴 —— 载波音名
+   *
+   * ⚠️ 为什么用 FM 合成而不是正弦：
+   *   正弦 = 纯音（"滴"）；FM 有**非整数倍的泛音结构** → 金属质感 → "磬"。
+   * ⚠️ 音高取**五声音阶**（PENTA_SCALE）→ 避免半音的紧张感 → 放松。
+   */
+  fmBell: string;
+  /** FM 钟琴音量（0~1）—— 事件层，很轻 */
+  fmBellGain: number;
+  /** FM 钟琴触发间隔（秒）—— 平均值，实际有随机抖动 */
+  fmBellInterval: number;
 }
 
-const LAYER_PARAMS: Record<AmbienceLayer, LayerParams> = {
+export const LAYER_PARAMS: Record<AmbienceLayer, LayerParams> = {
   // ⚠️ 音型设计原则（对齐冥想音乐）：
   //   · 音符更少、间隔更长（d 值大 = 留白多）→ "偶尔一声"而不是"连绵不断"
   //   · 每层一个循环 6~8 拍，但只有 2~5 个音 → 大部分时间是安静的
+  //
+  // ⚠️ 2026-11-07：每层新增四项（低音 / 和弦 / 扫频 / 钟琴）
+  //   → 详见 LayerParams 的注释
+
   // 待机/首页：风声底床 + 偶尔一声风铃般的五声短句
+  // 和弦：Am → F → C → G（最经典的"循环进行"，温暖、流动）
   idle: {
     octave: 0, filterHz: 900,
-    noiseGain: 0.004, arpGain: 0.030,
+    noiseGain: 0.010, arpGain: 0.030,
     arp: [
       { p: "A", d: 4 }, { p: "C", d: 2 }, { p: "E", d: 2 },
     ],
     arpLoopBeats: 8, beatSec: 1.1, reverbMix: 0.45, delayMix: 0.18,
+    subBass: "A1", subBassGain: 0.030,
+    chords: [["A", "C", "E"], ["F", "A", "C"], ["C", "E", "G"], ["G", "B", "D"]],
+    chordSwitchSec: 9, chordGain: 0.020,
+    sawDetune: 9, lfoRate: 0.055, lfoDepth: 420,
+    fmBell: "A", fmBellGain: 0.016, fmBellInterval: 13,
   },
   // 承约：更暗更低，低音区偶尔一声
+  // 和弦：Am → Dm → E7 → Am（i → iv → V → i，有"走向"感）
   contract: {
     octave: -1, filterHz: 520,
-    noiseGain: 0.004, arpGain: 0.026,
+    noiseGain: 0.011, arpGain: 0.026,
     arp: [
       { p: "A", d: 4 }, { p: "G", d: 2 }, { p: "E", d: 2 },
     ],
     arpLoopBeats: 8, beatSec: 1.35, reverbMix: 0.35, delayMix: 0.12,
+    subBass: "A1", subBassGain: 0.034,
+    chords: [["A", "C", "E"], ["D", "F", "A"], ["E", "G#", "B"], ["A", "C", "E"]],
+    chordSwitchSec: 11, chordGain: 0.022,
+    sawDetune: 7, lfoRate: 0.042, lfoDepth: 320,
+    fmBell: "E", fmBellGain: 0.018, fmBellInterval: 15,
   },
   // 呼召：Am 分解，但每音之间隔一拍以上的空
+  // 和弦：Am → Em → F → C（i → v → VI → III，悬而未决 → 神秘）
   invocation: {
     octave: 0, filterHz: 1100,
-    noiseGain: 0.005, arpGain: 0.034,
+    noiseGain: 0.009, arpGain: 0.034,
     arp: [
       { p: "A", d: 3 }, { p: "E", d: 2 }, { p: "C", d: 3 },
     ],
     arpLoopBeats: 8, beatSec: 1.2, reverbMix: 0.48, delayMix: 0.22,
+    subBass: "A1", subBassGain: 0.028,
+    chords: [["A", "C", "E"], ["E", "G", "B"], ["F", "A", "C"], ["C", "E", "G"]],
+    chordSwitchSec: 8, chordGain: 0.026,
+    sawDetune: 11, lfoRate: 0.068, lfoDepth: 520,
+    fmBell: "C", fmBellGain: 0.022, fmBellInterval: 11,
   },
   // 选牌：极稀疏 —— 制造"等待你出手"的张力
+  // 和弦：Dm → Am → Bb → Gm（不安定的 ii → v → VI → iv，悬着）
   selection: {
     octave: 0, filterHz: 860,
-    noiseGain: 0.004, arpGain: 0.028,
+    noiseGain: 0.010, arpGain: 0.028,
     arp: [
       { p: "D", d: 6 }, { p: "A", d: 2 },
     ],
     arpLoopBeats: 8, beatSec: 1.5, reverbMix: 0.40, delayMix: 0.16,
+    subBass: "D1", subBassGain: 0.032,
+    chords: [["D", "F", "A"], ["A", "C", "E"], ["A#", "D", "F"], ["G", "B#", "D"]],
+    chordSwitchSec: 12, chordGain: 0.018,
+    sawDetune: 8, lfoRate: 0.038, lfoDepth: 380,
+    fmBell: "D", fmBellGain: 0.014, fmBellInterval: 16,
   },
   // 讲牌：稍流动一点，但仍是"点"状
+  // 和弦：C → G/B → Am → F（IV → I/iii → vi → ii，温柔的循环）
   perCard: {
     octave: 0, filterHz: 780,
-    noiseGain: 0.004, arpGain: 0.036,
+    noiseGain: 0.009, arpGain: 0.036,
     arp: [
       { p: "C", d: 2 }, { p: "E", d: 2 }, { p: "G", d: 3 }, { p: "B", d: 1 },
     ],
     arpLoopBeats: 8, beatSec: 0.85, reverbMix: 0.42, delayMix: 0.15,
+    subBass: "C2", subBassGain: 0.030,
+    chords: [["C", "E", "G"], ["G", "B", "D"], ["A", "C", "E"], ["F", "A", "C"]],
+    chordSwitchSec: 7, chordGain: 0.024,
+    sawDetune: 10, lfoRate: 0.072, lfoDepth: 460,
+    fmBell: "G", fmBellGain: 0.020, fmBellInterval: 9,
   },
-  // 综合：最丰富的一层（仪式高潮），但也只是 5 个音/8 拍
+  // 综合：最丰富的一层（仪式高潮）
+  // 和弦：Am → F → C → G（回到最经典的循环，但比 idle 更亮）
   synthesis: {
     octave: 0, filterHz: 1500,
-    noiseGain: 0.005, arpGain: 0.042,
+    noiseGain: 0.008, arpGain: 0.042,
     arp: [
       { p: "A", d: 2 }, { p: "C", d: 2 }, { p: "E", d: 3 },
       { p: "G", d: 2 }, { p: "A", d: 3 },
     ],
     arpLoopBeats: 8, beatSec: 0.75, reverbMix: 0.50, delayMix: 0.20,
+    subBass: "A1", subBassGain: 0.027,
+    chords: [["A", "C", "E"], ["F", "A", "C"], ["C", "E", "G"], ["E", "G#", "B"]],
+    chordSwitchSec: 6, chordGain: 0.030,
+    sawDetune: 12, lfoRate: 0.085, lfoDepth: 620,
+    fmBell: "E", fmBellGain: 0.024, fmBellInterval: 7,
   },
   // 收束：安详，落回主音
+  // 和弦：Am → Dm → E → Am（回到主音，安放）
   closing: {
     octave: -1, filterHz: 620,
-    noiseGain: 0.003, arpGain: 0.026,
+    noiseGain: 0.010, arpGain: 0.026,
     arp: [
       { p: "A", d: 4 }, { p: "C", d: 2 }, { p: "a", d: 2 },
     ],
     arpLoopBeats: 8, beatSec: 1.45, reverbMix: 0.45, delayMix: 0.18,
+    subBass: "A1", subBassGain: 0.036,
+    chords: [["A", "C", "E"], ["D", "F", "A"], ["E", "G#", "B"], ["A", "C", "E"]],
+    chordSwitchSec: 13, chordGain: 0.026,
+    sawDetune: 7, lfoRate: 0.033, lfoDepth: 300,
+    fmBell: "A", fmBellGain: 0.020, fmBellInterval: 12,
   },
 };
 
@@ -183,6 +313,50 @@ const ARP_WAVE: OscillatorType = "sine";
 /** 微失谐（cents）—— 小到人耳几乎无拍频，但音色不呆板 */
 const ARP_DETUNE = 3;
 
+/**
+ * ⚠️ 2026-11-07：super-saw 的失谐表（cents）
+ *
+ * ⚠️ 为什么是这组数：
+ *   经典 unison 叠层的做法是 **±(n-1) 步进**：
+ *   5 个声部 → 0, +7, -7, +14, -14 → 中心频率 ±14 cents
+ *   · < 3 cents → 听不出宽度（等于没加）
+ *   · 3~5 cents → 轻微拍频（"颤"）
+ *   · 5~15 cents → **宽谱、暖、无拍频** → 经典的 pad 宽度
+ *   · > 20 cents → "合唱失调" → 脏
+ *
+ * ⚠️ 为什么不用随机的失谐量：
+ *   随机会让每次启动的音色都不同 → 用户会觉得"每次听起来不一样"（不稳定感）。
+ *   固定的**对称**分布 → 每次都一样 → 可预期 = 可信任。
+ */
+const SAW_VOICES = [0, 7, -7, 14, -14];
+
+/**
+ * ⚠️ 五声音阶（大调五声）—— FM 钟琴的音高来源
+ *
+ * ⚠️ 为什么是五声音阶而不是自然小调：
+ *   · 小调音阶含 b3/b6 → 有"忧郁/不安"的暗示 → 长期播放会累积负面情绪
+ *   · 大调五声（C D E G A）**没有半音、没有三全音** → 无论怎么组合都不冲突
+ *   → 是"背景音乐音阶"的标准选择（安全、无情绪负担、且听起来"东方/神秘"）
+ *
+ * ⚠️ 为什么标注为 C 大调五声：
+ *   根音 C，其余层用别的音名 → 转频率时保持绝对音高，不受层调性影响。
+ */
+const PENTA_SCALE = ["C", "D", "E", "G", "A"];
+
+/**
+ * ⚠️ FM 合成参数
+ *
+ * ⚠️ 为什么载波与调制器的比值是 1 : 1.414（√2）：
+ *   FM 的泛音结构由"调制频率 / 载波频率"的**比值**决定：
+ *   · 比值是整数 → 泛音落在谐波上 → 声音"纯"、像风琴
+ *   · 比值是**无理数**（√2、1.5、2.76…）→ 泛音落在**非谐波**位置
+ *     → 产生"金属质"的独特音色 → **像磬、像钟**（这正是我们要的）
+ *   √2 是最经典的"金属 FM"比值（DX 电钢的经典音色）。
+ */
+const FM_RATIO = Math.SQRT2;
+/** FM 调制指数 —— 越大越亮/越"铃"，越小越"闷" */
+const FM_INDEX = 3.2;
+
 /* ══════════════════════════════════════════════════════════════
  * 音名 → 频率
  * ══════════════════════════════════════════════════════════════ */
@@ -193,13 +367,34 @@ const NOTE_BASE: Record<string, number> = {
   "G#": 415.30, A: 440.00, "A#": 466.16, B: 493.88,
 };
 
-/** 音名 → 频率（Hz）。小写字母 = 低八度。 */
+/**
+ * 音名 → 频率（Hz）。小写字母 = 低八度。
+ *
+ * ⚠️⚠️ 2026-11-07 修正（用户反馈"很难听"）：
+ *   原来的实现是 `base * 2^oct`，其中小写 = 低八度（oct = -1）。
+ *   → `noteToFreq("A1")` 得到 440 × 0.5 = **220Hz**！
+ *   → 220Hz 落在**人耳最敏感的频段** → 持续播放 = 刺耳 = "空鸣"
+ *     （这正是 2026-11-04 用户投诉的那个问题，被我"修"进了 sub-bass 层）
+ *
+ * ⚠️ 正确的音高记号：
+ *   音名后面的数字是**八度号**（A4 = 440Hz，A1 = 55Hz，A2 = 110Hz）。
+ *   → 频率 = base × 2^(octave - 4)
+ *   → 小写前缀（如 "a"）表示**再低八度**（-12 半音）。
+ *
+ * ⚠️ 为什么之前没发现：
+ *   原来的 `octave` 参数是"层级别的八度偏移"（-1/0/+1），
+ *   与音名本身的小写后缀混在一起 → 语义重叠 → 越算越偏。
+ */
 function noteToFreq(name: string, octaveOffset = 0): number {
   const isLow = name[0] === name[0]?.toLowerCase();
   const key = name.toUpperCase();
   const base = NOTE_BASE[key] ?? 440;
-  const oct = (isLow ? -1 : 0) + octaveOffset;
-  return base * Math.pow(2, oct);
+  // 音名里的八度号（"A1" → 1）；没有数字时默认 4（A4 = 440Hz）
+  const m = name.match(/(\d+)/);
+  const octave = m ? Number(m[1]) : 4;
+  // 小写前缀 → 再低一个八度
+  const extra = isLow ? -1 : 0;
+  return base * Math.pow(2, octave + extra - 4 + octaveOffset);
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -229,6 +424,43 @@ interface AmbienceState {
    * ⚠️ 2026-11-04 三改：顺带存下低通滤波器 —— 切层时需要改 filterHz（底床明暗）
    */
   noise: { src: AudioBufferSourceNode; gain: GainNode; filter: BiquadFilterNode } | null;
+  /**
+   * ⚠️ 2026-11-07 新增：低频基础（sub-bass）
+   * ⚠️ 为什么存三样东西：
+   *   · osc —— 持续的正弦（40~80Hz）
+   *   · filter —— 低通（切掉它的谐波，只留基频，否则会变回刺耳的 drone）
+   *   · gain —— 音量（切层时要用 setTargetAtTime 平滑过渡）
+   */
+  subBass: { osc: OscillatorNode; filter: BiquadFilterNode; gain: GainNode } | null;
+  /** ⚠️ sub-bass 的幅度调制器（切层时要停掉旧的，否则会叠加） */
+  subBassMod: OscillatorNode | null;
+  /**
+   * ⚠️ 2026-11-07 新增：和弦层（super-saw 叠层）
+   * ⚠️ 为什么要**动态创建/销毁**音符而不是常驻：
+   *   和弦会换（Am → F → C → G），每个和弦的音高不同
+   *   → 必须每次换和弦时重建振荡器
+   */
+  chord: {
+    /** 当前的振荡器们（换和弦时停掉重建） */
+    voices: Array<{ osc: OscillatorNode; gain: GainNode }>;
+    /** 和弦层的总线增益 */
+    gain: GainNode;
+    /** 和弦层的低通（受 LFO 调制 → 呼吸感） */
+    filter: BiquadFilterNode;
+    /** 下一个换和弦的时间 */
+    nextChordTime: number;
+    /** 当前和弦的索引 */
+    chordIndex: number;
+  } | null;
+  /**
+   * ⚠️ 2026-11-07 新增：LFO（滤波器截止频率扫描）
+   * ⚠️ 为什么单独存：切层时需要改频率/深度
+   */
+  lfo: { osc: OscillatorNode; depth: GainNode } | null;
+  /**
+   * ⚠️ 2026-11-07 新增：FM 钟琴的调度状态
+   */
+  fmBell: { nextTime: number } | null;
   /** 当前层 */
   layer: AmbienceLayer;
   /** 用户音量（0~1，UI 滑块） */
@@ -245,12 +477,12 @@ interface AmbienceState {
 
 const STATE_KEY = "__mysticTarotAmbience";
 
-function getState(): AmbienceState {
+export function getState(): AmbienceState {
   const g = globalThis as unknown as Record<string, AmbienceState | undefined>;
   if (!g[STATE_KEY]) {
     g[STATE_KEY] = {
       ctx: null, master: null, dry: null, wet: null, convolver: null, delay: null, delayWet: null,
-      noise: null,
+      noise: null, subBass: null, subBassMod: null, chord: null, lfo: null, fmBell: null,
       layer: "idle", volume: 0.3, muted: true, unlocked: false,
       scheduler: null, arpParams: null,
     };
@@ -272,17 +504,58 @@ function getState(): AmbienceState {
  *   原因（用户反馈「很长很长的空鸣声」）：IR 太长 = 每个音都被拖成长尾，
  *   连续的音互相叠加尾巴 = 一片"嗡——"。真实冥想音乐的空间感是"清晰的大房间"，
  *   不是"无尽的山洞"。
+ *
+ * ⚠️⚠️ 2026-11-07 大改：加**早期反射**（early reflections）。
+ *   纯指数衰减噪声的 IR，听起来是"糊的雾"（用户说"很难听"的原因之一）。
+ *   真实房间的混响有两个阶段：
+ *     ① **早期反射**（0~80ms）—— 声音撞到墙壁/天花板立刻弹回的几声
+ *        → 人脑靠这个判断"房间有多大、墙有多远"
+ *        → **没有它 = 没有空间感，只有"糊"**
+ *     ② **扩散尾**（80ms+）—— 密集的反射逐渐衰减
+ *        → 这部分才是"混响"的体积感
+ *   → 之前的实现只有 ② → 所以空间感是假的。
+ *
+ * ⚠️ 为什么早期反射用**稀疏的脉冲**而不是连续噪声：
+ *   连续噪声 = 糊；稀疏脉冲 = 能被耳朵分辨成"几声回弹" → 真实的房间感。
+ * ⚠️ 左右声道用**不同的延迟与增益**：
+ *   立体声混响如果左右完全相同 → 声音像在正前方一个点上（"贴脸"）
+ *   → 不同的早期反射路径 → 声场展开 → 宽阔。
  */
-function makeImpulseResponse(ctx: AudioContext, seconds = 1.6, decay = 2.6): AudioBuffer {
+export function makeImpulseResponse(ctx: AudioContext, seconds = 2.2, decay = 2.6): AudioBuffer {
   const rate = ctx.sampleRate;
   const len = Math.floor(rate * seconds);
   const ir = ctx.createBuffer(2, len, rate);
+
+  /**
+   * 早期反射的（相对时间, 增益）列表 —— 单位秒
+   * ⚠️ 这些值是按"一个中等大小的石头房间"手调的：
+   *   前几声密集（8~25ms）→ 近处墙壁
+   *   后几声稀疏（40~75ms）→ 远处/侧墙
+   */
+  const EARLY: Array<[number, number]> = [
+    [0.007, 0.62], [0.011, 0.48], [0.017, 0.55],
+    [0.023, 0.38], [0.031, 0.44], [0.042, 0.30],
+    [0.055, 0.34], [0.071, 0.22],
+  ];
+
   for (let ch = 0; ch < 2; ch++) {
     const data = ir.getChannelData(ch);
+    // ① 扩散尾：指数衰减的噪声（原有的部分）
     for (let i = 0; i < len; i++) {
-      // ⚠️ 指数衰减包络 × 随机噪声
       const env = Math.pow(1 - i / len, decay);
       data[i] = (Math.random() * 2 - 1) * env;
+    }
+    // ② 早期反射：稀疏脉冲（左右错开 → 声场展开）
+    for (let k = 0; k < EARLY.length; k++) {
+      const [t, g] = EARLY[k];
+      // ⚠️ 右声道延迟错开 3~7ms（真实房间的左右不对称）
+      const jitter = ch === 0 ? 1 : 1.14;
+      const idx = Math.floor(t * jitter * rate);
+      if (idx < len) {
+        // 用相邻几个样本做一个"窄脉冲"（比单样本更像真实反射）
+        data[idx] += g * (Math.random() > 0.5 ? 1 : -1);
+        if (idx + 1 < len) data[idx + 1] += g * 0.5;
+      }
     }
   }
   return ir;
@@ -428,6 +701,59 @@ const DELAY_SEND = 0.22;
 const LOOKAHEAD_MS = 25;
 const SCHEDULE_AHEAD = 0.12;
 
+/**
+ * ⚠️ 离线渲染调度（2026-11-07）
+ *
+ * ⚠️ 为什么需要单独一套：
+ *   `startScheduler` 依赖 `window.setInterval` —— 在 **OfflineAudioContext** 里，
+ *   真实时间不会推进（渲染是瞬间算完 12 秒音频），
+ *   → 定时器根本来不及触发 → 渲染出来只有底床，没有乐句/和弦/钟琴。
+ *   → 所以离线渲染必须**一次性把整条时间轴排完**。
+ *
+ * ⚠️ 为什么这不会与线上行为漂移：
+ *   它复用的是**同一批**函数（playArpNote / triggerChord / triggerFmBell），
+ *   只是"什么时候调用"的策略不同 —— 排音符的逻辑完全一致。
+ *
+ * ⚠️ 为什么导出（export）：
+ *   `scripts/dev/render-ambience.mjs` 需要在浏览器里调用它做离线渲染。
+ *   → 导出后 esbuild 会把它挂到 `__AMB__.scheduleOffline`。
+ */
+export function scheduleOffline(st: AmbienceState, p: LayerParams, duration: number): void {
+  const ctx = st.ctx;
+  if (!ctx) return;
+
+  // ① 乐句
+  const notes = p.arp;
+  let t = 0.05;
+  let i = 0;
+  const loopLen = p.arpLoopBeats * p.beatSec;
+  while (t < duration) {
+    const note = notes[i % notes.length];
+    const dur = note.d * p.beatSec;
+    const playDur = Math.min(dur * 0.92, loopLen * 0.5);
+    playArpNote(st, note.p, p.octave, t, playDur, p.arpGain);
+    t += dur;
+    i++;
+  }
+
+  // ② 和弦轮换
+  if (st.chord) {
+    let ct = 0.05;
+    while (ct < duration) {
+      triggerChord(st, p, ct);
+      ct += p.chordSwitchSec;
+    }
+  }
+
+  // ③ FM 钟琴（随机间隔，与线上同一套抖动逻辑）
+  let bt = 2.0;
+  while (bt < duration) {
+    triggerFmBell(st, p, bt);
+    const jitter = 0.65 + Math.random() * 0.7;
+    bt += p.fmBellInterval * jitter;
+  }
+}
+
 function startScheduler(st: AmbienceState): void {
   stopScheduler(st);
   const params = st.arpParams;
@@ -451,6 +777,29 @@ function startScheduler(st: AmbienceState): void {
         s.nextNoteTime += dur;
         s.noteIndex++;
       }
+
+      /**
+       * ⚠️ 2026-11-07：和弦轮换 + FM 钟琴也挂在这个调度器上。
+       * ⚠️ 为什么不用独立的 setInterval：
+       *   独立定时器会各自抖动 → 和弦切换与乐句不同步 → 听起来"散"。
+       *   统一走前瞻调度器 → 所有事件都在**同一条采样精确的时间轴**上。
+       */
+      const lp = LAYER_PARAMS[st.layer];
+      if (lp) {
+        // ① 和弦轮换
+        if (st.chord && st.chord.nextChordTime < now + SCHEDULE_AHEAD) {
+          triggerChord(st, lp, st.chord.nextChordTime);
+          st.chord.nextChordTime += lp.chordSwitchSec;
+        }
+        // ② FM 钟琴（随机间隔）
+        if (!st.fmBell) st.fmBell = { nextTime: now + 2 };
+        if (st.fmBell.nextTime < now + SCHEDULE_AHEAD) {
+          triggerFmBell(st, lp, st.fmBell.nextTime);
+          // ⚠️ 随机抖动 ±35% → 避免"机械的等间隔"（听起来像节拍器）
+          const jitter = 0.65 + Math.random() * 0.7;
+          st.fmBell.nextTime += lp.fmBellInterval * jitter;
+        }
+      }
       // ⚠️ 兜底：如果卡了太久（标签页被挂起），把时间轴拉回来
       if (s.nextNoteTime < now) s.nextNoteTime = now + 0.05;
     }, LOOKAHEAD_MS),
@@ -464,7 +813,7 @@ function startScheduler(st: AmbienceState): void {
   };
 }
 
-function stopScheduler(st: AmbienceState): void {
+export function stopScheduler(st: AmbienceState): void {
   if (st.scheduler?.timer != null) {
     window.clearInterval(st.scheduler.timer);
     st.scheduler = null;
@@ -539,6 +888,258 @@ function playArpNote(
 }
 
 /* ══════════════════════════════════════════════════════════════
+ * 2026-11-07 新增的三个层（真实音乐的四要素）
+ * ══════════════════════════════════════════════════════════════ */
+
+/**
+ * ① 低频基础（sub-bass）
+ *
+ * ⚠️⚠️ 这是本轮改造里**最微妙**的一层，理由见 LayerParams 里的说明：
+ *   · 之前删掉的 drone 是 220/440Hz（人耳最敏感区）→ 刺耳
+ *   · 这里的 sub-bass 是 **A1 = 55Hz**（胸腔区）→ 人耳"听"不到，只"感"得到
+ *   → 加上它，声音立刻从"飘"变成"有重量"
+ *
+ * ⚠️ 为什么**必须低通**：
+ *   正弦波本身只有基频，但只要有一点失真或数值误差就会有谐波残留
+ *   → 低通到 140Hz → 保证只输出基频 → 绝对不会变回刺耳的 drone
+ *
+ * ⚠️ 为什么**必须缓慢起伏**：
+ *   完全恒定的持续音 = 听觉系统会把它当"环境基准音"逐渐忽略 → 反而没效果
+ *   → 用 0.05Hz 的周期做幅度起伏（20 秒一次）→ 一直在"呼吸"
+ */
+function buildSubBass(p: LayerParams): void {
+  const st = getState();
+  if (!st.ctx || !st.master) return;
+
+  const freq = noteToFreq(p.subBass);
+  const now = st.ctx.currentTime;
+
+  if (!st.subBass) {
+    const osc = st.ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+
+    const filter = st.ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value = 140;
+    filter.Q.value = 0.7;
+
+    const gain = st.ctx.createGain();
+    gain.gain.value = 0;
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(st.master);
+    osc.start();
+
+    st.subBass = { osc, filter, gain };
+  } else {
+    // 已存在 → 平滑换音高（不能硬改，否则会有"跳变"的咔哒声）
+    st.subBass.osc.frequency.setTargetAtTime(freq, now, 1.2);
+  }
+
+  // 缓慢起伏：用第二个 LFO 调制音量（周期 ~20 秒）
+  // ⚠️ 用 setTargetAtTime 的连续调用做"起伏"是不可行的（会互相打断），
+  //   → 改用一对极低频的振荡器做幅度调制
+  const lfo = st.ctx.createOscillator();
+  lfo.type = "sine";
+  lfo.frequency.value = 0.05;
+  const lfoGain = st.ctx.createGain();
+  // ⚠️ 深度 = 音量的 35% → 起伏明显但不消失（完全消失会"断气"）
+  lfoGain.gain.value = p.subBassGain * 0.35;
+  lfo.connect(lfoGain);
+  lfoGain.connect(st.subBass.gain.gain);
+  lfo.start(now);
+
+  // ⚠️ 基础音量（lfo 在上面叠加，所以基础值要略高一点）
+  st.subBass.gain.gain.setTargetAtTime(p.subBassGain * 0.8, now, 1.5);
+  // 停掉旧的调制器（避免每次切层都叠一个新的）
+  st.subBassMod?.stop();
+  st.subBassMod = lfo;
+}
+
+/**
+ * ② 和弦层（super-saw 叠层）
+ *
+ * ⚠️ 为什么用 **5 个失谐正弦**（而不是 1 个）：
+ *   单个正弦 = "纯"但干瘪；5 个 ±14 cents 的正弦叠在一起
+ *   → 频谱变宽 → 听感变"厚、暖"（经典 pad 音色）
+ *
+ * ⚠️ 为什么**每个和弦都要重建振荡器**：
+ *   换和弦 → 音高变了 → 振荡器的频率属性要改
+ *   → 简单的做法是 stop 旧的、start 新的（带淡入淡出 → 无爆音）
+ *
+ * ⚠️ 为什么和声音量这么小（0.018~0.030）：
+ *   和弦是**背景**，乐句才是主角 → 和弦只要"填满中频"就够了
+ *   → 太大就变成"和弦进行播放器"，抢了占卜的仪式感
+ */
+function buildChordLayer(p: LayerParams): void {
+  const st = getState();
+  if (!st.ctx || !st.master) return;
+
+  const now = st.ctx.currentTime;
+
+  if (!st.chord) {
+    const gain = st.ctx.createGain();
+    gain.gain.value = p.chordGain;
+    const filter = st.ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value = 1400;
+    filter.Q.value = 0.6;
+    filter.connect(gain);
+    gain.connect(st.master);
+    // ⚠️ 和弦层也要进混响（否则贴耳、很"近"、很干）
+    connectBoth(st, gain, p.reverbMix * 0.7);
+    st.chord = { voices: [], gain, filter, nextChordTime: now + 0.2, chordIndex: 0 };
+  } else {
+    st.chord.gain.gain.setTargetAtTime(p.chordGain, now, 1.2);
+  }
+
+  // 立刻起第一个和弦
+  triggerChord(st, p, now + 0.05);
+  st.chord.nextChordTime = now + p.chordSwitchSec;
+}
+
+/**
+ * 触发一个和弦（停掉旧的、起新的）
+ */
+function triggerChord(st: AmbienceState, p: LayerParams, when: number): void {
+  const ctx = st.ctx;
+  const chord = st.chord;
+  if (!ctx || !chord) return;
+
+  const notes = p.chords[chord.chordIndex % p.chords.length];
+  const dur = p.chordSwitchSec * 1.15; // 略微重叠 → 衔接不突兀
+
+  // 停掉旧声部（带 0.6s 淡出 → 无爆音）
+  for (const v of chord.voices) {
+    try {
+      v.gain.gain.cancelScheduledValues(when);
+      v.gain.gain.setTargetAtTime(0.0001, when, 0.25);
+      v.osc.stop(when + 0.9);
+    } catch {
+      /* 已经停了 */
+    }
+  }
+  chord.voices = [];
+
+  for (const note of notes) {
+    const freq = noteToFreq(note, 0);
+    for (const det of SAW_VOICES) {
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      osc.detune.value = det;
+      const g = ctx.createGain();
+      g.gain.value = 0;
+      // ⚠️ 淡入淡出：0.9s 淡入 → 保持 → 淡出
+      g.gain.setTargetAtTime(1 / SAW_VOICES.length, when, 0.45);
+      g.gain.setTargetAtTime(0.0001, when + dur - 0.7, 0.3);
+      osc.connect(g);
+      g.connect(chord.filter);
+      osc.start(when);
+      osc.stop(when + dur + 0.6);
+      chord.voices.push({ osc, gain: g });
+    }
+  }
+  chord.chordIndex++;
+}
+
+/**
+ * ③ LFO（滤波器截止频率的缓慢扫描）
+ *
+ * ⚠️ 为什么这是"不腻"的关键：
+ *   固定截止频率 = 音色从头到尾一样 → 大脑很快适应 → 感觉"静止"
+ *   缓慢扫描 = 音色一直在"开合" → 听觉持续被微小的变化吸引 → 不烦躁
+ *
+ * ⚠️ 实现方式：
+ *   LFO（正弦）→ depthGain（缩放到 ±lfoDepth Hz）→ 连接到 filter.frequency
+ *   ⚠️ Web Audio 的 AudioParam 可以接受多个输入并**相加**，
+ *      所以不需要额外写 setValueCurveAtTime。
+ */
+function buildLfo(p: LayerParams): void {
+  const st = getState();
+  if (!st.ctx || !st.master) return;
+
+  const now = st.ctx.currentTime;
+
+  if (!st.lfo) {
+    const osc = st.ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = p.lfoRate;
+    const depth = st.ctx.createGain();
+    depth.gain.value = p.lfoDepth;
+    osc.connect(depth);
+    osc.start(now);
+    st.lfo = { osc, depth };
+  } else {
+    st.lfo.osc.frequency.setTargetAtTime(p.lfoRate, now, 1.2);
+  }
+
+  // ⚠️ LFO 接到**和弦层**的低通上（那是持续存在的层 → 扫描才有意义）
+  if (st.chord) {
+    st.chord.filter.frequency.setValueAtTime(1400, now);
+    st.lfo.depth.disconnect();
+    st.lfo.depth.connect(st.chord.filter.frequency);
+  }
+}
+
+/**
+ * ④ FM 钟琴（五声音阶随机触发）
+ *
+ * ⚠️ 为什么要有这个"事件层"：
+ *   乐句层是"有音高的点"，但它是**规则循环**的（8 拍一循环）
+ *   → 钟琴是**随机时刻**触发的 → 打破规律感 → 听感"活着"
+ *
+ * ⚠️ FM 合成原理：
+ *   载波（carrier）→ 输出声音
+ *   调制器（modulator）→ 以 FM_RATIO × 载波频率的速度，**改变载波的瞬时频率**
+ *   → 频率被快速摆动 → 产生非谐波泛音 → 金属质感（磬、钟）
+ *
+ * ⚠️ 为什么音高取**五声音阶**：
+ *   大调五声（C D E G A）没有半音/三全音 → 任意组合都不冲突
+ *   → 随机触发也不会"跑调"
+ */
+function triggerFmBell(st: AmbienceState, p: LayerParams, when: number): void {
+  const ctx = st.ctx;
+  if (!ctx || !st.master) return;
+
+  // ⚠️ 随机取五声音阶里的一个音（根音有时用层的主音）
+  const useRoot = Math.random() < 0.35;
+  const note = useRoot ? p.fmBell : PENTA_SCALE[Math.floor(Math.random() * PENTA_SCALE.length)];
+  const freq = noteToFreq(note, 1); // 高一个八度 → 钟琴的音域
+
+  // 载波
+  const carrier = ctx.createOscillator();
+  carrier.type = "sine";
+  carrier.frequency.value = freq;
+
+  // 调制器 → 通过 gain 接到载波的 frequency（实现 FM）
+  const modulator = ctx.createOscillator();
+  modulator.type = "sine";
+  modulator.frequency.value = freq * FM_RATIO;
+  const modDepth = ctx.createGain();
+  modDepth.gain.value = freq * FM_INDEX;
+  modulator.connect(modDepth);
+  modDepth.connect(carrier.frequency);
+
+  // 包络：快速 attack → 长衰减（磬的余韵）
+  const env = ctx.createGain();
+  env.gain.setValueAtTime(0.0001, when);
+  env.gain.exponentialRampToValueAtTime(Math.max(0.0002, p.fmBellGain), when + 0.01);
+  env.gain.exponentialRampToValueAtTime(0.0001, when + 2.2);
+
+  carrier.connect(env);
+  env.connect(st.master);
+  connectBoth(st, env, 0.5);
+
+  carrier.start(when);
+  carrier.stop(when + 2.3);
+  modulator.start(when);
+  modulator.stop(when + 2.3);
+}
+
+/* ══════════════════════════════════════════════════════════════
  * 层次构建
  * ══════════════════════════════════════════════════════════════ */
 
@@ -552,7 +1153,7 @@ function playArpNote(
  *   · 它们还灌进 2.6s 大混响 → 拖成一片"嗡——"
  *   真正的冥想音乐没有持续音。现在的层 = 噪声底床 + 稀疏乐句（调度器）。
  */
-function buildLayer(layer: AmbienceLayer): void {
+export function buildLayer(layer: AmbienceLayer): void {
   const st = getState();
   if (!st.ctx || !st.master) return;
   const p = LAYER_PARAMS[layer];
@@ -576,12 +1177,27 @@ function buildLayer(layer: AmbienceLayer): void {
     const nf = st.ctx.createBiquadFilter();
     nf.type = "lowpass";
     nf.frequency.value = p.filterHz;
+    /**
+     * ⚠️ 2026-11-07 新增：**高通**（切掉低频"隆隆"）
+     * ⚠️ 为什么需要：
+     *   粉噪声里有大量 20~60Hz 的能量 → 听起来像"远处的雷声/隆隆声"
+     *   → 和 sub-bass 层叠加 = 浑浊
+     *   → 高通到 140Hz → 只留"风/空气"的中高频 → 干净
+     */
+    const hp = st.ctx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.value = 140;
     src.connect(nf);
-    nf.connect(gain);
+    nf.connect(hp);
+    hp.connect(gain);
     gain.connect(st.master);
     src.start();
     st.noise = { src, gain, filter: nf };
   }
+
+  buildSubBass(p);
+  buildChordLayer(p);
+  buildLfo(p);
 
   // 混响/延迟的干湿比（⚠️ delayMix 2026-11-04 起真正接线）
   if (st.convolver && st.wet) {
@@ -950,7 +1566,30 @@ export function stopAmbience(): void {
   st.master.gain.cancelScheduledValues(now);
   st.master.gain.setValueAtTime(st.master.gain.value, now);
   st.master.gain.linearRampToValueAtTime(0, now + 1.2);
+
+  /**
+   * ⚠️ 2026-11-07：新增的层也要处理。
+   * ⚠️ 为什么不能只靠 master 淡出：
+   *   master 淡出只是把音量降到 0，**振荡器仍在跑**（持续消耗 CPU）
+   *   → 而且 master 之后还会被重新淡入 → 那些振荡器会"诈尸"（突然又响）
+   *   → 表现：离开占卜页再回来，听到的是一堆叠加的旧层（声音浑浊）。
+   * → 所以：淡出的同时，把新增层的振荡器真正停掉。
+   */
+  // 低频层
+  st.subBass?.gain.gain.setTargetAtTime(0.0001, now, 0.4);
+  // 和弦层
+  st.chord?.gain.gain.setTargetAtTime(0.0001, now, 0.4);
+  for (const v of st.chord?.voices ?? []) {
+    try {
+      v.osc.stop(now + 1.0);
+    } catch {
+      /* 已停止 */
+    }
+  }
+  // 钟琴
+  st.fmBell = null;
 }
+
 
 /**
  * ⚠️ 把占卜阶段映射到氛围层

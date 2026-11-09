@@ -86,6 +86,10 @@ jobs:
           # ⚠️ 环境音：断言"阶段→氛围层"的映射与页面接线（音频是看不见的功能，
           #    最容易悄悄坏掉，而 CI 里没有别的东西能发现）
           npx tsx scripts/verify-ambience.mjs
+          # ⚠️ 环境音**音色质量**（2026-11-07，用户反馈「很难听」驱动）：
+          #    断言 sub-bass / super-saw / LFO 呼吸 / 和声轮换 / FM 钟琴 五要素，
+          #    同时守住「消除空鸣」的既有修复不被回退。
+          npx tsx scripts/verify-ambience-tone.mjs
           # ⚠️ UX 修复（2026-11-04 用户实测报告驱动）：
           #    追问入口 / 滚动条 / 限流去技术化 / 收束回响 / 思考气泡 / 翻牌可点性
           npx tsx scripts/verify-ux-fixes.mjs
