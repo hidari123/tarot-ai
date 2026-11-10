@@ -238,6 +238,41 @@ body {
   50% { opacity: 1; transform: scale(1.06); }
 }
 
+/* ------------------------------------------------------------------
+ * 小女巫水晶球的光影流动（2026-11-10）
+ *
+ * ⚠️ 为什么需要三个独立动画（而不是一个）：
+ *   · spin    → 球内**流光旋转**（"光影在流动"的主体）
+ *   · breathe → 球心**明暗脉动**（像有东西在里面跳动）
+ *   · pulse   → 球外**辉光扩散**（球在照亮周围）
+ *   → 三者的节奏必须不同（11s / 4.2s / 4.6s）
+ *     周期接近会产生"共振"（看起来像在抽搐）→ 必须互质。
+ *
+ * ⚠️ transform 里的 translate(-50%,-50%) **不能省**：
+ *   元素用 left/top 定位到球心 → 必须靠 translate 把自身中心对齐过去。
+ *   ⚠️ 注意：CSS 动画一旦接管 transform，就会**覆盖**内联样式里的 translate！
+ *   → 所以动画里必须**重复写上** translate(-50%,-50%)。
+ *   （这是 2026-11-05 celestial-swirl 踩过的同类坑的变体）
+ */
+
+/* 球内流光旋转 */
+@keyframes witch-orb-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* 球心呼吸 */
+@keyframes witch-orb-breathe {
+  0%, 100% { opacity: 0.5; transform: translate(-50%, -50%) scale(0.86); }
+  50% { opacity: 1; transform: translate(-50%, -50%) scale(1.14); }
+}
+
+/* 球外辉光 */
+@keyframes witch-orb-pulse {
+  0%, 100% { opacity: 0.55; transform: translate(-50%, -50%) scale(0.94); }
+  50% { opacity: 0.95; transform: translate(-50%, -50%) scale(1.1); }
+}
+
 /* 渐变文字流光 */
 @keyframes shimmer-text {
   0% { background-position: 0% 50%; }

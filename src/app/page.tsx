@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
@@ -11,7 +11,7 @@ import StardustCursor from "@/components/StardustCursor";
  *   · AstralCircle —— 真 SVG 星象魔法阵
  */
 import CelestialBackdrop from "@/components/CelestialBackdrop";
-import CelestialOrb from "@/components/CelestialOrb";
+import WitchOrb from "@/components/WitchOrb";
 import PersonaOrb from "@/components/PersonaOrb";
 import AgentTrace, { type ToolCall, type RoundInfo } from "@/components/AgentTrace";
 import KnowledgePanel, { type RagHitView } from "@/components/KnowledgePanel";
@@ -1767,23 +1767,24 @@ export default function TarotApp() {
         倾听星辰的低语 · 窥探命运的轨迹
       </motion.p>
 
-      {/* ---------- 水晶球主视觉（2026-11-05 视觉重设计）----------
-          ⚠️ 为什么放在标题下、输入框上：
-            之前首页所有元素权重相同 → 视线无处停留 → "很基础"。
-            → 现在有明确的视觉中心：球体承载"你要问的事"，
-              而占卜师头像、输入框、入口都围绕它排布。
-          ⚠️ 为什么只在 input 阶段显示：
-            进入占卜后对话流才是主角，球会抢戏。 */}
-      {stage === "input" && (
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.2, duration: 0.9, ease: "easeOut" }}
-          className="z-10 my-8"
-        >
-          <CelestialOrb size={300} />
-        </motion.div>
-      )}
+      {/* ══════════════════════════════════════════════
+       * 小女巫水晶球 · 「球凸出」构图（2026-11-10）
+       *
+       * ⚠️ 用户最终要求（原文）：
+       *   「球那个应该凸出来占位置的 只是小女孩不占位置
+       *     球的大小应该跟小女孩抱的那个球大小一致 只不过是突到页面上占位置了」
+       *
+       * ⚠️⚠️ 所以 WitchOrb 由**两部分**组成，放的位置不同：
+       *   · 背景层（小女孩）→ 在组件内部是 `fixed` → 不占布局位置
+       *   · 实体层（水晶球）→ 在组件内部是**普通 div** → 在文档流里 → **占位置**
+       *
+       * ⚠️ 为什么组件要放在**副标题之后**：
+       *   · 球的实体层在文档流里 → 它的位置 = 它在 JSX 里的位置
+       *   · 用户要「球以上部分（人物）半透明出现在标题和副标题底部，
+       *     球突出出现在下方」→ 球在副标题之后、入口卡片之前 ✅
+       *   · 球占了位置 → 下面的入口卡片自动被推开 → 永不重叠
+       */}
+      <WitchOrb />
 
       <div className="h-4" />
 
@@ -2006,58 +2007,45 @@ export default function TarotApp() {
               whileTap={{ scale: 0.97 }}
               onClick={startDivination}
               /**
-               * ⚠️ 2026-11-06：按钮改成「AI 生成的两张配套图」。
-               * ⚠️ 用户要求："开始占卜那个按钮还是要图片，我的意思是不要 css 的边框了，
-               *   图片可以设计成两个，一个普通的，一个 hover 上去发光"。
+               * ⚠️ 2026-11-10：改成「用户抠好的金丝羽叶边框图」。
                *
-               * ⚠️ 实现：
-               *   · 默认显示 `btn-normal.webp`（静态金框）
-               *   · hover 时淡入 `btn-hover.webp`（带辉光的那张）
-               *   · 两张图**叠放**（absolute inset-0），用 opacity 切换
-               *   · 文字用 HTML 渲染在图片中央（不烧进图：位图字会糊、
-               *     无法朗读、字体与全站不统一）
-               * ⚠️ 为什么**去掉 CSS border**：
-               *   边框由图片提供 → 再加 CSS 边框会叠成两层框线（用户明确要求去掉）。
+               * ⚠️ 用户要求（三条）：
+               *   ① 「不要加 border 了 只用图片」→ 去掉 CSS border，框线全部由图提供
+               *   ② 「内部文字用深色的颜色」→ 图中间是**羊皮纸米色底** → 文字必须深色才看得清
+               *   ③ 「hover 上去的时候加特效」→ hover 时发光 + 提亮
+               *
+               * ⚠️ 为什么容器是 142×80 而不是 128×62：
+               *   图里框的外面还有一圈透明区（用户抠图时保留了）
+               *   → 用 object-contain 按原比例贴进容器 → **零变形**
+               *   → 容器高 80px 时，视觉框正好 = 80 × (555/720) = **62px**（= 输入框高）
+               *   → 容器宽 142px 时，视觉框宽 = 142 × (1154/1280) = **128px**
                */
-              /**
-               * ⚠️ 为什么用 **aspect-ratio 锁比例 + object-cover**：
-               *   ① 底图是 2:1 → 按钮用 aspect-ratio: 2/1 → 形状与图完全一致
-               *   ② object-cover 在同比例下等价于"不拉伸"，框线完整
-               *   ⚠️ 为什么不用 object-fill：
-               *   按钮的实际尺寸（内容 + padding）不会精确等于 2:1
-               *   → fill 会把框线横向拉伸 → 卷草角饰变形（截图实测：框被压扁）。
-               *   ⚠️ 为什么不用 object-contain：
-               *   contain 会让图在按钮里居中留边 → 框线不贴按钮边缘（有空隙）。
-               *   → **让按钮的形状跟随图片**（aspect-ratio），图片铺满它。
-               */
-              className="group relative aspect-[2/1] w-[196px] shrink-0 transition-all"
-              style={{
-                // 按钮自身的深底（图片透明处透出它，保证文字可读）
-                background:
-                  "radial-gradient(ellipse 70% 90% at 50% 50%, rgba(30,18,58,0.96), rgba(10,6,22,0.98))",
-                boxShadow: "0 8px 26px rgba(0,0,0,0.55)",
-              }}
+              className="group relative shrink-0 w-[142px] h-20"
             >
-              {/* 默认态：静态金框 */}
+              {/* 边框图（object-contain → 按原比例，不裁不拉伸） */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src="/images/celestial/btn-normal.webp"
+                src="/images/celestial/btn-start.png"
                 alt=""
-                className="absolute inset-0 w-full h-full object-cover pointer-events-none transition-opacity duration-300"
+                className="absolute inset-0 w-full h-full object-contain pointer-events-none
+                  transition-all duration-300
+                  group-hover:brightness-110 group-hover:drop-shadow-[0_0_14px_rgba(240,205,120,0.55)]"
               />
-              {/* hover 态：发光金框（淡入） */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/images/celestial/btn-hover.webp"
-                alt=""
-                className="absolute inset-0 w-full h-full object-cover pointer-events-none opacity-0 transition-opacity duration-300 group-hover:opacity-100"
-              />
-              {/* 文字（HTML 渲染 → 清晰、可朗读、字体统一） */}
+              {/* hover 时的底部辉光（额外一层，让"发光"更有层次） */}
               <span
-                className="relative text-[#f6e4a8] text-lg font-medium tracking-[0.14em]"
+                className="absolute inset-0 pointer-events-none opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+                style={{
+                  background:
+                    "radial-gradient(ellipse 60% 100% at 50% 100%, rgba(240,205,120,0.22), transparent 70%)",
+                  filter: "blur(6px)",
+                }}
+              />
+              {/* 文字（深色 —— 因为图中间是米色羊皮纸底） */}
+              <span
+                className="relative text-[#4a3312] text-lg font-semibold tracking-[0.14em]"
                 style={{
                   fontFamily: "'Ma Shan Zheng', serif",
-                  textShadow: "0 0 14px rgba(212,175,55,0.55), 0 1px 2px rgba(0,0,0,0.8)",
+                  textShadow: "0 1px 0 rgba(255,240,200,0.55)",
                 }}
               >
                 开始占卜

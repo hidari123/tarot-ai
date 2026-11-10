@@ -154,7 +154,22 @@ export default function CelestialBackdrop({
           src={image}
           alt=""
           className="absolute inset-0 w-full h-full object-cover"
-          style={{ objectPosition: imagePosition }}
+          style={{
+            objectPosition: imagePosition,
+            /**
+             * ⚠️⚠️ 2026-11-10：给底图**提亮**（用户反馈「今日之牌没有背景图」）
+             * ⚠️ 为什么需要：
+             *   AI 生成的底图本身就暗（bg-daily 平均亮度只有 rgb(31,14,38)），
+             *   再叠暗角/噪点/辅光 → 中心几乎全黑 → 用户看不到背景。
+             * ⚠️ 为什么用 CSS filter 而不是重新生成图：
+             *   · 重新生成要多花一次 API 调用 + 抽卡
+             *   · filter 是一行参数，随时可调 → 便于对比
+             * ⚠️ 为什么亮度提到 1.28 而不是更高：
+             *   · 太亮会让星云的层次糊掉（都推到接近白）
+             *   · 1.28 让暗部抬起来、亮部仍保留细节
+             */
+            filter: "brightness(1.28) saturate(1.08)",
+          }}
           loading="eager"
           decoding="async"
         />
@@ -317,14 +332,26 @@ export default function CelestialBackdrop({
 
       {/* ---- 层 7：暗角（把视线收进中心） ----
            ⚠️ 这一层制造"景深"：边缘压暗 → 中心内容浮出来。
-           ⚠️ 2026-11-06：有 AI 底图时**加强**中心保护 ——
-             AI 图中心可能正好有亮星云，而文字/水晶球就在那儿
-             → 需要更深的中心压暗来保证可读性。 */}
+
+           ⚠️⚠️⚠️ 2026-11-10 修正（用户反馈「今日之牌点进去依旧没有背景图」）：
+           *   旧版在有 AI 底图时用 `rgba(3,2,8,0.78)` 压**中心** →
+           *   而底图本身就很暗（bg-daily 平均亮度只有 rgb(31,14,38)）→
+           *   叠完中心几乎全黑 → **用户看不到背景图**。
+           *
+           * ⚠️ 为什么"压中心"本来是错的：
+           *   暗角（vignette）的作用是**收边**，不是压中心。
+           *   压中心 = 把底图最漂亮的部分（星云）藏起来。
+           *   → 中心改成**透明**，只压四周 → 底图原样透出。
+           *
+           * ⚠️ 文字可读性怎么办：
+           *   由**内容面板自己的半透明底**保证（CelestialPanel 已有），
+           *   而不是靠压暗背景图 —— 压背景会让整页发闷。
+           */}
       <div
         className="absolute inset-0"
         style={{
           background: image
-            ? "radial-gradient(ellipse 68% 58% at 50% 44%, rgba(3,2,8,0.78) 0%, rgba(3,2,8,0.55) 45%, rgba(2,1,6,0.72) 100%)"
+            ? "radial-gradient(ellipse 78% 68% at 50% 45%, rgba(3,2,8,0) 42%, rgba(3,2,8,0.30) 78%, rgba(2,1,6,0.62) 100%)"
             : "radial-gradient(ellipse 75% 65% at 50% 45%, transparent 35%, rgba(2, 1, 6, 0.55) 100%)",
         }}
       />
