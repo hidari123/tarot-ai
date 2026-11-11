@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 /**
  * 小女巫水晶球 —— 分层素材（2026-11-10 第二版）
  *
@@ -42,8 +42,21 @@ const OUT = "public/images/celestial";
 
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true });
 
-/* ── 实测参数（scripts/dev/_dbg_witch.mjs）── */
-const BALL = { cx: 497, cy: 590, r: 92 };
+/**
+ * ── 实测参数 ──
+ * ⚠️ 球心与半径怎么测出来的（scripts/dev/_dbg_grid.mjs）：
+ *   ① 裁出球区域 + 叠加**坐标网格** → 肉眼看清楚球的四边在哪
+ *   ② 读数：上 ≈512、下 ≈712、左 ≈400、右 ≈600
+ *   ③ → 圆心 (500, 612)，半径 100
+ *
+ * ⚠️⚠️ 为什么不用自动检测（前面翻车 4 次）：
+ *   · 亮度梯度   → 被球外光晕干扰
+ *   · 最宽行     → 被**手部高亮**干扰（y=743 那行其实是手）
+ *   · 低饱和判定 → 把球的暖黄色也排除了（命中率只有 47%）
+ *   → 结论：**球这种"主体 + 干扰物"的图形，自动检测不可靠**
+ *   → 最稳的是「网格辅助目测 + 人工读数」，一次到位 ✅
+ */
+const BALL = { cx: 500, cy: 612, r: 100 };
 
 /** 背景层里人物的透明度（0~1） */
 const BG_ALPHA = 0.24;
@@ -60,58 +73,79 @@ console.log("=== 小女巫 · 分层素材 ===\n");
   const W = info.width, H = info.height, CH = info.channels;
 
   /**
-   * ⚠️⚠️ 2026-11-10 第三版修正：**背景层不再挖掉球**
-   *   用户要求：「小女孩手里的球应该跟站位置的球重合的」
-   *   → 球必须**同时存在于两层**，且**位置精确重合**
-   *   → 背景层的球 = 她手里原本的球（半透明）
-   *   → 实体层的球 = 凸出来的球（实心）
-   *   → 两者重合 → 看起来就是"球从她手里凸出来"
+   * ⚠️⚠️⚠️ 2026-11-10 用户最终澄清（原文）：
+   *   「不是 我的意思是球 单独抠出来 两张图 一张只改透明度 一张只抠图球」
    *
-   * ⚠️ 关键：背景层的球虽然是半透明的，但**不能被实体球完全遮住**
-   *   → 背景层 alpha 要比实体层低一档 → 会看到一圈"底下的球"轮廓
-   *   → 这正是"凸出来"的手感（像球从背景里浮起）
+   * ⚠️ 所以背景层**只改透明度**，**完全不抠球**：
+   *   · 图 A（背景层）= 小女孩整张图，alpha 统一降低 → 她手里那个球也一起变淡
+   *   · 图 B（球层）  = 纯抠出来的球，实心
+   *   → 两张图叠在一起 → 看到的是"她手里托着一个**发光的球**"
+   *   → 而不是"球从半透明的球里冒出来" ❌
+   *
+   * ⚠️ 关键：图 A 里**不能挖掉球**
+   *   → 她手里那个淡球 + 上面叠一个实心球 = 天然的"发光"层次 ✅
    */
-  const RX = BALL.r * 1.08;
-  const RY = BALL.r * 1.04;
-
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = (y * W + x) * CH;
       const a = data[i + CH - 1];
       if (a === 0) continue;
 
-      /**
-       * ⚠️⚠️ 2026-11-10 第三次修正（用户反馈「光晕那圈太明显了」）：
-       *   背景层的球之前是 `BG_ALPHA × 0.55`（半透明）→
-       *   实体球边缘有一圈灰环时，背景层那半透明的球就透出来 → 双重灰环 ❌
-       * → 修法：**背景层的球区完全挖掉**（alpha = 0）
-       *   → 实体球是唯一可见的球 → 边缘干净 ✅
-       *   → 而且实体球**完全覆盖**她手边的位置（球心重合）→ 视觉无损
-       */
-      const dx = (x - BALL.cx) / RX;
-      const dy = (y - BALL.cy) / RY;
-      if (Math.sqrt(dx * dx + dy * dy) <= 1) {
-        data[i + CH - 1] = 0;
-        continue;
-      }
-
       // 亮度遮罩：纯黑底（lum<25）彻底去掉
       const lum =
         0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
       const lumMask = lum <= 25 ? 0 : Math.min(1, (lum - 25) / 55);
+
+      // ⚠️ 统一降透明度（**球区也一视同仁**）
       data[i + CH - 1] = Math.round(a * lumMask * BG_ALPHA);
     }
   }
 
-  const buf = await sharp(data, {
+  /**
+   * ⚠️ 整图的边缘羽化（2026-11-10）
+   * ⚠️ 用户反馈「截图边缘可以模糊一点 整体营造出发光的流动的感觉
+   *   现在截图那块太生硬」
+   *
+   * ⚠️ 为什么需要：
+   *   背景层是 `object-contain` 的整张图 → 它的**矩形边界**在页面上是可见的
+   *   （尤其左右两侧，因为图比容器窄时会露出边缘）
+   *   → 用户看到"一块生硬的图"而不是"融进背景的投影"
+   *
+   * ⚠️ 做法：**径向渐变 mask**（中心实、四周淡出）
+   *   → 人物像"从暗处浮现"，没有硬边 ✅
+   */
+  const radialSvg = `<svg width="${W}" height="${H}">
+    <defs>
+      <radialGradient id="fade" cx="50%" cy="46%" r="62%">
+        <stop offset="0%" stop-color="white" stop-opacity="1"/>
+        <stop offset="52%" stop-color="white" stop-opacity="0.95"/>
+        <stop offset="78%" stop-color="white" stop-opacity="0.55"/>
+        <stop offset="100%" stop-color="white" stop-opacity="0"/>
+      </radialGradient>
+    </defs>
+    <rect width="${W}" height="${H}" fill="url(#fade)"/>
+  </svg>`;
+
+  const fadedBuf = await sharp(data, {
     raw: { width: W, height: H, channels: CH },
   })
-    .png({ compressionLevel: 9, palette: true, colors: 128, effort: 8 })
+    .ensureAlpha()
+    .composite([{ input: Buffer.from(radialSvg), blend: "dest-in" }])
+    .png()
     .toBuffer();
 
-  const out = join(OUT, "orb-witch-bg.png");
-  writeFileSync(out, buf);
-  console.log(`✓ 背景层（人物半透明 ${BG_ALPHA}）→ ${out}  ${Math.round(buf.length / 1024)}KB`);
+  {
+    const f = await sharp(fadedBuf).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const buf = await sharp(f.data, {
+      raw: { width: f.info.width, height: f.info.height, channels: f.info.channels },
+    })
+      .png({ compressionLevel: 9, palette: true, colors: 128, effort: 8 })
+      .toBuffer();
+
+    const out = join(OUT, "orb-witch-bg.png");
+    writeFileSync(out, buf);
+    console.log(`✓ 背景层（人物半透明 ${BG_ALPHA} + 边缘羽化）→ ${out}  ${Math.round(buf.length / 1024)}KB`);
+  }
 }
 
 /* ══════════════════════════════════════════════
@@ -124,12 +158,15 @@ console.log("=== 小女巫 · 分层素材 ===\n");
   const W = info.width, H = info.height, CH = info.channels;
 
   /**
-   * ⚠️ 球层的抠取范围 = 球本体（2026-11-10 收紧）
-   * · 之前放到 r×1.10 是为了盖住背景层的球 → 但会超出球本体 → 边缘多出一圈 ❌
-   * → 现在收紧到 r×1.02 / r×0.98 → 只保留球本身
-   * → 背景层的球 alpha 已经降得很低（BG_ALPHA×0.55）→ 不会露边
+   * ⚠️ 球层的抠取范围 = 球本体
+   * ⚠️⚠️ 2026-11-10 用户反馈「球截得不太对 有点歪了」：
+   *   根因是**球心与半径都是自动检测的**，而自动检测在这个图上不可靠
+   *   （亮度梯度被光晕干扰 / 最宽行被手部干扰 / 低饱和判据把暖黄的球排除）
+   *   → 改成**目测定值**（见文件顶部 BALL 常量的说明）
+   *
+   * ⚠️ 半径略大于球本体（×1.06）→ 给后面的模糊留余量
    */
-  const RX = BALL.r * 1.08;
+  const RX = BALL.r * 1.06;
   const RY = BALL.r * 1.04;
 
   for (let y = 0; y < H; y++) {
@@ -151,22 +188,28 @@ console.log("=== 小女巫 · 分层素材 ===\n");
       }
 
       /**
-       * ⚠️ 椭圆内：亮度 → alpha
-       * ⚠️⚠️ 2026-11-10 第三次修正（用户反馈「光晕那圈太明显了」）：
-       *   之前 lumMask 是 (lum-45)/50 的**渐变**过渡带 →
-       *   球的暗边（lum 45~95）会变成半透明的灰环 → 看起来像"光晕" ❌
+       * ⚠️⚠️ 2026-11-10 用户反馈「截图边缘可以模糊一点 整体营造出发光的流动的感觉
+       *   现在截图那块太生硬」
        *
-       * ⚠️ 正确做法：**球本体完全不透明，只有最外圈极窄的过渡**
-       *   · lum ≥ 40 → 1（不透明）—— 球的暗边也算实心
-       *   · lum < 40  → 0（透明）—— 只有真正的背景被去掉
-       *   · 过渡带只有 lum 28~40 这一小段 → 不会有可见的灰环
+       * ⚠️ 之前的做法：球内**完全不透明**，只有最外 2px 羽化
+       *   → 边缘是一条**硬线** → 像贴图，不像发光 ❌
+       *
+       * ⚠️ 现在的做法：**边缘大幅柔化**（半径的 72%→100% 渐隐）
+       *   · 中心 72% 半径内：完全不透明（球体）
+       *   · 外圈 28%：平滑渐隐 → 边缘像"光晕化开"
+       *   · 配合 CSS 的 conic 光带 + 呼吸 → 流动的发光球 ✅
+       *
+       * ⚠️ 为什么用**平滑曲线**（smoothstep）而不是线性：
+       *   线性渐隐会有一圈"能看出边界"的等值线 → 还是生硬
+       *   smoothstep（3t²−2t³）的斜率在两端为 0 → 完全看不出边界 ✅
        */
-      const lumMask = lum >= 40 ? 1 : Math.max(0, (lum - 28) / 12);
+      const t = Math.max(0, Math.min(1, (1 - dist) / 0.28)); // 0=边缘 1=中心
+      const soft = t * t * (3 - 2 * t); // smoothstep
+      /** 背景（纯黑）额外去掉 */
+      const isBackground = lum < 28;
+      const lumMask = isBackground ? 0 : 1;
 
-      // 椭圆边缘羽化（0.96 → 1.0，极窄过渡）
-      const edge = dist > 0.96 ? (1 - dist) / 0.04 : 1;
-
-      data[i + CH - 1] = Math.round(a * lumMask * edge);
+      data[i + CH - 1] = Math.round(a * lumMask * soft);
     }
   }
 
