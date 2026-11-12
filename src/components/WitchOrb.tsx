@@ -68,7 +68,7 @@ const GIRL_ALPHA = 0.22;
  * ⚠️ ⚠️ 占位块的高度必须与球的直径**同源**（见 page.tsx）：
  *   → 两处都用 min(20.3vw, 18.2vh) 这个值
  */
-const BALL_SHIFT_VH = -26;
+const BALL_SHIFT_VH = -19;
 
 interface BallPos {
   /** 相对背景层容器的坐标 */
@@ -141,10 +141,10 @@ export default function WitchOrb() {
        */
       const mask =
         `radial-gradient(circle at ${maskX.toFixed(2)}% ${maskY.toFixed(2)}%, ` +
-        `#fff 0%, rgba(255,255,255,0.92) ${(maskR * 0.55).toFixed(2)}%, ` +
-        `rgba(255,255,255,0.45) ${(maskR * 0.95).toFixed(2)}%, ` +
-        `rgba(255,255,255,0.12) ${(maskR * 1.18).toFixed(2)}%, ` +
-        `rgba(255,255,255,0) ${(maskR * 1.38).toFixed(2)}%)`;
+        `#fff 0%, rgba(255,255,255,0.96) ${(maskR * 0.80).toFixed(2)}%, ` +
+        `rgba(255,255,255,0.62) ${(maskR * 1.06).toFixed(2)}%, ` +
+        `rgba(255,255,255,0.26) ${(maskR * 1.30).toFixed(2)}%, ` +
+        `rgba(255,255,255,0) ${(maskR * 1.62).toFixed(2)}%)`;
 
       setBall((prev) => {
         const next = { x: bx, y: by, d, mask };
