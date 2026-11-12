@@ -74,7 +74,7 @@ const GIRL_ALPHA = 0.22;
  *   · 文字是固定 px → 图片也必须用 px 尺度
  *   · 两者乘同一个 --u → 相对位置永远一致 ✅
  */
-const BALL_SHIFT = -157;
+const BALL_SHIFT = -108;
 
 
 
@@ -267,8 +267,8 @@ export default function WitchOrb() {
           /**
            * ⚠️⚠️ 移动端人物**再往下**（用户要求）
            * → 用 CSS 变量 `--orb-shift` 承载实际偏移
-           *   · 桌面端 = BALL_SHIFT（-157px）
-           *   · 移动端 = BALL_SHIFT_MOBILE（-60px，在 globals.css 的媒体查询里覆盖）
+           *   · 桌面端 = BALL_SHIFT（-108px）
+           *   · 移动端 = -140px（在 globals.css 的媒体查询里覆盖）
            * → 变量单位是「基准 px」，实际值再乘 --u
            */
           transform: `translateX(-50%) translateY(calc(var(--orb-shift, ${BALL_SHIFT}px) * var(--u, 1)))`,
@@ -293,8 +293,8 @@ export default function WitchOrb() {
             /**
            * ⚠️⚠️ 移动端人物**再往下**（用户要求）
            * → 用 CSS 变量 `--orb-shift` 承载实际偏移
-           *   · 桌面端 = BALL_SHIFT（-157px）
-           *   · 移动端 = BALL_SHIFT_MOBILE（-60px，在 globals.css 的媒体查询里覆盖）
+           *   · 桌面端 = BALL_SHIFT（-108px）
+           *   · 移动端 = -140px（在 globals.css 的媒体查询里覆盖）
            * → 变量单位是「基准 px」，实际值再乘 --u
            */
           transform: `translateX(-50%) translateY(calc(var(--orb-shift, ${BALL_SHIFT}px) * var(--u, 1)))`,

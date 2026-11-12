@@ -1759,7 +1759,7 @@ export default function TarotApp() {
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.8 }}
-        className="text-shimmer tracking-[0.3em] z-10 select-none"
+        className="text-shimmer tracking-[0.3em] z-10 select-none text-center"
         style={{
           fontFamily: "Cinzel, Georgia, serif",
           /**
@@ -1768,9 +1768,24 @@ export default function TarotApp() {
            * · 移动端 --font-title: 34px（媒体查询覆盖）→ **不再溢出屏幕** ✅
            */
           fontSize: "calc(var(--font-title, 75px) * var(--u, 1))",
+          /**
+           * ⚠️ 移动端字间距收窄（用户要求「一行放不下 需要居中展示」）
+           * · 桌面端 0.3em 在 414px 屏上太宽 → 放不下
+           * · 移动端用 0.14em → 「MYSTIC TAROT」能放下
+           *   → 仍放不下时（更窄的屏）→ 由 `.title-line` 换行并居中 ✅
+           */
+          letterSpacing: "var(--tracking-title, 0.3em)",
         }}
       >
-        MYSTIC TAROT
+        {/*
+         * ⚠️⚠️ 标题分成两段（用户要求「移动端大标题如果一行放不下 需要居中展示」）
+         * · 桌面端：inline → 「MYSTIC TAROT」一行
+         * · 移动端：block → 放不下时自然分两行，且**居中**
+         *   · 「MYSTIC」/「TAROT」两行居中，比溢出被切好 ✅
+         * ⚠️ 为什么不用 <br />：桌面端也会换行
+         */}
+        <span className="title-line">MYSTIC</span>
+        <span className="title-line">TAROT</span>
       </motion.h1>
       <motion.p
         initial={{ opacity: 0 }}
@@ -2080,25 +2095,36 @@ export default function TarotApp() {
               whileTap={{ scale: 0.97 }}
               onClick={startDivination}
               className="group relative w-full sm:w-[142px] sm:shrink-0 h-[62px] rounded-2xl
-                bg-[rgba(9,5,20,0.82)] backdrop-blur-md
                 transition-all duration-300
                 hover:shadow-[0_0_30px_rgba(212,175,55,0.35)]"
               style={{
+                /**
+                 * ⚠️⚠️ 底色用变量切换（移动端金色底 / 桌面端深底）
+                 * ⚠️ 移动端要求「btn需要底色是金色的 内部文字是深色」
+                 *   → 金底深字（对比强、像实体按钮）
+                 * ⚠️ 桌面端保持深底金字（与输入框同族、统一）
+                 */
+                background: "var(--btn-bg, rgba(9,5,20,0.82))",
+                backdropFilter: "var(--btn-backdrop, blur(12px))",
                 /**
                  * ⚠️ 基础态描边：细金线（与输入框完全一致）
                  * ⚠️ 渐变描边用**额外的 span + mask** 实现（见下）
                  *   · border-image 会吃掉 border-width → 盒子尺寸会变 ❌
                  *   → 双层法：外层画渐变框、mask 挖空中间 → 尺寸不变 ✅
                  */
-                border: "1px solid rgba(212,175,55,0.32)",
+                border: "1px solid var(--btn-border, rgba(212,175,55,0.32))",
                 boxShadow:
                   "inset 0 0 22px rgba(212,175,55,0.10), 0 6px 20px rgba(0,0,0,0.45)",
               }}
             >
-              {/* 渐变描边层（hover 时显现） */}
+              {/**
+               * ⚠️⚠️ 移动端：**金色底 + 深色字**（用户要求）
+               * ⚠️ 桌面端保持深底 + 金字（与输入框同族）
+               * → 用 CSS 变量控制，移动端在 globals.css 的媒体查询里切换
+               */}
               <span
-                className="pointer-events-none absolute inset-0 rounded-2xl opacity-0
-                  transition-opacity duration-300 group-hover:opacity-100"
+                className="pointer-events-none absolute inset-0 rounded-2xl
+                  opacity-0 transition-opacity duration-300 group-hover:opacity-100"
                 style={{
                   padding: "1px",
                   background:
@@ -2121,10 +2147,16 @@ export default function TarotApp() {
               {/* 文字 */}
               <span
                 className="relative flex h-full items-center justify-center
-                  text-[#f0d98c] text-lg font-semibold tracking-[0.14em]"
+                  text-lg font-semibold tracking-[0.14em]"
                 style={{
                   fontFamily: "'Ma Shan Zheng', serif",
-                  textShadow: "0 0 12px rgba(212,175,55,0.45)",
+                  /**
+                   * ⚠️⚠️ 移动端：**深色字**（金色底上才看得清）
+                   * ⚠️ 桌面端：**金字**（深底上才看得清）
+                   * → 用变量切换（globals.css 的媒体查询）
+                   */
+                  color: "var(--btn-text, #f0d98c)",
+                  textShadow: "var(--btn-text-shadow, 0 0 12px rgba(212,175,55,0.45))",
                 }}
               >
                 开始占卜
