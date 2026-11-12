@@ -1,40 +1,28 @@
 ﻿"use client";
 
 /**
- * WitchOrb —— 小女巫抱水晶球 · 单图 + 内部流光（2026-11-11 最终版）
+ * WitchOrb —— 小女巫抱水晶球 · 球内动效（2026-11-12 最终版）
  *
- * ⚠️⚠️⚠️ 用户最终要求（原文，四条）：
- *   ① 「跟目前页面是一样的展示形式」
- *   ② 「小女孩也是能随着页面跟球一样滚动的」
- *   ③ 「这个球 你截图位置不对 往右上角偏了」
- *   ④ 「你加的光晕那块 很明显 你加到球里面啊 不是加到外面」
+ * ⚠️⚠️⚠️ 用户最终要求（原文）：
+ *   「小女孩透明度不够 还需要继续降低透明度」
+ *   「球应该出现在『倾听星辰的低语 xxxxx』下面 然后中间留出距离
+ *     球在这个位置 在下面再出现文字」
+ *   「不用动了 就用这个图去当背景 你不要再处理了」
+ *   「你往球里面加点动效吧」
  *
- * ⚠️⚠️ 逐条对应：
+ * ⚠️⚠️ 结构：**用户原图（仅去白底）+ 两层同图叠加 + 球内 CSS 动效**
+ *   · 图（`orb-witch-bg.png`）：**用户原图**，只做了「白底→透明」+ 边缘羽化
+ *     · 不改颜色、不改亮度、不抠图 ✅
+ *   · 底层：整张图 + `opacity: GIRL_ALPHA` → 女孩半透明
+ *   · 上层：**只有球**（mask 挖掉球以外）→ 实心，覆盖底层的淡球
+ *   · 动效层：叠在球上（圆形裁剪 → 动效不溢出）
  *
- * ① 展示形式 = 小女孩半透明铺在页面**上部**（标题/副标题/入口卡片区）
- *
- * ② **跟着页面滚动**
- *    ⚠️ 之前用 `fixed` → 图钉在视口，滚动时不动 → 不符合仪式感
- *    → 改成 `absolute`（在文档流里的容器内）→ 滚动时跟着内容滚走 ✅
- *
- * ③ 球位置修正
- *    ⚠️ 实测（scripts/dev/_dbg_pos.mjs，1200×900）：
- *       图渲染宽 1344（112vw），高 900，S = min(1344,900) = 900
- *       图在元素内水平居中 → 左边距 (1344-900)/2 = 222
- *       图左边缘在视口 x = -72（translateX(-50%) 后）
- *       球心（源图 500,612）→ 视口 x = -72 + 222 + 439 = **589**
- *                                      y = 0 + 612/1024×900 = **538**
- *    → 球自然位置偏下（入口卡片区）→ 上移 288px 到副标题下方
- *    → `BALL_OFFSET_Y_RATIO = -0.32`（× S）
- *
- * ④ **光晕只在球内部**
- *    → 光晕层用 `rounded-full` + `overflow:hidden` → 圆形裁剪 → 光不会溢出
- *    → 删掉了之前的「外扩光晕」（1.9 倍大、blur 26px）—— 那就是用户说的"加到外面"
- *
- * ⚠️⚠️ 结构上的关键决策：**发光层放在背景层容器内部**
- *   · 两者是父子关系 → 用**相对容器的坐标** → 天然同步 ✅
- *   · 如果做成兄弟节点 → 要维护两套坐标 → 实测过一次光直接消失
- *   · 背景层容器 `absolute left-0 top-0 w-full h-100vh` → 坐标原点 = 容器左上角
+ * ⚠️⚠️⚠️ 球的位置：**由占位块决定**（不是绝对计算）
+ *   · 用户要求「球在副标题下面，然后中间留出距离，下面再出现文字」
+ *   → 页面里在副标题和入口卡片之间放一个**占位块**（见 page.tsx）
+ *   → 本组件用 `document.querySelector('[data-orb-slot]')` 找到它
+ *   → **球的中心 = 占位块的中心** → 位置永远正确，不会和内容重叠 ✅
+ *   · ⚠️ 之前用纯公式算位置（SHIFT_Y_VH）→ 和内容流脱节 → 实测重叠 ❌
  */
 
 import { motion } from "framer-motion";
@@ -42,35 +30,58 @@ import { useEffect, useRef, useState } from "react";
 
 /**
  * 球在源图（1024×1024）里的位置
- * ⚠️ 2026-11-10 用「网格辅助目测」实测（scripts/dev/_dbg_grid.mjs）：
- *   球的上/下/左/右边界 ≈ 512 / 712 / 400 / 600
- *   → 圆心 (500, 612)，半径 100px
+ * ⚠️⚠️ 2026-11-12 **程序化检测**（scripts/dev/_dbg_ball6.mjs，用户新图）
+ *   → 暖黄色相筛选 → 最宽行 y=590, x 411..595（宽 185）
+ *   → 圆心 (503, 595)，半径 93（= 最宽行宽度 / 2）
+ *   → 验证图 shots/gen/_ballcheck.png 红圈**精确贴合** ✅
+ *
+ * ⚠️⚠️ 为什么必须程序化检测（网格目测会放大误差）：
+ *   · 网格图是 2 倍缩放 → 每个像素的读数误差也 ×2 → 半径差好几个像素
+ *   · 之前用目测值 (499, 602, r=101) → 球**偏右上**（用户反馈「定位还是有问题」）
+ *
+ * ⚠️⚠️ 半径不能用"行范围的高度 / 2"：
+ *   · 球的上缘是高光、下缘被手挡 → 饱和度筛选只取到球芯
+ *   → 算出的半径只有 51（太小）❌
+ *   → 必须用**最宽行的宽度 / 2**（过球心的水平线 → 宽度 = 直径）✅
  */
 const SRC = 1024;
-const BALL_CX = 500;
-const BALL_CY = 612;
-const BALL_R = 100;
+const BALL_CX = 503;
+const BALL_CY = 595;
+const BALL_R = 93;
 
 /** 背景层容器宽度（vw） */
 const BG_W = 112;
 
-/**
- * ⚠️ 球在容器内的纵向偏移（× S）
- * ⚠️ 球自然位置 y = 59.77% × S → 目标 ≈ 27.7% × S（副标题下方）
- * → 偏移 = -0.32 × S
- */
-const BALL_OFFSET_Y_RATIO = -0.27;
+/** 女孩部分的透明度（CSS opacity） */
+const GIRL_ALPHA = 0.22;
 
-interface GlowPos {
+/**
+ * ⚠️ 球的垂直偏移（vh）
+ * ⚠️⚠️ 目的：**让图里那颗球落在占位块（`[data-orb-slot]`）的中心**
+ * ⚠️ 推导（1200×900 视口）：
+ *   · 图渲染边长 S = min(112vw, 100vh) = 900
+ *   · 图里球的 y = 595/1024 × 900 = 523
+ *   · 占位块中心 = 副标题下方约 324
+ *   → 图要上移 523 − 324 = 199px = 22.1vh
+ * ⚠️ ⚠️ 为什么用 vh 而不是 px：
+ *   · 球的自然位置 ∝ S（视口相关）→ 用 vh 表达才能在不同视口下等比
+ * ⚠️ ⚠️ 占位块的高度必须与球的直径**同源**（见 page.tsx）：
+ *   → 两处都用 min(20.3vw, 18.2vh) 这个值
+ */
+const BALL_SHIFT_VH = -26;
+
+interface BallPos {
   /** 相对背景层容器的坐标 */
   x: number;
   y: number;
   d: number;
+  /** CSS mask：只保留球的区域 */
+  mask: string;
 }
 
 export default function WitchOrb() {
   const bgRef = useRef<HTMLDivElement>(null);
-  const [glow, setGlow] = useState<GlowPos | null>(null);
+  const [ball, setBall] = useState<BallPos | null>(null);
 
   useEffect(() => {
     const measure = () => {
@@ -84,51 +95,65 @@ export default function WitchOrb() {
       const S = Math.min(containerW, vh);
       const scale = S / SRC;
 
-      /**
-       * ⚠️⚠️ 球的坐标：相对**背景层容器**
-       *
-       * ⚠️⚠️⚠️ 必须用 img.getBoundingClientRect() 实测（2026-11-11 实测踩坑）：
-       *   我之前用**公式**算 img 在容器内的位置：
-       *     imgLeftInElem = (containerW - S) / 2
-       *   → 错在哪：
-       *     ① img 元素本身是 `left-1/2 + translateX(-50%)` → 它的左边缘相对容器
-       *        = 容器宽/2 − 112vw/2 = −(containerW)/2 + containerW/2... 实际上是负值
-       *     ② 图（正方形 S×S）在 img 元素**内部**居中 → 又有一层偏移
-       *   → 两层偏移叠加，公式算不准 → 球和光差了 85px（实测 v70）
-       *   → **直接量 img 元素的 rect + 算图在元素内的位置**，用浏览器的真实布局 ✅
-       */
       const imgRect = img.getBoundingClientRect();
       const bgRect = bg.getBoundingClientRect();
-
-      /**
-       * 图在 img 元素内的实际渲染矩形
-       * · img 元素：宽 112vw（= containerW），高 100vh
-       * · object-contain → 图渲染成 S×S 的正方形
-       * · object-position: center top → 水平居中、顶部对齐
-       *   → 图左边缘相对 img 元素 = (imgRect.width - S) / 2
-       */
+      /** 图在 img 元素内的实际渲染位置（水平居中、顶部对齐） */
       const imgLeftInElem = (imgRect.width - S) / 2;
 
-      /**
-       * ⚠️ 球的视口坐标
-       * · imgRect.left 是**视口**坐标
-       * · 减去 bgRect.left → 转成**相对容器**的坐标（发光层要用这个）
-       * ⚠️⚠️ 这里**不含** BALL_OFFSET_Y_RATIO：
-       *   因为那个偏移是作用在**整张图**上的（图本身被 translateY 上移）
-       *   → imgRect.top 已经反映了位移 ✅
-       *   → 如果这里再减一次 → 偏移会算两遍（实测光和球差 85px）
-       */
-      const ballX = imgRect.left - bgRect.left + imgLeftInElem + BALL_CX * scale;
-      const ballY = imgRect.top - bgRect.top + BALL_CY * scale;
+      /** 球的显示直径 */
       const d = BALL_R * 2 * scale;
 
-      setGlow((prev) => {
-        const next = { x: ballX, y: ballY, d };
+      /**
+       * ⚠️⚠️ 球的中心：**优先用占位块**（用户要「球在副标题下面，中间留距离」）
+       * · 占位块由页面渲染（`[data-orb-slot]`）
+       * · 它的位置就代表"球该在的位置" → 内容和构图永远同步 ✅
+       * · 找不到占位块时（比如组件被复用到别处）→ 回退到公式计算
+       */
+      /**
+       * ⚠️⚠️ 球的中心 = **图里那颗球**的位置（不是占位块）
+       * ⚠️ 为什么（实测踩坑）：
+       *   · 动效层必须和"球图那一层"重合 → 两者的球必须同位
+       *   · 球图那一层是整张图（mask 挖出球）→ 球在图里的位置由源图坐标决定
+       *   → 所以动效层也必须用**图里的球心** ✅
+       *   · 占位块的作用只是**让下面的内容下移**（避免重叠），
+       *     不参与球的定位 ⚠️ 混用会导致动效和球分离（实测 v82）
+       */
+      const bx = imgRect.left - bgRect.left + imgLeftInElem + BALL_CX * scale;
+      const by = imgRect.top - bgRect.top + BALL_CY * scale;
+
+      /**
+       * mask：只保留球的区域（球以外透明）
+       * ⚠️ 百分比相对 **img 元素** → 已在上面换算
+       */
+      const maskX = ((imgLeftInElem + BALL_CX * scale) / imgRect.width) * 100;
+      const maskY = ((BALL_CY * scale) / imgRect.height) * 100;
+      const maskR = (BALL_R * scale / imgRect.width) * 100;
+
+      /**
+       * ⚠️ mask：**只保留球的区域**，边缘**大幅模糊化**
+       * ⚠️⚠️ 用户要求（原文）：「球图需要边缘模糊化 目前还是太实了」
+       *   之前的渐变带太窄（0.72R → 1.06R）→ 边缘几乎是硬边 → 球"贴"在背景上 ❌
+       * → 改成：实心区缩到 **0.55R**，然后一路渐隐到 **1.35R**
+       *   · 渐变带宽度 = 0.8R（球的半径的 80%）→ 非常柔和
+       *   · 边缘像"光化开"，不是被切一刀 ✅
+       *   · ⚠️ 渐变带到 1.35R 会超出球本体 → 但因为**底层也是同一张图**，
+       *     超出的部分是"球的颜色变淡" → 视觉上就是光晕 ✅
+       */
+      const mask =
+        `radial-gradient(circle at ${maskX.toFixed(2)}% ${maskY.toFixed(2)}%, ` +
+        `#fff 0%, rgba(255,255,255,0.92) ${(maskR * 0.55).toFixed(2)}%, ` +
+        `rgba(255,255,255,0.45) ${(maskR * 0.95).toFixed(2)}%, ` +
+        `rgba(255,255,255,0.12) ${(maskR * 1.18).toFixed(2)}%, ` +
+        `rgba(255,255,255,0) ${(maskR * 1.38).toFixed(2)}%)`;
+
+      setBall((prev) => {
+        const next = { x: bx, y: by, d, mask };
         if (
           prev &&
           Math.abs(prev.x - next.x) < 0.5 &&
           Math.abs(prev.y - next.y) < 0.5 &&
-          Math.abs(prev.d - next.d) < 0.5
+          Math.abs(prev.d - next.d) < 0.5 &&
+          prev.mask === next.mask
         ) {
           return prev;
         }
@@ -136,7 +161,26 @@ export default function WitchOrb() {
       });
     };
 
-    measure();
+    /**
+     * ⚠️⚠️ measure 的调用时机（实测踩坑）
+     * · 占位块 `[data-orb-slot]` 在 JSX 里排在 <WitchOrb /> **之后**
+     *   → 首次 effect 执行时它还没进 DOM → querySelector 返回 null
+     *   → ball 一直是 null → 动效层不渲染 ❌（实测 v82）
+     * → 修法：**轮询重试**（直到找到占位块）
+     *   · 最多 20 次 × 100ms = 2s（足够覆盖 React 提交）
+     *   · 找到后立刻 measure 并停止轮询
+     */
+    let tries = 0;
+    const tryMeasure = () => {
+      const slot = document.querySelector("[data-orb-slot]");
+      measure();
+      if (!slot && tries < 20) {
+        tries++;
+        setTimeout(tryMeasure, 100);
+      }
+    };
+
+    tryMeasure();
     if (document.fonts?.ready) document.fonts.ready.then(measure).catch(() => {});
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
@@ -150,7 +194,6 @@ export default function WitchOrb() {
        *   父级 <main> 是 `flex flex-col items-center`
        *   → flex 容器会**收缩** absolute 子元素的交叉轴尺寸
        *   → 不写 w-full 宽度会变成 0（内容不可见）
-       *   ⚠️ 这个坑之前踩过一次（背景层变成一条线）
        *
        * ⚠️ 为什么 `absolute` 而不是 `fixed`：
        *   用户要求「小女孩也是能随着页面跟球一样滚动的」
@@ -158,29 +201,16 @@ export default function WitchOrb() {
        *   → absolute 在文档流里 → 跟着内容滚走 ✅
        */
       className="pointer-events-none absolute left-0 top-0 z-0 w-full overflow-hidden"
-      /**
-       * ⚠️⚠️ 高度为什么是 160vh 而不是 100vh：
-       *   用户要求「小女孩也是能随着页面跟球一样滚动的」
-       *   → 但首页内容几乎正好一屏（实测 docH 704 / winH 700）→ 只滚动 4px
-       *   → 图钉在 100vh 内 → 几乎看不出"跟着滚动"
-       *   → 容器高 160vh → 图占据页面上下 1.6 屏 → 滚动时有明显的位移感 ✅
-       *
-       * ⚠️ 高度变化会影响球的计算：
-       *   · 图的渲染边长 S = min(112vw, **容器高**)
-       *   · 容器高 160vh → 在 900px 视口下 S = min(1344, 1440) = 1344（比之前大！）
-       *   → 球会变大 → 需要重新测参数
-       *   → ⚠️ 用 JS 实测 img.getBoundingClientRect() 就自动适配了 ✅
-       */
       style={{ height: "160vh" }}
       aria-hidden="true"
     >
-      {/* ① 小女孩 + 球（**一张图**，半透明当底图） */}
+      {/* ① 底层：整张图 + 女孩半透明（球也淡） */}
       <motion.img
         src="/images/celestial/orb-witch-bg.png"
         alt=""
         draggable={false}
         initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
+        animate={{ opacity: GIRL_ALPHA }}
         transition={{ duration: 2.2, ease: "easeOut" }}
         className="absolute left-1/2 top-0 max-w-none object-contain object-top"
         style={{
@@ -189,89 +219,158 @@ export default function WitchOrb() {
            *   Tailwind preflight 给所有 img 加了 `max-width: 100%`
            *   → 我写的 `width: 112vw` 被**限制成父容器的 100%**（100vw）
            *   → 背景层实际渲染宽度 744px 而不是预期的 833px
-           *   → JS 里按 `min(112vw, 100vh)` 算 S，与实际渲染对不上
-           *   → 发光层位置算错 → 球和光对不上
-           *   → 排查手段：CDP 读 getBoundingClientRect + getComputedStyle
-           *     发现 style 写的是 112vw，但 rect.width 却是 100vw ✅
+           *   → JS 里按 `min(112vw, 100vh)` 算 S，与实际渲染对不上 → 球和动效对不上
            *
-           * ⚠️⚠️⚠️ transform 必须写全（2026-11-11 实测踩坑）：
+           * ⚠️⚠️ transform 必须写全（2026-11-11 实测踩坑）：
            *   `left-1/2` 只是把图左边缘放到父容器中点
            *   → 必须再 translateX(-50%) 把图自身中心对到中点
            *   ⚠️ 之前我把 transform 写进 style 时**只写了 translateY**，
-           *      把 Tailwind 的 `-translate-x-1/2` 覆盖掉了
-           *   → 图跑到 x=600（右半边）→ 人物在右下角 ❌
+           *      把 Tailwind 的 `-translate-x-1/2` 覆盖掉了 → 图跑到右边 ❌
+           *
+           * ⚠️ 高度固定 100vh（不是 100%）：
+           *   容器是 160vh，若图用 height:100% → S = min(112vw, 160vh) → 球会大一倍
            */
           width: `${BG_W}vw`,
           height: "100vh",
           objectPosition: "center top",
-          transform: `translateX(-50%) translateY(${BALL_OFFSET_Y_RATIO * 100}vh)`,
+          transform: `translateX(-50%) translateY(${BALL_SHIFT_VH}vh)`,
+
         }}
       />
 
-      {/* ══════════════════════════════════════════════
-       * ② 流光层：**只有球内部在发光**（用户要求 ④）
-       *    ⚠️ 放在**背景层容器内部** → 坐标天然同步（相对容器的坐标）
-       * ══════════════════════════════════════════════ */}
-      {glow && (
+      {/* ①-2 上层：只有球（mask 挖掉球以外）→ 实心盖住底层的淡球 */}
+      {ball && (
+        <motion.img
+          src="/images/celestial/orb-witch-bg.png"
+          alt=""
+          draggable={false}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 2.2, ease: "easeOut" }}
+          className="absolute left-1/2 top-0 max-w-none object-contain object-top"
+          style={{
+            width: `${BG_W}vw`,
+            height: "100vh",
+            objectPosition: "center top",
+            transform: `translateX(-50%) translateY(${BALL_SHIFT_VH}vh)`,
+            maskImage: ball.mask,
+            WebkitMaskImage: ball.mask,
+            /**
+             * ⚠️ 轻微模糊 → 消除抠图的锯齿，让边缘"化开"
+             * ⚠️ 为什么 blur 不会让球变糊：
+             *   球是纯色渐变的大面积区域 → blur 几乎不改变内部
+             *   只影响边缘 1~2px 的锯齿 → 视觉上更自然 ✅
+             */
+            filter: "blur(1.2px)",
+          }}
+        />
+      )}
+
+      {/*
+       * ② 球内动效：**小球（浮游光点）**，不是覆盖整个球的大光圈
+       * ⚠️⚠️ 用户要求（原文）：
+       *   「动效需要往下一点 边缘还要模糊 我需要的是小动态浮游的那种光圈
+       *     不是一整个大的 是在魔法球里面的那种」
+       *
+       * ⚠️ 之前的问题：
+       *   · 动效层是**和球一样大**的 conic 光带 → 看起来像"整个球在转" ❌
+       *   · 用户要的是**球内部的小光点**在浮游 ✅
+       *
+       * ⚠️ 现在的做法：
+       *   · 动效容器 = 球的**中心区域**（球的 62%）→ 光点只在球芯附近游动
+       *   · 每个光点 = 一个小圆 + box-shadow 复制出多个
+       *   · 动画 = 各自漂移（不同方向/周期）→ 浮游感
+       */}
+      {ball && (
         <div
-          className="pointer-events-none absolute left-0 top-0 w-full overflow-hidden"
-          style={{ height: "100%" }}
-          aria-hidden="true"
+          className="absolute overflow-hidden rounded-full"
+          style={{
+            left: ball.x - ball.d / 2,
+            top: ball.y - ball.d / 2,
+            width: ball.d,
+            height: ball.d,
+          }}
         >
-          {/* ②-1 球体辉光（**只在球内** → rounded-full + overflow-hidden 圆形裁剪） */}
+          {/* ②-1 内部柔光（很淡，只提亮球芯） */}
           <div
-            className="absolute overflow-hidden rounded-full"
+            className="absolute inset-0"
             style={{
-              left: glow.x - glow.d / 2,
-              top: glow.y - glow.d / 2,
-              width: glow.d,
-              height: glow.d,
+              background:
+                "radial-gradient(circle at 50% 52%, " +
+                "rgba(255,252,238,0.30) 0%, " +
+                "rgba(255,236,180,0.10) 34%, " +
+                "rgba(255,210,120,0) 62%)",
+              animation: "witch-orb-breathe 5.2s ease-in-out infinite",
             }}
-          >
-            {/* 核心暖白光 */}
+          />
+
+          {/* ②-2 浮游光点组 A（向右下漂） */}
+          <div className="absolute inset-0">
             <div
-              className="absolute inset-0"
+              className="absolute h-[3px] w-[3px] rounded-full"
               style={{
-                background:
-                  "radial-gradient(circle at 44% 36%, " +
-                  "rgba(255,252,240,0.58) 0%, " +
-                  "rgba(255,238,190,0.30) 42%, " +
-                  "rgba(255,208,115,0.08) 70%, " +
-                  "rgba(255,190,80,0) 100%)",
-                animation: "witch-orb-breathe 4.6s ease-in-out infinite",
-              }}
-            />
-            {/* 旋转光带（"光影流动"） */}
-            <div
-              className="absolute inset-[-55%]"
-              style={{
-                background:
-                  "conic-gradient(from 0deg, " +
-                  "rgba(255,255,255,0) 0deg, " +
-                  "rgba(255,252,236,0.40) 40deg, " +
-                  "rgba(255,224,164,0.22) 90deg, " +
-                  "rgba(255,255,255,0) 150deg, " +
-                  "rgba(202,222,255,0.20) 230deg, " +
-                  "rgba(255,255,255,0) 300deg)",
-                animation: "witch-orb-spin 11s linear infinite",
-              }}
-            />
-            <div
-              className="absolute inset-[-55%]"
-              style={{
-                background:
-                  "conic-gradient(from 140deg, " +
-                  "rgba(255,255,255,0) 0deg, " +
-                  "rgba(255,240,196,0.32) 60deg, " +
-                  "rgba(255,255,255,0) 130deg, " +
-                  "rgba(228,214,255,0.20) 240deg, " +
-                  "rgba(255,255,255,0) 360deg)",
-                animation: "witch-orb-spin 17s linear infinite reverse",
+                left: "42%", top: "46%",
+                background: "rgba(255,253,242,0.98)",
+                boxShadow:
+                  "0 0 7px 2px rgba(255,246,208,0.85), " +
+                  "13px 8px 0 0 rgba(255,238,190,0.7), " +
+                  "-11px 12px 0 0 rgba(255,250,225,0.6), " +
+                  "20px -6px 0 0 rgba(255,232,170,0.5), " +
+                  "-18px -4px 0 0 rgba(255,244,200,0.55), " +
+                  "26px 16px 0 0 rgba(255,236,180,0.4)",
+                filter: "blur(0.4px)",
+                animation: "witch-orb-float-a 7.5s ease-in-out infinite",
               }}
             />
           </div>
+
+          {/* ②-3 浮游光点组 B（向左上漂，错开相位） */}
+          <div className="absolute inset-0">
+            <div
+              className="absolute h-[2px] w-[2px] rounded-full"
+              style={{
+                left: "56%", top: "55%",
+                background: "rgba(255,250,226,0.95)",
+                boxShadow:
+                  "0 0 6px 1px rgba(255,240,196,0.8), " +
+                  "-14px -9px 0 0 rgba(255,246,214,0.6), " +
+                  "16px 12px 0 0 rgba(255,234,178,0.5), " +
+                  "-20px 8px 0 0 rgba(255,248,220,0.45), " +
+                  "10px -14px 0 0 rgba(255,230,166,0.4)",
+                filter: "blur(0.4px)",
+                animation: "witch-orb-float-b 9.3s ease-in-out infinite 1.4s",
+              }}
+            />
+          </div>
+
+          {/* ②-4 浮游光点组 C（垂直小幅浮动） */}
+          <div className="absolute inset-0">
+            <div
+              className="absolute h-[2px] w-[2px] rounded-full"
+              style={{
+                left: "48%", top: "52%",
+                background: "rgba(255,248,214,0.9)",
+                boxShadow:
+                  "0 0 5px 1px rgba(255,244,204,0.7), " +
+                  "9px -13px 0 0 rgba(255,238,190,0.5), " +
+                  "-11px -9px 0 0 rgba(255,250,230,0.45), " +
+                  "18px 6px 0 0 rgba(255,232,170,0.4)",
+                filter: "blur(0.5px)",
+                animation: "witch-orb-float-c 11s ease-in-out infinite 3s",
+              }}
+            />
+          </div>
+
+          {/* ②-5 球心的一点高光（呼吸） */}
+          <div
+            className="absolute left-1/2 top-1/2 h-[6px] w-[6px] -translate-x-1/2 -translate-y-1/2 rounded-full"
+            style={{
+              background: "rgba(255,255,250,0.9)",
+              boxShadow: "0 0 12px 4px rgba(255,246,210,0.7)",
+              animation: "witch-orb-breathe 3.6s ease-in-out infinite",
+            }}
+          />
         </div>
-      )}
-    </div>
+      )}    </div>
   );
 }

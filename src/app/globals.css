@@ -273,6 +273,84 @@ body {
   50% { opacity: 0.95; transform: translate(-50%, -50%) scale(1.1); }
 }
 
+/**
+ * ⚠️⚠️ 魔法粒子上升（2026-11-12 用户：「你往球里面加点动效吧」）
+ * ⚠️ 为什么用 translateY 而不是改 top：
+ *   · translate 是 **GPU 合成**（不触发重绘）→ 60fps 无压力
+ *   · 改 top 会每帧触发 layout → 掉帧
+ * ⚠️ 为什么位移距离用百分比（相对元素自身高度 = 1px）：
+ *   · 粒子元素只有 1px 高 → translateY(100%) 只有 1px
+ *   → 所以必须用 **px 值**，且要大于球的直径才能"冲出球外再消失"
+ *   → 但球的大小是视口相关的（JS 实测）→ 这里用 100% of 容器？
+ *   → ⚠️ 实际做法：粒子放在一个"高度 = 球直径"的容器里，
+ *      用 translateY(0 → 100%) 就能从球底升到球顶 ✅
+ */
+@keyframes witch-orb-ascend {
+  0% {
+    opacity: 0;
+    transform: translateY(0) scale(0.6);
+  }
+  12% { opacity: 0.9; }
+  50% { transform: translateY(-50%) scale(1); }
+  88% { opacity: 0.55; }
+  100% {
+    opacity: 0;
+    transform: translateY(-100%) scale(0.75);
+  }
+}
+
+/**
+ * ⚠️ 球面高光扫过（能量在球内流动）
+ * ⚠️ 为什么用 translateX 而不是改 background-position：
+ *   · 改 background-position 需要重绘
+ *   · 移动一个渐变层（transform）→ GPU 合成 → 更流畅
+ */
+@keyframes witch-orb-sweep {
+  0%, 12% { transform: translateX(-140%) skewX(-12deg); opacity: 0; }
+  26% { opacity: 1; }
+  62% { opacity: 0.9; }
+  78%, 100% { transform: translateX(140%) skewX(-12deg); opacity: 0; }
+}
+
+/**
+ * ⚠️⚠️ 浮游光点轨迹（2026-11-12 用户：「小动态浮游的那种光圈」）
+ * ⚠️ 为什么用**不规则多段路径**而不是匀速直线：
+ *   · 匀速直线 = 机械感 ❌
+ *   · 多段贝塞尔式关键帧 + 轻微旋转/缩放 = 有机的漂浮感 ✅
+ * ⚠️ 为什么用 transform（不是 left/top）：
+ *   · transform 是 GPU 合成 → 60fps
+ *   · left/top 每帧触发 layout → 掉帧
+ */
+@keyframes witch-orb-float-a {
+  0%   { transform: translate(0, 0) scale(1); opacity: 0; }
+  12%  { opacity: 0.95; }
+  32%  { transform: translate(14px, 10px) scale(1.25); opacity: 1; }
+  54%  { transform: translate(4px, 26px) scale(0.85); opacity: 0.8; }
+  72%  { transform: translate(-14px, 18px) scale(1.15); opacity: 0.95; }
+  88%  { transform: translate(-8px, -4px) scale(0.9); opacity: 0.6; }
+  100% { transform: translate(0, 0) scale(1); opacity: 0; }
+}
+
+@keyframes witch-orb-float-b {
+  0%   { transform: translate(0, 0) scale(1); opacity: 0; }
+  15%  { opacity: 0.9; }
+  34%  { transform: translate(-16px, -12px) scale(1.2); opacity: 1; }
+  52%  { transform: translate(-6px, -30px) scale(0.8); opacity: 0.75; }
+  70%  { transform: translate(12px, -16px) scale(1.1); opacity: 0.9; }
+  86%  { transform: translate(6px, 6px) scale(0.85); opacity: 0.5; }
+  100% { transform: translate(0, 0) scale(1); opacity: 0; }
+}
+
+@keyframes witch-orb-float-c {
+  0%   { transform: translate(0, 0) scale(1); opacity: 0; }
+  18%  { opacity: 0.85; }
+  38%  { transform: translate(8px, -16px) scale(1.15); opacity: 0.95; }
+  58%  { transform: translate(-10px, -28px) scale(0.8); opacity: 0.7; }
+  76%  { transform: translate(-14px, -6px) scale(1.05); opacity: 0.85; }
+  90%  { transform: translate(-4px, 8px) scale(0.9); opacity: 0.45; }
+  100% { transform: translate(0, 0) scale(1); opacity: 0; }
+}
+
 /* 渐变文字流光 */
 @keyframes shimmer-text {
   0% { background-position: 0% 50%; }

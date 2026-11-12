@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
@@ -1787,7 +1787,29 @@ export default function TarotApp() {
        */}
       <WitchOrb />
 
-      <div className="h-4" />
+      {/* ══════════════════════════════════════════════
+       * ⚠️⚠️ 球的占位区（2026-11-12）
+       *
+       * ⚠️ 用户要求（原文）：
+       *   「球的部分那块空出来的 标题下面是球 这块部分不要文字
+       *     文字放在球高度结束下面」
+       *
+       * ⚠️⚠️ 为什么需要这个占位块：
+       *   · WitchOrb 的两层都是 absolute → **不占布局位置**
+       *   → 球会和下面的内容（入口卡片、占卜师头像）**重叠**（实测 v79）
+       *   → 这个占位块从文档流里**空出球的高度** → 下面所有内容自动下移 ✅
+       *
+       * ⚠️ 高度怎么算：
+       *   球的显示直径 = (BALL_R×2 / 1024) × S，S = min(112vw, 100vh)
+       *   → 在 CSS 里无法直接表达（要算 min）→ 用**同源的 CSS 变量**
+       *   → WitchOrb 里也用同一个变量算球的实际位置 → 天然对齐 ✅
+       */}
+      <div
+        data-orb-slot
+        aria-hidden="true"
+        className="w-full shrink-0"
+        style={{ height: "calc(min(20.3vw, 18.2vh) + 26vh)" }}
+      />
 
       {/* ---------- 运势入口（2026-11-04 C 方向 · 2026-11-05 视觉重设计）----------
           ⚠️ 竞品对标：Tarot Run 的顶栏有「每日塔罗」，Tarotap 有 5 种运势。
