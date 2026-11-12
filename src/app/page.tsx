@@ -63,6 +63,9 @@ import { unlockAmbience, playSfx } from "@/lib/audio/ambient";import { parseAgen
  * ⚠️ 保留这些 import 是为了让下面的代码不用改（零行为变更）
  */
 import { useDivinationState } from "@/features/divination/useDivinationState";
+import { useFlowEntries } from "@/features/divination/useFlowEntries";
+import { useDeltaBuffer } from "@/features/divination/useDeltaBuffer";
+import { splitSseFrames } from "@/features/divination/useSseParser";
 import {
   PHASE_ORDER,
   PHASE_TEXT,
@@ -472,8 +475,6 @@ export default function TarotApp() {
   /** 放大预览的牌（null = 未打开） */
   /** 用户插话（方案 C） */
   /* ---- 对话流（统一视图）---- */
-  /** delta 分流目标：当前 card 条目 id（念牌/解读 delta 流向这里） */
-  const deltaTargetRef = useRef<{ type: "card" | "scroll" | "teller"; entryId?: string } | null>(null);
   /** 翻牌请求 pending 标记（防连点：手快连点会发多个 /api/answer） */
   const flipPendingRef = useRef(false);
   /** 最后收到的 SSE 事件序号（断点续传用，P1-③D） */
@@ -493,6 +494,37 @@ export default function TarotApp() {
    */
   const sessionIdRef = useRef("");
   /**
+
+   * ⚠️⚠️ 对话流条目管理（2026-11-12 拆分 → useFlowEntries）
+
+   * ⚠️ 依赖只有 setEntries → 不会被 eslint 误判为不稳定 ✅
+
+   */
+
+  const { pushEntry, updateEntry, nextEntryId, resetEntryIds, deltaTargetRef } =
+
+    useFlowEntries(setEntries);
+
+
+  /**
+
+   * ⚠️⚠️ delta 节流缓冲（2026-11-12 拆分 → useDeltaBuffer）
+
+   * ⚠️ 流式 delta 每秒 20+ 事件 → 必须 rAF 批量合并，否则整页每秒重渲染 20+ 次
+
+   */
+
+  const { deltaBufferRef, scheduleDeltaFlush } = useDeltaBuffer({
+
+    setReading,
+
+    setEntries,
+
+    nextEntryId,
+
+  });
+
+  /**
    * 在途 SSE 请求的取消句柄（P0-③）
    *
    * ⚠️ 为什么必须有（后端的断开检测形同虚设）：
@@ -502,91 +534,6 @@ export default function TarotApp() {
    *   → 白烧约 ¥0.22 的 token，而且后端还把它记成"正常完成"。
    */
   const streamAbortRef = useRef<AbortController | null>(null);
-  /** 条目 id 计数器 */
-  const entryIdRef = useRef(0);
-  const nextEntryId = () => `e${++entryIdRef.current}`;
-
-  /** 追加一条对话流条目 */
-  const pushEntry = useCallback((e: Omit<FlowEntry, "id"> & { id?: string }) => {
-    const id = e.id ?? nextEntryId();
-    setEntries((prev) => [...prev, { ...e, id } as FlowEntry]);
-    return id;
-  }, []);
-
-  /** 更新指定条目 */
-  const updateEntry = useCallback((id: string, patch: Partial<FlowEntry> | ((e: FlowEntry) => Partial<FlowEntry>)) => {
-    setEntries((prev) =>
-      prev.map((e) => (e.id === id ? { ...e, ...(typeof patch === "function" ? patch(e) : patch) } : e))
-    );
-  }, []);
-
-  /* ---- delta 节流（rAF 批量合并）----
-   * 流式 delta 每秒 20+ 事件，逐条 setEntries 全量 map 会让整页树
-   * 每秒重渲染 20+ 次（长会话明显卡顿）。改为：
-   *  - delta 到达只写进 bufferRef（零渲染成本）
-   *  - requestAnimationFrame 逐帧把缓冲一次性 flush 进 state
-   * 一帧内的 N 条 delta 合并为 1 次 setState，渲染次数从"每事件"降到"每帧"。 */
-  const deltaBufferRef = useRef<{
-    reading: string;
-    card: { entryId: string; text: string } | null;
-    scroll: { entryId: string; text: string } | null;
-    teller: string | null;
-  }>({ reading: "", card: null, scroll: null, teller: null });
-  const flushScheduledRef = useRef(false);
-  /**
-   * ⚠️ P2-㉒：rAF 的句柄 —— 组件卸载后必须 cancel。
-   *   原来的 requestAnimationFrame(...) 没有句柄 → 卸载后仍会触发
-   *   → flushDeltaBuffer 里的 setState 打到已卸载的组件（React 警告 + 泄漏）。
-   */
-  const flushRafRef = useRef<number | null>(null);
-
-  const flushDeltaBuffer = useCallback(() => {
-    flushScheduledRef.current = false;
-    const buf = deltaBufferRef.current;
-    if (buf.reading) {
-      const d = buf.reading;
-      setReading((prev) => prev + d);
-      buf.reading = "";
-    }
-    if (buf.card) {
-      const { entryId, text } = buf.card;
-      if (text) setEntries((prev) => prev.map((e) => (e.id === entryId && e.card ? { ...e, card: { ...e.card, reading: (e.card.reading ?? "") + text } } : e)));
-      buf.card = null;
-    }
-    if (buf.scroll) {
-      const { entryId, text } = buf.scroll;
-      if (text) setEntries((prev) => prev.map((e) => (e.id === entryId ? { ...e, text: (e.text ?? "") + text } : e)));
-      buf.scroll = null;
-    }
-    if (buf.teller !== null) {
-      const d = buf.teller;
-      buf.teller = null;
-      if (d) {
-        setEntries((prev) => {
-          const last = prev[prev.length - 1];
-          // 仅当最后一条就是 teller 气泡（连续 delta）才拼接；
-          // 刚答完题（ask/user）或翻新牌后必须开新气泡
-          if (last?.kind === "teller" && !last.settled) {
-            return [...prev.slice(0, -1), { ...last, text: (last.text ?? "") + d }];
-          }
-          return [...prev, { id: nextEntryId(), kind: "teller", text: d }];
-        });
-      }
-    }
-  }, []);
-
-  const scheduleDeltaFlush = useCallback(() => {
-    if (flushScheduledRef.current) return;
-    flushScheduledRef.current = true;
-    flushRafRef.current = requestAnimationFrame(() => flushDeltaBuffer());
-  }, [flushDeltaBuffer]);
-
-  // ⚠️ P2-㉒：卸载时取消待执行的 rAF（否则 setState 打到已卸载组件）
-  useEffect(() => {
-    return () => {
-      if (flushRafRef.current != null) cancelAnimationFrame(flushRafRef.current);
-    };
-  }, []);
 
   /**
    * 回答对话流中的 ask 条目：条目转 settled（用户气泡），并发送 API。
@@ -917,22 +864,15 @@ export default function TarotApp() {
       const { done, value } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
-      const events = buf.split("\n\n");
-      buf = events.pop() ?? "";
-      for (const evt of events) {
-        // ⚠️ SSE 帧可能含多行：`id: <seq>` + `data: <json>`
-        //    旧实现只认 data: 行 → id 被丢弃，断点续传无从谈起。
-        let seq = 0;
-        let dataLine = "";
-        for (const raw of evt.split("\n")) {
-          const line = raw.trim();
-          if (line.startsWith("id:")) {
-            seq = Number(line.slice(3).trim()) || 0;
-          } else if (line.startsWith("data:")) {
-            dataLine = line.slice(5).trim();
-          }
-        }
-        if (!dataLine) continue;
+      /**
+       * ⚠️ SSE 帧解析已抽成纯函数（2026-11-12 → useSseParser.ts）
+       * · 帧格式：`id: <seq>` + `data: <json>`（**多行**）
+       * · 旧实现只认 data: 行 → id 被丢弃，断点续传无从谈起
+       * · 纯函数 → 可单测 ✅
+       */
+      const { frames, remainder } = splitSseFrames(buf);
+      buf = remainder;
+      for (const { seq, data: dataLine } of frames) {
         // 记录最后收到的 seq（断点续传用）
         if (seq > 0) lastSeqRef.current = seq;
         try {
@@ -1693,7 +1633,7 @@ export default function TarotApp() {
     /* 对话流重置 */
     setEntries([]);
     deltaTargetRef.current = null;
-    entryIdRef.current = 0;
+    resetEntryIds();
     setError("");
     setStreaming(false);
   }, [abortStream]);

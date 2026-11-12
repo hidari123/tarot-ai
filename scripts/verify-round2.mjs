@@ -252,7 +252,16 @@ console.log("\n【④ P2 体验与工程债】（a11y / 分割 / 字体 / 动效
   check("KnowledgePanel 的定时器有 cleanup", /clearTimeout/.test(kp));
   const fan = readFileSync("src/components/CardFan.tsx", "utf-8");
   check("CardFan 的定时器有 cleanup", /clearTimeout/.test(fan));
-  check("page.tsx 的 rAF 有 cancel", /cancelAnimationFrame/.test(pageCode));
+  // ⚠️ 2026-11-12 拆分：rAF 的 cancel 搬进了 useDeltaBuffer.ts
+//    → 断言要同时看两处（意图不变：rAF 必须有 cancel，防卸载后 setState 泄漏）
+const deltaHook = readFileSync(
+  "src/features/divination/useDeltaBuffer.ts",
+  "utf-8"
+);
+check(
+  "page.tsx 的 rAF 有 cancel",
+  /cancelAnimationFrame/.test(pageCode) || /cancelAnimationFrame/.test(deltaHook)
+);
 }
 
 /* ────────────── ⑤ 回归防护 ────────────── */
