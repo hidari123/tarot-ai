@@ -67,3 +67,14 @@ COMMIT_EDITMSG.tmp
 # 视觉重设计的调试截图（不入库）
 shots/
 
+
+
+# 本地截图用的持久化 Chrome profile（含缓存/SW/二进制）
+.chrome-profile/
+
+# 本地构建日志
+dev.log
+server.log
+
+# SW 的版本化产物（构建时自动生成，不要提交）
+public/sw.v*.js

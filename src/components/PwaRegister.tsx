@@ -33,6 +33,53 @@ export default function PwaRegister() {
     if (process.env.NODE_ENV !== "production") return;
 
     /**
+     * ⚠️⚠️⚠️ 本地预览开关（2026-11-12）
+     *
+     * ⚠️ 用户反馈：「我本地如何看到最新效果 不用部署的情况下 部署目前一直有缓存」
+     *
+     * ⚠️ 问题的本质：
+     *   `next start` 跑的是 **production 模式** → SW 会注册 → 缓存接管
+     *   → 本地每次构建后看到的还是**缓存里的旧页面**
+     *   → 用户以为"改了没生效"，实际上是 SW 在骗人
+     *
+     * ⚠️ 解法：设 `NEXT_PUBLIC_DISABLE_SW=1` → 本地完全不注册 SW
+     *   → 每次刷新都是最新构建 ✅
+     *   → 部署环境不设这个变量 → SW 正常注册（离线能力保留）✅
+     *
+     * ⚠️ 为什么用 NEXT_PUBLIC_ 前缀：
+     *   这个值要**编译进客户端 bundle**（在浏览器里判断）
+     *   → 必须是 NEXT_PUBLIC_ 前缀才能被客户端读到
+     */
+    /**
+     * ⚠️⚠️⚠️ 为什么**不能**用 `process.env.NEXT_PUBLIC_DISABLE_SW`（实测踩坑）：
+     *   Next.js 16 对 `process.env.NEXT_PUBLIC_*` 做**编译期常量替换**
+     *   → 实测编译产物里变成了 `"u" > typeof caches`（"u" 是 undefined 的内部常量）
+     *   → 判断永远为 false → **开关完全失效** ❌
+     *   ⚠️ 原因：这个变量**没有在任何地方被真正读取**（只在比较里出现）
+     *   → Next.js 的 define 插件没把它注入 → 替换成了 undefined
+     *
+     * ⚠️ 可靠做法：读 `document.documentElement.dataset`（运行时属性，不受编译期替换影响）
+     */
+    const disableSw =
+      typeof document !== "undefined" &&
+      document.documentElement.dataset.disableSw === "true";
+
+    if (disableSw) {
+      // ⚠️ 同时**注销已存在的 SW** + 清缓存
+      //   → 否则之前注册的 SW 还会继续接管（实测：SW 注销了但缓存还在）
+      navigator.serviceWorker.getRegistrations().then((regs) => {
+        regs.forEach((r) => r.unregister());
+      });
+      if (typeof caches !== "undefined") {
+        caches
+          .keys()
+          .then((keys) => keys.forEach((k) => caches.delete(k)))
+          .catch(() => undefined);
+      }
+      return;
+    }
+
+    /**
      * ⚠️ SW 文件名带版本号（构建后由 bump-sw-version.mjs 注入）
      * ⚠️ 为什么要 fallback：
      *   万一注入脚本没跑（本地手动改代码、CI 缓存等），

@@ -120,6 +120,27 @@ self.addEventListener("fetch", (event) => {
   // ⚠️ API 与流式响应永不缓存
   if (url.pathname.startsWith("/api/")) return;
 
+  /**
+   * ⚠️⚠️⚠️ **SW 自己必须绕过缓存**（2026-11-12 修正，用户反馈「页面跟截图不一样」）
+   *
+   * ⚠️ 问题的根源（实测）：
+   *   · 浏览器请求 `/sw.js` 来检查 SW 是否有更新
+   *   · 但这个请求**也会经过本 SW 的 fetch 事件**
+   *   · 而 `/sw.js` 不在 `/api/` 下、Accept 也不是 text/html
+   *   → 落到下面的「静态资源 stale-while-revalidate」分支
+   *   → **先返回缓存里的旧 SW 文件** ❌
+   *   → 浏览器拿到的还是旧 SW → 永远不更新
+   *   → 旧 SW 的 CACHE_VERSION 永远是旧值 → 旧 chunk 永远留着
+   *   → **用户看到的永远是两个多月前的页面**
+   *
+   * ⚠️ 修法：SW 脚本请求**直接走网络**，不碰缓存
+   *   → 浏览器每次都能拿到最新 SW → 触发 update → activate 清旧缓存 ✅
+   */
+  if (url.pathname === "/sw.js" || url.pathname.startsWith("/sw.v")) {
+    event.respondWith(fetch(req, { cache: "no-cache" }));
+    return;
+  }
+
   // ── HTML 页面：network-first（修正 bug ①）──
   if (isHtmlRequest(req)) {
     event.respondWith(

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 /**
  * 环境音**离线渲染 + 频谱分析**（2026-11-07）
  *

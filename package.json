@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:3001": "next dev -p 3001",
+    "prebuild": "node scripts/dev/bump-sw-version.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

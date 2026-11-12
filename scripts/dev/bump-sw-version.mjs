@@ -71,16 +71,23 @@ for (const f of readdirSync(OUT_DIR)) {
   }
 }
 
-// ⑤ 更新 PwaRegister 的注册路径 → 指向带版本号的新文件
-if (existsSync(REGISTER)) {
-  let reg = readFileSync(REGISTER, "utf-8");
-  const before = reg;
-  reg = reg.replace(/\.register\("\/sw[^"]*\.js",/, `.register("/${swFile}",`);
-  if (reg !== before) {
-    writeFileSync(REGISTER, reg, "utf-8");
-    console.log(`✓ PwaRegister 注册路径 → /${swFile}`);
-  }
-}
+/**
+ * ⚠️⚠️ 不再修改 PwaRegister.tsx（2026-11-12 修正）
+ * ⚠️ 为什么：
+ *   · 之前脚本会**改源码**里的注册路径 → 每次构建 git 都变脏
+ *   · 还要提交回去 → 容易冲突、容易漏
+ *   · ⚠️ 而且实测发现：**这个脚本从来没被调用过**
+ *     → `public/sw.js` 的时间戳停在 2026/10/28
+ *     → 用户的浏览器一直用着**两个多月前的 Service Worker**
+ *     → 缓存着旧页面 → 「我看到的页面跟你的截图不一样」
+ *
+ * ⚠️ 现在的方案（更稳）：
+ *   · 注册路径**固定** `/sw.js`（源码里写死，永不变）
+ *   · 但 `public/sw.js` 的**内容每次构建都变**（注入了 git hash）
+ *   · → 浏览器比对 SW 字节 → 发现变化 → 触发 update
+ *   · → 新 SW activate → CACHE_VERSION 变了 → 清掉所有旧缓存 ✅
+ *   · → **源码永远干净**，且缓存必定失效 ✅
+ */
 
 console.log(`✓ SW 版本号 → ${version}`);
 console.log(`✓ 生成 public/${swFile}`);

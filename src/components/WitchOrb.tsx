@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 /**
  * WitchOrb —— 小女巫抱水晶球 · 球内动效（2026-11-12 最终版）
@@ -68,7 +68,7 @@ const GIRL_ALPHA = 0.22;
  * ⚠️ ⚠️ 占位块的高度必须与球的直径**同源**（见 page.tsx）：
  *   → 两处都用 min(20.3vw, 18.2vh) 这个值
  */
-const BALL_SHIFT_VH = -19;
+const BALL_SHIFT_VH = -17.5;
 
 interface BallPos {
   /** 相对背景层容器的坐标 */

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 /**
  * 视觉回归截图（2026-11-05 视觉重设计）
  *

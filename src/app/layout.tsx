@@ -72,7 +72,23 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
      *   ⚠️ 这里把 body 的 `min-h-full` 去掉了 —— 它是冗余的：
      *   <main> 自己就是 `min-h-[100dvh]`，body 再叠一层只会加剧溢出。
      */
-    <html lang="zh-CN" className="h-full antialiased">
+    /**
+     * ⚠️ `data-disable-sw` —— 本地预览时禁用 Service Worker
+     *
+     * ⚠️⚠️ 为什么用 data 属性而不是环境变量（2026-11-12 实测踩坑）：
+     *   · `process.env.NEXT_PUBLIC_DISABLE_SW` 在 Next.js 16 里被**编译期常量替换**
+     *     → 实际编译产物变成 `"u" > typeof caches`（"u" 是 undefined 常量）
+     *     → 判断永远为 false → 开关完全失效 ❌
+     *   · 原因：该变量**没有在任何地方被真正读取** → define 插件没注入
+     *   → data 属性是**运行时 DOM 属性**，不受编译期替换影响 ✅
+     *
+     * ⚠️ 部署时把 "true" 改成 "false"（或删掉这个属性）即可恢复 SW
+     */
+    <html
+      lang="zh-CN"
+      className="h-full antialiased"
+      data-disable-sw={process.env.NEXT_PUBLIC_DISABLE_SW === "1" ? "true" : "false"}
+    >
       <body className="flex flex-col">
         {/* ⚠️ P2-⑳：动效降级包在最外层 —— framer-motion 的 JS 动画
             也跟随系统的 prefers-reduced-motion 设置 */}
