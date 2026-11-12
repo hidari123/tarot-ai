@@ -24,6 +24,12 @@ const check = (label, ok, detail = "") => {
 console.log("=== UX 修复验证（2026-11-04）===\n");
 
 const page = readFileSync("src/app/page.tsx", "utf-8");
+// ⚠️ 2026-11-12 拆分：状态搬进了 useDivinationState → 断言要同时看两处
+const stateHook = readFileSync(
+  "src/features/divination/useDivinationState.ts",
+  "utf-8"
+);
+const frontCode = page + "\n" + stateHook;
 const sessionApi = readFileSync("src/app/api/session/[id]/route.ts", "utf-8");
 const layout = readFileSync("src/app/layout.tsx", "utf-8");
 const globals = readFileSync("src/app/globals.css", "utf-8");
@@ -73,7 +79,7 @@ console.log("【① 追问入口（用户报告：每次都说超过 30 分钟�
   check("410 时静默收起追问入口（不弹错误横幅）",
     /setError\(""\)/.test(page));
 
-  check("前端维护 canFollowup state", /const \[canFollowup, setCanFollowup\]/.test(page));
+  check("前端维护 canFollowup state", /const \[canFollowup, setCanFollowup\]/.test(frontCode));
   check("新会话建立时 canFollowup=true", /setCanFollowup\(true\)/.test(page));
 }
 
@@ -189,7 +195,7 @@ console.log("\n【⑥ 牌出现但点不动（用户报告：有时候点的无�
   check("失败时撤销乐观更新",
     /flipping \? \{ \.\.\.c, flipping: false \}/.test(page));
   check("409 不再静默（给可见轻提示）", /setHint\("占卜师还在准备这张牌/.test(page));
-  check("存在轻提示 state（区别于 error 横幅）", /const \[hint, setHint\]/.test(page));
+  check("存在轻提示 state（区别于 error 横幅）", /const \[hint, setHint\]/.test(frontCode));
   check("轻提示会自动消失", /setHint\(""\)/.test(page) && /clearTimeout/.test(page));
 
   check("不可点的牌有「等待中」文案", /等待中/.test(cardSpread));

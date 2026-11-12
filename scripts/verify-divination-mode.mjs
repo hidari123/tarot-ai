@@ -234,13 +234,18 @@ console.log("\n【④ 前后端接线】");
 {
   const page = readFileSync("src/app/page.tsx", "utf-8");
   const pageCode = strip(page);
+  // ⚠️ 2026-11-12 拆分：状态搬进了 useDivinationState → 断言要同时看两处
+  const stateHookCode = strip(
+    readFileSync("src/features/divination/useDivinationState.ts", "utf-8")
+  );
+  const frontCode = pageCode + "\n" + stateHookCode;
   const route = readFileSync("src/app/api/interpret/route.ts", "utf-8");
   const routeCode = strip(route);
   const sess = readFileSync("src/lib/agent/session.ts", "utf-8");
   const types = readFileSync("src/lib/agent/types.ts", "utf-8");
 
-  check("页面有 mode state", /useState<DivinationMode>/.test(pageCode));
-  check("页面默认 quick", /useState<DivinationMode>\(DEFAULT_MODE\)/.test(pageCode));
+  check("页面有 mode state", /useState<DivinationMode>/.test(frontCode));
+  check("页面默认 quick", /useState<DivinationMode>\(DEFAULT_MODE\)/.test(frontCode));
   check("前端把 mode 发给后端", /mode\s*\}/.test(pageCode) && /JSON\.stringify\(\{ question: q[^}]*mode/.test(pageCode));
   check("前端有模式切换 UI", /MODE_PROFILES/.test(pageCode) && /aria-pressed/.test(pageCode));
 

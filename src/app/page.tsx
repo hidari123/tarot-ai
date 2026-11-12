@@ -22,7 +22,7 @@ import DialogueFlow from "@/components/DialogueFlow";
 import CardFan from "@/components/CardFan";
 import ReviewCard from "@/components/ReviewCard";
 import AmbienceToggle, { useAmbiencePhase } from "@/components/AmbienceToggle";
-import { DEFAULT_MODE, MODE_PROFILES, type DivinationMode } from "@/lib/agent/divination-mode";
+import { MODE_PROFILES, type DivinationMode } from "@/lib/agent/divination-mode";
 import ClosingPanel from "@/components/ClosingPanel";
 import Icon from "@/components/icons";
 
@@ -62,23 +62,15 @@ import { unlockAmbience, playSfx } from "@/lib/audio/ambient";import { parseAgen
  *   · 放在独立文件 → 依赖方向单向（components → hooks → types）→ 无循环依赖
  * ⚠️ 保留这些 import 是为了让下面的代码不用改（零行为变更）
  */
+import { useDivinationState } from "@/features/divination/useDivinationState";
 import {
   PHASE_ORDER,
   PHASE_TEXT,
   STAGE_GONG_PHASES,
-  type AgentCard,
-  type FanCard,
-  type FlowEntry,
-  type PersonaView,
-  type Phase,
-  type PreviewCard,
-  type RagHitView,
-  type ReviewData,
-  type RoundInfo,
-  type SpreadCard,
-  type Stage,
-  type SubAgentEvent,
-  type ToolCall,
+  type AgentCard,
+  type FlowEntry,
+  type Phase,
+  type SpreadCard,
 } from "@/features/divination/types";
 
 
@@ -343,19 +335,75 @@ function WaitingHint({ since, rateLimited }: { since: number; rateLimited?: bool
  */
 
 export default function TarotApp() {
-  const [question, setQuestion] = useState("");
-  const [persona, setPersona] = useState<PersonaView | null>(null);
+
+  /**
+
+   * ⚠️⚠️ 全部状态收进 useDivinationState（2026-11-12 拆分）
+
+   * ⚠️ setter 的用法与原来的 useState **完全一致**（传值或传 updater 都行）
+
+   * → 下面所有调用点无需改动 ✅
+
+   */
+
+  const {
+
+    question, setQuestion,
+    persona, setPersona,
+
+    mode, setMode,
+    personas, setPersonas,
+
+    stage, setStage,
+    sessionId, setSessionId,
+
+    phase, setPhase,
+    phaseLabel, setPhaseLabel,
+
+    rateLimited, setRateLimited,
+    reading, setReading,
+
+    reasoning, setReasoning,
+    tools, setTools,
+
+    rounds, setRounds,
+    ragHits, setRagHits,
+
+    ask, setAsk,
+    fanCards, setFanCards,
+
+    fanCount, setFanCount,
+    followup, setFollowup,
+
+    subagentEvents, setSubagentEvents,
+    review, setReview,
+
+    planSteps, setPlanSteps,
+    personaSuggest, setPersonaSuggest,
+
+    canFollowup, setCanFollowup,
+    streaming, setStreaming,
+
+    error, setError,
+    hint, setHint,
+
+    listening, setListening,
+    streamStart, setStreamStart,
+
+    thinkingElapsed, setThinkingElapsed,
+    showDetails, setShowDetails,
+
+    spread, setSpread,
+    previewCard, setPreviewCard,
+
+    interject, setInterject,
+    entries, setEntries,
+  } = useDivinationState();
   /**
    * ⚠️ 2026-11-04 双模式：占卜模式（快速一问 / 深度解读）
    * ⚠️ 默认「快速」—— 降低首次体验门槛（用户平均只花 45 秒），
    *   深度模式留给愿意等的人。
    */
-  const [mode, setMode] = useState<DivinationMode>(DEFAULT_MODE);
-  const [personas, setPersonas] = useState<PersonaView[]>([]);
-  const [stage, setStage] = useState<Stage>("input");
-  const [sessionId, setSessionId] = useState("");
-  const [phase, setPhase] = useState<Phase | null>(null);
-  const [phaseLabel, setPhaseLabel] = useState("");
   /**
    * 环境音：仪式阶段 → 氛围层的联动
    * ⚠️ 只在"占卜进行中"时启用 —— 待机页不该有声音。
@@ -366,30 +414,9 @@ export default function TarotApp() {
    * ⚠️ 与 phase 分开存 —— 它描述的是"等待的原因"而不是"流程处于哪一步"，
    *    两者会同时存在（我们既在某个阶段里，也在等限速配额）。
    */
-  const [rateLimited, setRateLimited] = useState(false);
-  const [reading, setReading] = useState("");
-  const [reasoning, setReasoning] = useState("");
-  const [tools, setTools] = useState<ToolCall[]>([]);
-  const [rounds, setRounds] = useState<RoundInfo[]>([]);
-  const [ragHits, setRagHits] = useState<RagHitView[]>([]);
   /* cards state 已删除：防剧透改造后 cards 事件是匿名槽位（image/nameZh 空），
      真实牌面状态在 spread 里（对话流牌阵 + 顶部时间线 + 分享卡共用） */
-  const [ask, setAsk] = useState<{
-    question: string;
-    options?: string[];
-    cardSelection?: boolean;
-    crossroads?: boolean;
-    /** HITL 类型：决定用哪个面板渲染 */
-    kind?: string;
-  } | null>(null);
-  const [fanCards, setFanCards] = useState<FanCard[]>([]);
-  const [fanCount, setFanCount] = useState(3);
-  const [followup, setFollowup] = useState("");
-  const [subagentEvents, setSubagentEvents] = useState<SubAgentEvent[]>([]);
-  const [review, setReview] = useState<ReviewData | null>(null);
   /* 方向⑤：Plan-Execute 仪轨计划 + 情绪驱动人格建议 */
-  const [planSteps, setPlanSteps] = useState<string[]>([]);
-  const [personaSuggest, setPersonaSuggest] = useState<{ personaId: string; name: string; emoji: string; reason: string } | null>(null);
   /**
    * ⚠️ 追问是否可用（2026-11-04 新增）
    * ⚠️ 语义：会话**还在服务端内存里** → 追问能成功。
@@ -400,13 +427,10 @@ export default function TarotApp() {
    *   不能给一个必然失败的按钮 → 让用户白点一次、白失望一次。
    * ⚠️ 恢复会话时由服务端的 canFollowup 决定（见下面的 fetch 逻辑）。
    */
-  const [canFollowup, setCanFollowup] = useState(false);
   /** 追问输入框的 ref（落点卡片的"我想再问一句"要聚焦它） */
   const followupInputRef = useRef<HTMLInputElement>(null);
   /** 分享卡区域的 ref（落点卡片的"保存解读卡片"要滚到它） */
   const shareCardRef = useRef<HTMLDivElement>(null);
-  const [streaming, setStreaming] = useState(false);
-  const [error, setError] = useState("");
   /**
    * ⚠️ 轻提示（2026-11-04 新增）
    * ⚠️ 与 error 的区别（这是刻意的）：
@@ -415,9 +439,6 @@ export default function TarotApp() {
    * ⚠️ 为什么需要它：翻牌 409 之前是**完全静默**的 → 用户以为牌坏了。
    *   但用 error 横幅又太重（那不是错误，只是"还没准备好"）。
    */
-  const [hint, setHint] = useState("");
-  const [listening, setListening] = useState(false);
-  const [streamStart, setStreamStart] = useState(0);
   /**
    * ⚠️ 思考计时（2026-11-04 新增）
    * ⚠️ 干什么用：给"占卜师思考中"气泡提供**持续变化的秒数**。
@@ -432,7 +453,6 @@ export default function TarotApp() {
    *     React 允许在事件/定时器回调里 setState（那才是正常的数据流方向），
    *     被拒的只是"effect 里同步 setState"。
    */
-  const [thinkingElapsed, setThinkingElapsed] = useState(0);
   useEffect(() => {
     if (!streaming) {
       // ⚠️ 这里 setState(0) 也会被规则拒 → 改为**不在 effect 里同步设**，
@@ -447,16 +467,11 @@ export default function TarotApp() {
     return () => clearInterval(timer);
   }, [streaming]);
   /** 过程细节区展开态（默认折叠 = 零渲染开销） */
-  const [showDetails, setShowDetails] = useState(false);
   /* ---- 真实塔罗仪式流程状态（仅保留仍在使用的部分；仪式对话已并入对话流）---- */
   /** 逐张解读的牌阵状态（顶部时间线与对话流牌阵**共用这一份** → 天然同步） */
-  const [spread, setSpread] = useState<SpreadCard[]>([]);
   /** 放大预览的牌（null = 未打开） */
-  const [previewCard, setPreviewCard] = useState<PreviewCard | null>(null);
   /** 用户插话（方案 C） */
-  const [interject, setInterject] = useState("");
   /* ---- 对话流（统一视图）---- */
-  const [entries, setEntries] = useState<FlowEntry[]>([]);
   /** delta 分流目标：当前 card 条目 id（念牌/解读 delta 流向这里） */
   const deltaTargetRef = useRef<{ type: "card" | "scroll" | "teller"; entryId?: string } | null>(null);
   /** 翻牌请求 pending 标记（防连点：手快连点会发多个 /api/answer） */

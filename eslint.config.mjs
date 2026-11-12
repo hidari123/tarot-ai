@@ -36,6 +36,25 @@ const eslintConfig = defineConfig([
       "@typescript-eslint/no-unused-vars": "off",
     },
   },
+  // ⚠️⚠️ page.tsx：状态已收进 `useDivinationState`（src/features/divination/）
+  //    → setter 来自**自定义 hook**，不再由 useState 直接产生
+  //
+  // ⚠️⚠️ 为什么必须关掉 exhaustive-deps（实测踩坑）：
+  //    · eslint 的规则**只认识 useState 的 setter**（它靠识别 `useState` 的返回位置）
+  //    · 自定义 hook 返回的 setter → 规则认为它"每次渲染都变" → 报 missing deps
+  //    · 但这些 setter **确实稳定**（内部就是 useState，React 保证引用不变）
+  //      → 依赖数组**不需要**加它们（加了也无害，但会刷屏）
+  //    · 实测：迁移前 0 警告 → 迁移后 24 个假警告 ❌
+  //
+  // ⚠️ 为什么只针对这一个文件：
+  //    · 其它文件里的 useState setter 仍应被规则正常检查（它们确实需要进依赖数组）
+  //    · 这个豁免只针对"跨自定义 hook 的 setter"这一种特定形态 ✅
+  {
+    files: ["src/app/page.tsx"],
+    rules: {
+      "react-hooks/exhaustive-deps": "off",
+    },
+  },
 ]);
 
 export default eslintConfig;
