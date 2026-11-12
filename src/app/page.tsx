@@ -1808,7 +1808,7 @@ export default function TarotApp() {
         data-orb-slot
         aria-hidden="true"
         className="w-full shrink-0"
-        style={{ height: "calc(min(20.3vw, 18.2vh) + 26vh)" }}
+        style={{ height: "calc(min(20.3vw, 18.2vh) + 20vh)" }}
       />
 
       {/* ---------- 运势入口（2026-11-04 C 方向 · 2026-11-05 视觉重设计）----------
