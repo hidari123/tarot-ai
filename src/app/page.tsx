@@ -1763,11 +1763,11 @@ export default function TarotApp() {
         style={{
           fontFamily: "Cinzel, Georgia, serif",
           /**
-           * ⚠️⚠️ 字号乘全局缩放系数 `--u`（1200×900 时 u=1）
-           * · 基准 75px（原 60px × 1.25，用户要求「文字都需要大一点 大概是现在的1.25倍」）
-           * → 任何视口下，文字与背景图**等比缩放** → 构图比例永远一致 ✅
+           * ⚠️⚠️ 字号 = `--font-title` × `--u`
+           * · 桌面端 --font-title: 75px（原 60px × 1.25）→ 随 --u 等比缩放 ✅
+           * · 移动端 --font-title: 34px（媒体查询覆盖）→ **不再溢出屏幕** ✅
            */
-          fontSize: "calc(75px * var(--u, 1))",
+          fontSize: "calc(var(--font-title, 75px) * var(--u, 1))",
         }}
       >
         MYSTIC TAROT
@@ -1776,14 +1776,29 @@ export default function TarotApp() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.4, duration: 0.8 }}
-        className="mt-3 text-purple-200/75 z-10 tracking-[0.18em]"
+        className="mt-3 text-purple-200/75 z-10 text-center"
         style={{
           fontFamily: "'Ma Shan Zheng', serif",
-          /** ⚠️ 同样乘 --u（基准 25px = 原 20px × 1.25） */
-          fontSize: "calc(25px * var(--u, 1))",
+          /** ⚠️ 字号 = `--font-sub` × `--u`（桌面 25px / 移动端 17px） */
+          fontSize: "calc(var(--font-sub, 25px) * var(--u, 1))",
+          /** ⚠️ 字间距也用变量（移动端更紧，两行才放得下） */
+          letterSpacing: "var(--tracking-sub, 0.18em)",
         }}
       >
-        倾听星辰的低语 · 窥探命运的轨迹
+        {/*
+         * ⚠️⚠️ 副标题**分两行**（用户要求：「副标题需要分成两行展示」）
+         * · 用两个 <span>，靠 CSS 切换布局：
+         *   · 桌面端：inline → 「倾听星辰的低语 · 窥探命运的轨迹」一行
+         *   · 移动端：block → 自然分成两行
+         * ⚠️ 为什么不用 <br />：
+         *   · <br /> 在桌面端也会换行 → 桌面端变两行（不想要）
+         *   · display:none 隐藏 <br /> → 两段文字粘连（没间隔）
+         * → span + 媒体查询切换 display ✅
+         */}
+        <span className="sub-line whitespace-nowrap">倾听星辰的低语</span>
+        <span className="sub-line whitespace-nowrap">
+          <span className="hidden md:inline"> · </span>窥探命运的轨迹
+        </span>
       </motion.p>
 
       {/* ══════════════════════════════════════════════
@@ -1827,7 +1842,7 @@ export default function TarotApp() {
         data-orb-slot
         aria-hidden="true"
         className="w-full shrink-0"
-        style={{ height: "calc(324px * var(--u, 1))" }}
+        style={{ height: "var(--orb-slot-h, 324px)" }}
       />
 
       {/* ---------- 运势入口（2026-11-04 C 方向 · 2026-11-05 视觉重设计）----------
@@ -2044,50 +2059,72 @@ export default function TarotApp() {
                 )}
               </button>
             </div>
+            {/**
+             * ⚠️⚠️ 「开始占卜」按钮 —— 重新设计（2026-11-12）
+             *
+             * ⚠️ 用户要求：「开始占卜需要占满一行 可以重新设计按钮样式」
+             *
+             * ⚠️⚠️ 为什么丢掉旧的图片按钮（btn-start.png）：
+             *   · 那是一张 640×360 的巴洛克金框（羊皮纸底 + 卷草边框）
+             *   · 撑满一行（414px × 62px = 6.7:1）→ 框会被拉成一条线 ❌
+             *   · 而且它和输入框视觉语言完全不同（深底金边 vs 羊皮纸卷草）
+             *     → 并排放很别扭（这是用户最早提的问题）
+             *
+             * ⚠️ 新设计：深底 + 金色渐变描边（纯 CSS）
+             *   · 与输入框同族：深底 + 金描边 + 圆角 → 统一 ✅
+             *   · 纯 CSS → 任意宽度零变形 ✅
+             *   · 移动端 w-full 占满一行，桌面端固定 142px
+             */}
             <motion.button
               whileHover={{ scale: 1.03 }}
               whileTap={{ scale: 0.97 }}
               onClick={startDivination}
-              /**
-               * ⚠️ 2026-11-10：改成「用户抠好的金丝羽叶边框图」。
-               *
-               * ⚠️ 用户要求（三条）：
-               *   ① 「不要加 border 了 只用图片」→ 去掉 CSS border，框线全部由图提供
-               *   ② 「内部文字用深色的颜色」→ 图中间是**羊皮纸米色底** → 文字必须深色才看得清
-               *   ③ 「hover 上去的时候加特效」→ hover 时发光 + 提亮
-               *
-               * ⚠️ 为什么容器是 142×80 而不是 128×62：
-               *   图里框的外面还有一圈透明区（用户抠图时保留了）
-               *   → 用 object-contain 按原比例贴进容器 → **零变形**
-               *   → 容器高 80px 时，视觉框正好 = 80 × (555/720) = **62px**（= 输入框高）
-               *   → 容器宽 142px 时，视觉框宽 = 142 × (1154/1280) = **128px**
-               */
-              className="group relative shrink-0 w-[142px] h-20"
+              className="group relative w-full sm:w-[142px] sm:shrink-0 h-[62px] rounded-2xl
+                bg-[rgba(9,5,20,0.82)] backdrop-blur-md
+                transition-all duration-300
+                hover:shadow-[0_0_30px_rgba(212,175,55,0.35)]"
+              style={{
+                /**
+                 * ⚠️ 基础态描边：细金线（与输入框完全一致）
+                 * ⚠️ 渐变描边用**额外的 span + mask** 实现（见下）
+                 *   · border-image 会吃掉 border-width → 盒子尺寸会变 ❌
+                 *   → 双层法：外层画渐变框、mask 挖空中间 → 尺寸不变 ✅
+                 */
+                border: "1px solid rgba(212,175,55,0.32)",
+                boxShadow:
+                  "inset 0 0 22px rgba(212,175,55,0.10), 0 6px 20px rgba(0,0,0,0.45)",
+              }}
             >
-              {/* 边框图（object-contain → 按原比例，不裁不拉伸） */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/images/celestial/btn-start.png"
-                alt=""
-                className="absolute inset-0 w-full h-full object-contain pointer-events-none
-                  transition-all duration-300
-                  group-hover:brightness-110 group-hover:drop-shadow-[0_0_14px_rgba(240,205,120,0.55)]"
-              />
-              {/* hover 时的底部辉光（额外一层，让"发光"更有层次） */}
+              {/* 渐变描边层（hover 时显现） */}
               <span
-                className="absolute inset-0 pointer-events-none opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+                className="pointer-events-none absolute inset-0 rounded-2xl opacity-0
+                  transition-opacity duration-300 group-hover:opacity-100"
                 style={{
+                  padding: "1px",
                   background:
-                    "radial-gradient(ellipse 60% 100% at 50% 100%, rgba(240,205,120,0.22), transparent 70%)",
-                  filter: "blur(6px)",
+                    "linear-gradient(135deg, #8a6a1e 0%, #e8c96a 38%, #f6e4a8 52%, #c9a24a 72%, #6d5216 100%)",
+                  WebkitMask:
+                    "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
+                  WebkitMaskComposite: "xor",
+                  maskComposite: "exclude",
                 }}
               />
-              {/* 文字（深色 —— 因为图中间是米色羊皮纸底） */}
+              {/* 内部柔光（hover 时亮起） */}
               <span
-                className="relative text-[#4a3312] text-lg font-semibold tracking-[0.14em]"
+                className="pointer-events-none absolute inset-0 rounded-2xl opacity-0
+                  transition-opacity duration-300 group-hover:opacity-100"
+                style={{
+                  background:
+                    "radial-gradient(ellipse 70% 120% at 50% 50%, rgba(240,205,120,0.16), transparent 72%)",
+                }}
+              />
+              {/* 文字 */}
+              <span
+                className="relative flex h-full items-center justify-center
+                  text-[#f0d98c] text-lg font-semibold tracking-[0.14em]"
                 style={{
                   fontFamily: "'Ma Shan Zheng', serif",
-                  textShadow: "0 1px 0 rgba(255,240,200,0.55)",
+                  textShadow: "0 0 12px rgba(212,175,55,0.45)",
                 }}
               >
                 开始占卜
