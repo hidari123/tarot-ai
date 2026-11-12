@@ -13,18 +13,18 @@ import StardustCursor from "@/components/StardustCursor";
 import CelestialBackdrop from "@/components/CelestialBackdrop";
 import WitchOrb from "@/components/WitchOrb";
 import PersonaOrb from "@/components/PersonaOrb";
-import AgentTrace, { type ToolCall, type RoundInfo } from "@/components/AgentTrace";
-import KnowledgePanel, { type RagHitView } from "@/components/KnowledgePanel";
+import AgentTrace from "@/components/AgentTrace";
+import KnowledgePanel from "@/components/KnowledgePanel";
 import CitedReading from "@/components/CitedReading";
-import CardSpread, { type SpreadCard } from "@/components/CardSpread";
-import CardPreviewModal, { type PreviewCard } from "@/components/CardPreviewModal";
-import DialogueFlow, { type FlowEntry } from "@/components/DialogueFlow";
-import CardFan, { type FanCard } from "@/components/CardFan";
-import ReviewCard, { type ReviewData } from "@/components/ReviewCard";
+import CardSpread from "@/components/CardSpread";
+import CardPreviewModal from "@/components/CardPreviewModal";
+import DialogueFlow from "@/components/DialogueFlow";
+import CardFan from "@/components/CardFan";
+import ReviewCard from "@/components/ReviewCard";
 import AmbienceToggle, { useAmbiencePhase } from "@/components/AmbienceToggle";
 import { DEFAULT_MODE, MODE_PROFILES, type DivinationMode } from "@/lib/agent/divination-mode";
 import ClosingPanel from "@/components/ClosingPanel";
-import Icon, { type IconName } from "@/components/icons";
+import Icon from "@/components/icons";
 
 /* ------------------------------------------------------------------ */
 /* 代码分割（P2-⑯）                                                    */
@@ -41,7 +41,7 @@ import Icon, { type IconName } from "@/components/icons";
  *   （Canvas / document.fonts），服务端渲染没有意义。
  * ⚠️ 类型用 `import type` 单独引入 —— dynamic 拿不到类型。
  */
-import type { SubAgentEvent } from "@/components/SubAgentPipeline";
+
 
 const ShareCardButton = dynamic(
   () => import("@/components/ShareCard").then((m) => m.default),
@@ -55,41 +55,32 @@ import { unlockAmbience, playSfx } from "@/lib/audio/ambient";import { parseAgen
 
 /* ---------------- 类型 ---------------- */
 
-interface AgentCard {
-  id: string;
-  nameZh: string;
-  image: string;
-  reversed: boolean;
-  pos: string;
-}
-
-interface PersonaView {
-  id: string;
-  name: string;
-  emoji: string;
-  desc: string;
-}
-
-type Phase = "analyze" | "retrieve" | "draw" | "interpret" | "wait_user" | "review" | "done" | "error";
-
 /**
- * ⚠️ 2026-11-04：图标从 emoji 换成 **SVG 线条图标**（用户诉求："想要更漂亮一点的图标"）
- * ⚠️ 原因见 `src/components/icons.tsx` 的头注释：
- *   emoji 跨平台不一致（Windows/macOS/Android 三种长相）、
- *   Linux 上可能渲染成豆腐块、且与"暗紫金线"的古典调性不搭。
+ * ⚠️⚠️ 2026-11-12 拆分：类型与常量已移到 `src/features/divination/types.ts`
+ * ⚠️ 为什么抽出去：
+ *   · 这些类型被 UI 组件与 hooks 共同依赖 → 不能留在 page.tsx 里
+ *   · 放在独立文件 → 依赖方向单向（components → hooks → types）→ 无循环依赖
+ * ⚠️ 保留这些 import 是为了让下面的代码不用改（零行为变更）
  */
-const PHASE_TEXT: Record<Phase, { title: string; icon: IconName }> = {
-  analyze: { title: "凝听问题", icon: "crystal" },
-  draw: { title: "命运之牌", icon: "cards" },
-  retrieve: { title: "翻阅典籍", icon: "book" },
-  interpret: { title: "撰写命运之卷", icon: "quill" },
-  wait_user: { title: "等待你的回应", icon: "thought" },
-  review: { title: "审校检视", icon: "eye" },
-  done: { title: "解读完成", icon: "sparkle" },
-  error: { title: "波动", icon: "orbit" },
-};
+import {
+  PHASE_ORDER,
+  PHASE_TEXT,
+  STAGE_GONG_PHASES,
+  type AgentCard,
+  type FanCard,
+  type FlowEntry,
+  type PersonaView,
+  type Phase,
+  type PreviewCard,
+  type RagHitView,
+  type ReviewData,
+  type RoundInfo,
+  type SpreadCard,
+  type Stage,
+  type SubAgentEvent,
+  type ToolCall,
+} from "@/features/divination/types";
 
-const PHASE_ORDER: Phase[] = ["analyze", "draw", "retrieve", "interpret", "review", "done"];
 
 /* ---------------- 星空 & 魔法阵 ---------------- */
 
@@ -347,8 +338,9 @@ function WaitingHint({ since, rateLimited }: { since: number; rateLimited?: bool
  *   `new Set(...)` 会被守卫判为"未收敛的模块级可变状态"。
  *   → 用普通数组（const 声明、内容不变，Set 的 has → includes）。
  *   4 个元素的数组，includes 的性能差异可以忽略。
+ *
+ * ⚠️ 2026-11-12 拆分：常量已移到 `@/features/divination/types`（见上方 import）
  */
-const STAGE_GONG_PHASES = ["invocation", "card_selection", "synthesis", "closing"];
 
 export default function TarotApp() {
   const [question, setQuestion] = useState("");
@@ -360,7 +352,7 @@ export default function TarotApp() {
    */
   const [mode, setMode] = useState<DivinationMode>(DEFAULT_MODE);
   const [personas, setPersonas] = useState<PersonaView[]>([]);
-  const [stage, setStage] = useState<"input" | "drawing" | "reading">("input");
+  const [stage, setStage] = useState<Stage>("input");
   const [sessionId, setSessionId] = useState("");
   const [phase, setPhase] = useState<Phase | null>(null);
   const [phaseLabel, setPhaseLabel] = useState("");
