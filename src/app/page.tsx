@@ -1694,7 +1694,14 @@ export default function TarotApp() {
   const done = phase === "done" && !streaming;
 
   return (
-    <main className="relative min-h-[100dvh] overflow-hidden flex flex-col items-center pt-12 md:pt-16 px-4">
+        /**
+     * ⚠️⚠️ pt 用 `calc(... * var(--u))`（基准 48px）
+     * → 与背景图、文字一起等比缩放 → 构图比例一致 ✅
+     */
+    <main
+      className="relative min-h-[100dvh] overflow-hidden flex flex-col items-center px-4"
+      style={{ paddingTop: "calc(48px * var(--u, 1))" }}
+    >
       {/*
         ⚠️⚠️ 为什么是 min-h-[100dvh] 而不是 min-h-screen（2026-11-04 修滚动条）：
           · `100vh` 在 CSS 里**包含滚动条高度**，而 <html class="h-full"> 用的是
@@ -1752,8 +1759,16 @@ export default function TarotApp() {
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.8 }}
-        className="text-shimmer text-4xl md:text-6xl tracking-[0.3em] z-10 select-none"
-        style={{ fontFamily: "Cinzel, Georgia, serif" }}
+        className="text-shimmer tracking-[0.3em] z-10 select-none"
+        style={{
+          fontFamily: "Cinzel, Georgia, serif",
+          /**
+           * ⚠️⚠️ 字号乘全局缩放系数 `--u`（1200×900 时 u=1）
+           * · 基准 75px（原 60px × 1.25，用户要求「文字都需要大一点 大概是现在的1.25倍」）
+           * → 任何视口下，文字与背景图**等比缩放** → 构图比例永远一致 ✅
+           */
+          fontSize: "calc(75px * var(--u, 1))",
+        }}
       >
         MYSTIC TAROT
       </motion.h1>
@@ -1761,8 +1776,12 @@ export default function TarotApp() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.4, duration: 0.8 }}
-        className="mt-3 text-lg md:text-xl text-purple-200/75 z-10 tracking-[0.18em]"
-        style={{ fontFamily: "'Ma Shan Zheng', serif" }}
+        className="mt-3 text-purple-200/75 z-10 tracking-[0.18em]"
+        style={{
+          fontFamily: "'Ma Shan Zheng', serif",
+          /** ⚠️ 同样乘 --u（基准 25px = 原 20px × 1.25） */
+          fontSize: "calc(25px * var(--u, 1))",
+        }}
       >
         倾听星辰的低语 · 窥探命运的轨迹
       </motion.p>
@@ -1808,7 +1827,7 @@ export default function TarotApp() {
         data-orb-slot
         aria-hidden="true"
         className="w-full shrink-0"
-        style={{ height: "calc(min(20.3vw, 18.2vh) + 20vh)" }}
+        style={{ height: "calc(324px * var(--u, 1))" }}
       />
 
       {/* ---------- 运势入口（2026-11-04 C 方向 · 2026-11-05 视觉重设计）----------
@@ -2119,7 +2138,7 @@ export default function TarotApp() {
               <div className="flex gap-2 justify-center">
                 <input
                   className="flex-1 max-w-xs px-3.5 py-2 rounded-xl bg-purple-950/40 border border-purple-500/30 text-purple-50 placeholder-purple-300/40 focus:outline-none focus:border-purple-400/60 text-sm"
-                  style={{ fontFamily: "'Ma Shan Zheng', serif" }}
+                style={{ fontFamily: "'Ma Shan Zheng', serif" }}
                   placeholder="继续问点什么…"
                   aria-label="追问占卜师"
                   value={followup}
@@ -2328,7 +2347,7 @@ export default function TarotApp() {
               <div className="flex gap-2">
                 <input
                   className="flex-1 px-5 py-3.5 rounded-2xl bg-purple-950/30 backdrop-blur-md border border-purple-500/30 text-purple-50 placeholder-purple-300/40 focus:outline-none focus:border-purple-400/70 transition-all"
-                  style={{ fontFamily: "'Ma Shan Zheng', serif" }}
+                style={{ fontFamily: "'Ma Shan Zheng', serif" }}
                   placeholder="还有困惑？继续追问占卜师…"
                   aria-label="继续追问"
                   value={followup}
@@ -2351,7 +2370,7 @@ export default function TarotApp() {
                   whileTap={{ scale: 0.95 }}
                   onClick={restart}
                   className="px-8 py-3 rounded-full border border-purple-500/40 text-purple-200 hover:bg-purple-900/40 transition-all tracking-[0.2em]"
-                  style={{ fontFamily: "'Ma Shan Zheng', serif" }}
+                style={{ fontFamily: "'Ma Shan Zheng', serif" }}
                 >
                   再问一次
                 </motion.button>
@@ -2378,7 +2397,7 @@ export default function TarotApp() {
                 <a
                   href="/dashboard"
                   className="px-8 py-3 rounded-full border border-sky-500/40 text-sky-200 hover:bg-sky-900/30 transition-all tracking-[0.2em] flex items-center"
-                  style={{ fontFamily: "'Ma Shan Zheng', serif" }}
+                style={{ fontFamily: "'Ma Shan Zheng', serif" }}
                 >
                   观测面板 ↗
                 </a>

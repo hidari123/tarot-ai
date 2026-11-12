@@ -49,26 +49,34 @@ const BALL_CX = 503;
 const BALL_CY = 595;
 const BALL_R = 93;
 
-/** 背景层容器宽度（vw） */
-const BG_W = 112;
+/**
+ * ⚠️⚠️ 设计基准（1200×900）
+ * ⚠️ 所有尺寸都以这个基准写死，再乘全局缩放系数 `--u`
+ * → 任何视口下构图比例完全一致（用户需求：「不论页面是大还是小 背景都能保持在同一个地方」）
+ */
+const DESIGN_W = 1200;
+const DESIGN_H = 900;
+
+/** 背景层容器宽度（设计基准 px） */
+const BG_W = 1344;
 
 /** 女孩部分的透明度（CSS opacity） */
 const GIRL_ALPHA = 0.22;
 
 /**
- * ⚠️ 球的垂直偏移（vh）
- * ⚠️⚠️ 目的：**让图里那颗球落在占位块（`[data-orb-slot]`）的中心**
- * ⚠️ 推导（1200×900 视口）：
- *   · 图渲染边长 S = min(112vw, 100vh) = 900
+ * ⚠️ 球的垂直偏移（**设计基准 px**，实际值 = 此值 × --u）
+ * ⚠️ 推导（1200×900 视口，--u = 1）：
+ *   · 图渲染边长 S = 900
  *   · 图里球的 y = 595/1024 × 900 = 523
  *   · 占位块中心 = 副标题下方约 324
- *   → 图要上移 523 − 324 = 199px = 22.1vh
- * ⚠️ ⚠️ 为什么用 vh 而不是 px：
- *   · 球的自然位置 ∝ S（视口相关）→ 用 vh 表达才能在不同视口下等比
- * ⚠️ ⚠️ 占位块的高度必须与球的直径**同源**（见 page.tsx）：
- *   → 两处都用 min(20.3vw, 18.2vh) 这个值
+ *   → 图要上移 523 − 324 = 199px
+ * ⚠️ ⚠️ 为什么改成 px（乘 --u）而不是 vh：
+ *   · 文字是固定 px → 图片也必须用 px 尺度
+ *   · 两者乘同一个 --u → 相对位置永远一致 ✅
  */
-const BALL_SHIFT_VH = -17.5;
+const BALL_SHIFT = -157;
+
+
 
 interface BallPos {
   /** 相对背景层容器的坐标 */
@@ -91,9 +99,25 @@ export default function WitchOrb() {
 
       const vw = window.innerWidth;
       const vh = window.innerHeight;
-      const containerW = (BG_W / 100) * vw;
-      const S = Math.min(containerW, vh);
+
+      /**
+       * ⚠️⚠️ 缩放系数 `--u`（由 ViewportScale 组件写入 documentElement）
+       * · 桌面：u = clamp(0.8, min(vw/1200, vh/900), 1.4)
+       * · 移动端：u = 1（CSS 媒体查询覆盖）
+       * ⚠️ 为什么不用 min(112vw, 100vh) 算 S：
+       *   · 那样 S 会随视口形状变化 → 球的相对位置漂移（用户反馈的问题）
+       *   → 统一用 u → 一切按设计基准等比缩放 ✅
+       */
+      const isMobile = window.matchMedia("(max-width: 768px)").matches;
+      const u = isMobile
+        ? 1
+        : Math.max(0.8, Math.min(Math.min(vw / DESIGN_W, vh / DESIGN_H), 1.4));
+
+      /** 图片渲染边长（设计基准 900 × u） */
+      const S = DESIGN_H * u;
+      /** 源图 → 视口的缩放比 */
       const scale = S / SRC;
+
 
       const imgRect = img.getBoundingClientRect();
       const bgRect = bg.getBoundingClientRect();
@@ -120,6 +144,8 @@ export default function WitchOrb() {
        */
       const bx = imgRect.left - bgRect.left + imgLeftInElem + BALL_CX * scale;
       const by = imgRect.top - bgRect.top + BALL_CY * scale;
+
+
 
       /**
        * mask：只保留球的区域（球以外透明）
@@ -201,7 +227,7 @@ export default function WitchOrb() {
        *   → absolute 在文档流里 → 跟着内容滚走 ✅
        */
       className="pointer-events-none absolute left-0 top-0 z-0 w-full overflow-hidden"
-      style={{ height: "160vh" }}
+      style={{ height: `calc(${DESIGN_H * 1.6}px * var(--u, 1))` }}
       aria-hidden="true"
     >
       {/* ① 底层：整张图 + 女孩半透明（球也淡） */}
@@ -230,10 +256,22 @@ export default function WitchOrb() {
            * ⚠️ 高度固定 100vh（不是 100%）：
            *   容器是 160vh，若图用 height:100% → S = min(112vw, 160vh) → 球会大一倍
            */
-          width: `${BG_W}vw`,
-          height: "100vh",
+          /**
+           * ⚠️⚠️ 所有尺寸乘全局缩放系数 `--u`
+           * · 1200×900 时 u = 1 → 与之前完全一致
+           * · 其他尺寸 → 整体等比缩放 → 构图比例不变 ✅
+           */
+          width: `calc(${BG_W}px * var(--u, 1))`,
+          height: `calc(${DESIGN_H}px * var(--u, 1))`,
           objectPosition: "center top",
-          transform: `translateX(-50%) translateY(${BALL_SHIFT_VH}vh)`,
+          /**
+           * ⚠️⚠️ 移动端人物**再往下**（用户要求）
+           * → 用 CSS 变量 `--orb-shift` 承载实际偏移
+           *   · 桌面端 = BALL_SHIFT（-157px）
+           *   · 移动端 = BALL_SHIFT_MOBILE（-60px，在 globals.css 的媒体查询里覆盖）
+           * → 变量单位是「基准 px」，实际值再乘 --u
+           */
+          transform: `translateX(-50%) translateY(calc(var(--orb-shift, ${BALL_SHIFT}px) * var(--u, 1)))`,
 
         }}
       />
@@ -249,10 +287,17 @@ export default function WitchOrb() {
           transition={{ duration: 2.2, ease: "easeOut" }}
           className="absolute left-1/2 top-0 max-w-none object-contain object-top"
           style={{
-            width: `${BG_W}vw`,
-            height: "100vh",
+            width: `calc(${BG_W}px * var(--u, 1))`,
+            height: `calc(${DESIGN_H}px * var(--u, 1))`,
             objectPosition: "center top",
-            transform: `translateX(-50%) translateY(${BALL_SHIFT_VH}vh)`,
+            /**
+           * ⚠️⚠️ 移动端人物**再往下**（用户要求）
+           * → 用 CSS 变量 `--orb-shift` 承载实际偏移
+           *   · 桌面端 = BALL_SHIFT（-157px）
+           *   · 移动端 = BALL_SHIFT_MOBILE（-60px，在 globals.css 的媒体查询里覆盖）
+           * → 变量单位是「基准 px」，实际值再乘 --u
+           */
+          transform: `translateX(-50%) translateY(calc(var(--orb-shift, ${BALL_SHIFT}px) * var(--u, 1)))`,
             maskImage: ball.mask,
             WebkitMaskImage: ball.mask,
             /**

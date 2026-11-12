@@ -22,6 +22,7 @@ import "@fontsource/noto-serif-sc/chinese-simplified-400.css";
 import "@fontsource/noto-serif-sc/chinese-simplified-600.css";
 import "./globals.css";
 import PwaRegister from "@/components/PwaRegister";
+import ViewportScale from "@/components/ViewportScale";
 import MotionProvider from "@/components/MotionProvider";
 
 export const metadata: Metadata = {
@@ -95,6 +96,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <MotionProvider>
           {children}
         </MotionProvider>
+        {/* ⚠️ 全局等比缩放系数 --u（所有尺寸乘它 → 构图比例一致） */}
+        <ViewportScale />
         <PwaRegister />
       </body>
     </html>
