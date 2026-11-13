@@ -34,7 +34,16 @@ console.log("=== P4-24 前端 SSE 取消通道 ===\n");
  * ⚠️⚠️ 2026-11-12 拆分：部分前端逻辑搬到了 src/features/divination/
  *    → "前端有没有 abort 通道"这类断言必须把两处都算上
  */
-const FEATURE_FILES = ["src/features/divination/useStreamRunner.ts","src/features/divination/useSseParser.ts","src/features/divination/useDeltaBuffer.ts","src/features/divination/useFlowEntries.ts","src/features/divination/useDivinationState.ts","src/features/divination/types.ts"];
+const FEATURE_FILES = [
+  "src/features/divination/useStreamRunner.ts",
+  "src/features/divination/useSseParser.ts",
+  "src/features/divination/useDeltaBuffer.ts",
+  "src/features/divination/useFlowEntries.ts",
+  "src/features/divination/useDivinationState.ts",
+  "src/features/divination/types.ts",
+  "src/features/divination/useCardActions.ts",
+  "src/features/divination/useFollowup.ts"
+];
 const featureCode = FEATURE_FILES.map((f) => {
   try { return readFileSync(join(root, ...f.split("/")), "utf8"); } catch { return ""; }
 }).join("\n");

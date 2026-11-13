@@ -65,6 +65,8 @@ import { useDivinationState } from "@/features/divination/useDivinationState";
 import { useFlowEntries } from "@/features/divination/useFlowEntries";
 import { useDeltaBuffer } from "@/features/divination/useDeltaBuffer";
 import { useStreamRunner } from "@/features/divination/useStreamRunner";
+import { useCardActions } from "@/features/divination/useCardActions";
+import { useFollowup } from "@/features/divination/useFollowup";
 import {
   PHASE_ORDER,
   PHASE_TEXT,
@@ -472,8 +474,6 @@ export default function TarotApp() {
   /** 放大预览的牌（null = 未打开） */
   /** 用户插话（方案 C） */
   /* ---- 对话流（统一视图）---- */
-  /** 翻牌请求 pending 标记（防连点：手快连点会发多个 /api/answer） */
-  const flipPendingRef = useRef(false);
   /**
    * sessionId 的 **ref 镜像**（P0-③）
    *
@@ -607,144 +607,7 @@ export default function TarotApp() {
     }
   }, [sessionId, updateEntry]);
 
-  /**
-   * 用户亲手翻牌：点牌阵里的"当前该翻的"牌。
-   *
-   * 协议：POST /api/answer { answer: "翻牌" } → 后端翻牌闸门 resolve →
-   * 后端继续 yield card_reveal（含牌面）→ 前端把这张牌置为已翻开。
-   *
-   * ⚠️ 牌面**不是**由这个请求返回的 —— 必须等 card_reveal 事件，
-   *    这样"用户没点就看不到牌面"才是真的（防剧透）。
-   *
-   * ⚠️ 409 处理：后端闸门尚未就绪时（极小概率的时序竞争）会返回
-   *    409「当前没有等待回答的问题」。此时**静默重试一次**（300ms 后），
-   *    不弹错误 —— 用户点牌的动作不该因为一次抢跑就失败，更不该
-   *    弹出"对话中断"的错误横幅（实测报告的现象）。
-   */
-  const flipCard = useCallback(async () => {
-    setAsk(null);
-    // ⚠️ 翻牌音效：木质"嗒"—— 这是仪式里最有仪式感的一下，值得给声音
-    void playSfx("flip");
-    if (!sessionId) return;
-    // 本地 pending：防连点（用户手快连点会发多个请求）
-    if (flipPendingRef.current) return;
-    flipPendingRef.current = true;
 
-    /**
-     * ⚠️⚠️ 2026-11-04 新增：**本地乐观反馈**
-     *
-     * ⚠️ 用户实测报告："牌出现了，但有时候点的无效"。
-     *   根因：点击 → POST → 等后端 200 → 等 SSE 的 card_reveal 事件到达
-     *        → 牌面才变化。**网络慢时看起来就是"点了没反应"**。
-     *   而且前端只把 `current: true` 的牌当可点，
-     *   card_flip_ready 到达前的牌**完全点不动**（用户以为是坏的）。
-     *
-     *   修法：点击**立刻**把该牌置为 `flipping`（本地状态）→
-     *        播 3D 翻转动画 + "翻开中"遮罩 → 用户立刻有反馈。
-     *   ⚠️ 落定仍由后端事件（card_reveal）负责 —— 乐观更新只是"提前回应"，
-     *      不改变数据来源。如果后端最终失败，flipping 会被清掉。
-     */
-    setSpread((prev) => {
-      const idx = prev.findIndex((c) => c.current);
-      if (idx < 0) return prev;
-      return prev.map((c, i) => (i === idx ? { ...c, flipping: true } : c));
-    });
-
-    /**
-     * ⚠️ 2026-11-04：post 现在**同时返回状态码与错误体**
-     *   原因：失败分支需要读后端的错误消息，而 body 一旦不被消费就取不到了。
-     *   ⚠️ 之前那个分支是"再 fetch 一次拿错误"—— 那是**重复请求**（真 bug，已删）。
-     */
-    const post = async (): Promise<{ status: number; err: { error?: string } }> => {
-      try {
-        const res = await fetch("/api/answer", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId, answer: "翻牌" }),
-        });
-        let err: { error?: string } = {};
-        if (!res.ok) err = await res.json().catch(() => ({}));
-        return { status: res.status, err };
-      } catch {
-        return { status: 0, err: {} };
-      }
-    };
-    try {
-      let { status, err } = await post();
-      if (status === 409) {
-        // ⚠️ 闸门未就绪（后端还在准备这张牌）→ 短暂等待后重试一次
-        //   这是防御性兜底：正常不会走到这里（后端是"先建闸门、再发 ready"）。
-        await new Promise((r) => setTimeout(r, 300));
-        ({ status, err } = await post());
-      }
-      if (status === 409 || status === 410) {
-        /**
-         * ⚠️ 仍然失败（2026-11-04 改）
-         * · 409 = 闸门未就绪 → **撤销乐观更新**（牌回到待命态），
-         *   并给一个**可见**的提示（之前是静默失败 → 用户以为牌坏了）。
-         * · 410 = 会话不可用 → 清本地 + **静默收起追问入口**
-         *   ⚠️ 之前弹"这场占卜已过期（超过 30 分钟），请重新开始"——
-         *     但正文还在 DB 里，弹这个会让用户以为解读丢了。
-         */
-        setSpread((prev) => prev.map((c) => (c.flipping ? { ...c, flipping: false } : c)));
-        if (status === 410) {
-          try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
-          setSessionId("");
-          sessionIdRef.current = "";
-          setCanFollowup(false);
-          setError("");
-        } else {
-          // ⚠️ 409：可见提示（不是错误横幅，是轻提示）
-          setHint("占卜师还在准备这张牌…稍等一下再点");
-        }
-      } else if (status !== 200) {
-        // ⚠️⚠️ 2026-11-04 修一个真 bug：这里**又发了一次 POST**（重复请求）。
-        //   原来的代码在失败分支里重新 fetch 同一个 /api/answer ——
-        //   结果是"一次点击可能打两次后端"（第二次必然 409/422），
-        //   而取到的 err.error 其实来自那次多余的请求。
-        //   正确做法：用 post() 已经带回来的错误体，不重发。
-        setSpread((prev) => prev.map((c) => (c.flipping ? { ...c, flipping: false } : c)));
-        setError(err.error || "翻牌失败，请重试");
-      }
-    } catch {
-      setSpread((prev) => prev.map((c) => (c.flipping ? { ...c, flipping: false } : c)));
-    } finally {
-      flipPendingRef.current = false;
-    }
-  }, [sessionId]);
-
-  /**
-   * 放大预览已翻开的牌（只是看，不翻回去）。
-   * ⚠️ 牌名/牌面只在此刻可见 —— 未翻开的牌连名字都不给（防剧透）。
-   */
-  const openCardPreview = useCallback((index: number) => {
-    setSpread((prev) => {
-      const c = prev[index];
-      if (!c || !c.flipped) return prev;
-      // 从对话流的牌面条目取牌意（牌阵面板只存了基础信息）
-      setEntries((entriesNow) => {
-        const cardEntry = [...entriesNow].reverse().find((e) => e.kind === "card" && e.card?.cardIndex === index);
-        setPreviewCard({
-          nameZh: c.nameZh,
-          image: c.image,
-          reversed: c.reversed,
-          pos: c.pos,
-          meaning: cardEntry?.card?.meaning,
-          done: c.done,
-        });
-        return entriesNow;
-      });
-      return prev;
-    });
-  }, []);
-
-  /** 关闭放大预览 */
-  const closePreview = useCallback(() => setPreviewCard(null), []);
-
-  /** 展开/收起条目 */
-  const toggleEntry = useCallback((entryId: string) => {
-    setEntries((prev) => prev.map((e) => (e.id === entryId ? { ...e, collapsed: !e.collapsed } : e)));
-  }, []);
 
   /* 拉取人格列表 + 恢复上次会话（刷新后 sessionId 从 localStorage 找回，
    * "追问"仍可用——十几分钟的仪式流程不因刷新作废） */
@@ -959,122 +822,54 @@ export default function TarotApp() {
     }
   }, [sessionId]);
 
-  /* 选牌确认（扇面选完 / 随机代抽）——流内 ask 条目同步转为用户气泡 */
-  const confirmFanSelection = useCallback((payload: string) => {
-    // 选牌详情（"id,id,id|dwell,ms"）转为可读描述
-    const [idsStr] = payload.split("|");
-    const count = idsStr.split(",").filter(Boolean).length;
-    const label = payload.trim() === "random" || count === 0
-      ? "请星辰替我选（随机 3 张）"
-      : `我亲手选了 ${count} 张牌`;
-    // 把流内未 settle 的选牌 ask 条目固定为用户气泡
-    setEntries((prev) => {
-      const idx = [...prev].reverse().findIndex((e) => e.kind === "ask" && !e.settled && e.ask?.cardSelection);
-      if (idx === -1) return prev;
-      const realIdx = prev.length - 1 - idx;
-      return prev.map((e, i) => (i === realIdx ? { ...e, settled: true, kind: "user", text: label, ask: undefined } : e));
+  /**
+   * ⚠️⚠️ 牌的操作：翻牌 / 预览 / 展开 / 选牌确认（2026-11-12 → useCardActions）
+   * ⚠️ 依赖只传用到的 setter → useCallback 依赖干净、引用真的稳定 ✅
+   */
+  const { flipCard, openCardPreview, closePreview, toggleEntry, confirmFanSelection } =
+    useCardActions({
+      setSpread,
+      setEntries,
+      setPreviewCard,
+      setSessionId,
+      setCanFollowup,
+      setError,
+      setAsk,
+      setHint,
+      sessionIdRef,
+      sessionId,
+      answerAsk,
     });
-    answerAsk(payload);
-  }, [answerAsk]);
 
-  /* 方案 C：用户插话（补充/修正信息） */
-  const sendInterjection = useCallback(async () => {
-    const text = interject.trim();
-    if (!text || !sessionId) return;
-    setInterject("");
-    // 插话立刻显示在对话流里（用户气泡）
-    pushEntry({ kind: "user", text });
-    // 插话作为独立通道：追加进会话历史，不唤醒当前等待
-    setReading((prev) => prev + `\n\n【补充】${text}\n`);
-    try {
-      await fetch("/api/interject", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, text }),
-      });
-    } catch {
-      setError("插话发送失败");
-    }
-  }, [interject, sessionId, pushEntry]);
+  /**
+   * ⚠️⚠️ 追问 / 插话 / 语音（2026-11-12 → useFollowup）
+   * ⚠️ 三条追加输入通道语义一致（共享连点防护与 410 处理）→ 放一起 ✅
+   */
+  const { sendInterjection, sendFollowup, startVoice } = useFollowup({
+    sessionId,
+    sessionIdRef,
+    streaming,
+    followup,
+    setFollowup,
+    interject,
+    setInterject,
+    pushEntry,
+    setReading,
+    setStreaming,
+    setStreamStart,
+    setError,
+    setSessionId,
+    setCanFollowup,
+    setQuestion,
+    setListening,
+    deltaTargetRef,
+    fetchStream,
+    consumeStream,
+  });
 
-  /* 追问 */
-  const sendFollowup = useCallback(async () => {
-    // ⚠️ 连点防护：流式进行中再追问会并发两个 SSE 流
-    if (streaming) return;
-    const f = followup.trim();
-    if (!f || !sessionId) return;
-    setFollowup("");
-    // 追问显示为用户气泡；正文以新气泡流式呈现（清掉旧的 delta 目标）
-    pushEntry({ kind: "user", text: `【追问】${f}` });
-    deltaTargetRef.current = null;
-    setReading((prev) => prev + `\n\n【追问】${f}\n`);
-    setStreaming(true);
-    setStreamStart(Date.now());
-    setError("");
-    try {
-        // ⚠️ 用 fetchStream（内部处理 AbortController + 取消上一个流）
-        const res = await fetchStream("/api/interpret", { sessionId, followup: f });
-      if (!res.ok && res.status === 410) {
-        /**
-         * ⚠️ 会话不可用（2026-11-04 改文案）
-         *
-         * ⚠️ 之前一律写"这场占卜已过期（超过 30 分钟），请重新开始"——
-         *   但 410 的真实原因有两个，**文案必须区分**，否则用户会以为内容丢了：
-         *     ① 会话已完成（内存里被 cleanExpired 逐出，但 DB 里有完整解读）
-         *     ② 会话真的超时/服务重启
-         *   两种情况下正文都还在 DB 里，用户刷新仍能看到。
-         */
-        try { localStorage.removeItem("tarot:sessionId"); } catch { /* ignore */ }
-        setSessionId("");
-        sessionIdRef.current = "";
-        setCanFollowup(false);
-        // ⚠️ 不弹错误横幅 —— 弹了会让用户以为"解读没了"。
-        //    改为静默收起追问入口（"可追问"面板依赖 sessionId → 会自动消失）。
-        setError("");
-        return;
-      }
-      await consumeStream(res);
-    } catch (e) {
-      // ⚠️ P0-③：主动取消不是错误
-      if (e instanceof DOMException && e.name === "AbortError") {
-        setStreaming(false);
-        return;
-      }
-      setError(e instanceof Error ? e.message : "追问失败");
-    } finally {
-      setStreaming(false);
-    }
-  }, [followup, sessionId, consumeStream, pushEntry, streaming, abortStream, fetchStream]);
 
-  /* 语音输入 */
-  const startVoice = useCallback(() => {
-    type SpeechRecognitionLike = {
-      lang: string;
-      interimResults: boolean;
-      onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
-      onerror: (() => void) | null;
-      onend: (() => void) | null;
-      start: () => void;
-    };
-    const w = window as unknown as Record<string, (new () => SpeechRecognitionLike) | undefined>;
-    const SRC = w.SpeechRecognition ?? w.webkitSpeechRecognition;
-    if (!SRC) {
-      setError("当前浏览器不支持语音输入");
-      return;
-    }
-    const rec = new SRC();
-    rec.lang = "zh-CN";
-    rec.interimResults = false;
-    rec.onresult = (e) => {
-      const text = Array.from(e.results).map((r) => r[0].transcript).join("");
-      setQuestion((prev) => (prev ? prev + text : text));
-      setListening(false);
-    };
-    rec.onerror = () => setListening(false);
-    rec.onend = () => setListening(false);
-    rec.start();
-    setListening(true);
-  }, []);
+
+
 
   const restart = useCallback(() => {
     // ⚠️ P0-③：先中断在途的 SSE 请求

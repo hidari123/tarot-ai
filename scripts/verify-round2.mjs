@@ -187,7 +187,7 @@ console.log("\n【④ P2 体验与工程债】（a11y / 分割 / 字体 / 动效
  *    → "前端有没有 X"这类断言必须把两处都算上
  *    → 直接扩展 page 的值 → 所有 .test(page) 自动覆盖新位置 ✅
  */
-const FEATURE_FILES = ["src/features/divination/useStreamRunner.ts","src/features/divination/useSseParser.ts","src/features/divination/useDeltaBuffer.ts","src/features/divination/useFlowEntries.ts","src/features/divination/useDivinationState.ts","src/features/divination/types.ts"];
+const FEATURE_FILES = ["src/features/divination/useStreamRunner.ts","src/features/divination/useSseParser.ts","src/features/divination/useDeltaBuffer.ts","src/features/divination/useFlowEntries.ts","src/features/divination/useDivinationState.ts","src/features/divination/types.ts","src/features/divination/useCardActions.ts","src/features/divination/useFollowup.ts"];
 const featureCode = FEATURE_FILES.map((f) => {
   try { return readFileSync(f, "utf-8"); } catch { return ""; }
 }).join("\n");
@@ -284,7 +284,12 @@ console.log("\n【⑤ 回归防护】（既有契约没被破坏）");
   const gate = existsSync("src/components/AmbienceGate.tsx");
   check("AmbienceGate 仍已删除", !gate);
 
-  const page = readFileSync("src/app/page.tsx", "utf-8");
+  // ⚠️ 2026-11-12 拆分：翻牌音效搬到了 useCardActions.ts
+  //    → "前端有没有音效"必须把 page.tsx 和 features/divination 一起看
+  const page = readFileSync("src/app/page.tsx", "utf-8") +
+    ["src/features/divination/useCardActions.ts","src/features/divination/useFollowup.ts","src/features/divination/useStreamRunner.ts"]
+      .map((f) => { try { return readFileSync(f, "utf-8"); } catch { return ""; } })
+      .join("\n");
   check("占卜开始仍解锁音频", /void unlockAmbience\(\)/.test(page));
   check("翻牌/答问音效仍在", /playSfx\("flip"\)/.test(page) && /playSfx\("answer"\)/.test(page));
 
