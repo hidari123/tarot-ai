@@ -39,7 +39,16 @@ const mach = read("src/lib/agent/ritual-machine.ts");
 const sess = read("src/lib/agent/session.ts");
 const db = read("src/lib/db.ts");
 const auth = read("src/lib/api-auth.ts");
-const page = read("src/app/page.tsx");
+
+/**
+ * ⚠️⚠️ 2026-11-12 拆分：部分前端逻辑搬到了 src/features/divination/
+ *    → "前端有没有 X"这类断言必须把两处都算上
+ */
+const FEATURE_FILES = ["src/features/divination/useStreamRunner.ts","src/features/divination/useSseParser.ts","src/features/divination/useDeltaBuffer.ts","src/features/divination/useFlowEntries.ts","src/features/divination/useDivinationState.ts","src/features/divination/types.ts"];
+const featureCode = FEATURE_FILES.map((f) => {
+  try { return read(f); } catch { return ""; }
+}).join("\n");
+const page = read("src/app/page.tsx") + featureCode;
 const rag = read("src/lib/agent/tools/rag.ts");
 const fb = read("src/lib/agent/fallback.ts");
 const vec = read("src/lib/vector-engine.ts");

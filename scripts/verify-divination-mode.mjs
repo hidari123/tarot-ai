@@ -232,7 +232,16 @@ console.log("\n【③b 快速模式的轮次优化】（实测：曾撞 max_roun
 /* ────────────── ④ 前后端接线 ────────────── */
 console.log("\n【④ 前后端接线】");
 {
-  const page = readFileSync("src/app/page.tsx", "utf-8");
+  /**
+ * ⚠️⚠️ 2026-11-12 拆分：部分前端逻辑搬到了 src/features/divination/
+ *    → "前端有没有 X"这类断言必须把两处都算上
+ *    → 直接扩展 page 的值 → 所有 .test(page) 自动覆盖新位置 ✅
+ */
+const FEATURE_FILES = ["src/features/divination/useStreamRunner.ts","src/features/divination/useSseParser.ts","src/features/divination/useDeltaBuffer.ts","src/features/divination/useFlowEntries.ts","src/features/divination/useDivinationState.ts","src/features/divination/types.ts"];
+const featureCode = FEATURE_FILES.map((f) => {
+  try { return readFileSync(f, "utf-8"); } catch { return ""; }
+}).join("\n");
+const page = readFileSync("src/app/page.tsx", "utf-8") + featureCode;
   const pageCode = strip(page);
   // ⚠️ 2026-11-12 拆分：状态搬进了 useDivinationState → 断言要同时看两处
   const stateHookCode = strip(
@@ -246,7 +255,14 @@ console.log("\n【④ 前后端接线】");
 
   check("页面有 mode state", /useState<DivinationMode>/.test(frontCode));
   check("页面默认 quick", /useState<DivinationMode>\(DEFAULT_MODE\)/.test(frontCode));
-  check("前端把 mode 发给后端", /mode\s*\}/.test(pageCode) && /JSON\.stringify\(\{ question: q[^}]*mode/.test(pageCode));
+  // ⚠️ 2026-11-12 拆分：请求体改由 fetchStream 发送（不再是 JSON.stringify 字面量）
+//    → 断言改为"mode 与 question 出现在同一个请求体里"（意图不变）
+check(
+  "前端把 mode 发给后端",
+  /mode\s*\}/.test(pageCode) &&
+    (/JSON\.stringify\(\{ question: q[^}]*mode/.test(pageCode) ||
+      /fetchStream\([\s\S]{0,200}?question: q[\s\S]{0,200}?mode/.test(pageCode))
+);
   check("前端有模式切换 UI", /MODE_PROFILES/.test(pageCode) && /aria-pressed/.test(pageCode));
 
   check("API 接受 mode 参数", /mode\?: string/.test(routeCode));

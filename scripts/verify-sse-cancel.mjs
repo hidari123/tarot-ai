@@ -29,7 +29,16 @@ console.log("=== P4-24 前端 SSE 取消通道 ===\n");
 
 /* ---- ① 前端有没有 AbortController ---- */
 {
-  const page = readFileSync(join(root, "src", "app", "page.tsx"), "utf8");
+  
+/**
+ * ⚠️⚠️ 2026-11-12 拆分：部分前端逻辑搬到了 src/features/divination/
+ *    → "前端有没有 abort 通道"这类断言必须把两处都算上
+ */
+const FEATURE_FILES = ["src/features/divination/useStreamRunner.ts","src/features/divination/useSseParser.ts","src/features/divination/useDeltaBuffer.ts","src/features/divination/useFlowEntries.ts","src/features/divination/useDivinationState.ts","src/features/divination/types.ts"];
+const featureCode = FEATURE_FILES.map((f) => {
+  try { return readFileSync(join(root, ...f.split("/")), "utf8"); } catch { return ""; }
+}).join("\n");
+const page = readFileSync(join(root, "src", "app", "page.tsx"), "utf8") + featureCode;
   const hasCtrl = /new AbortController\(\)/.test(page);
   // ⚠️ 检测**语义**而非字面量：
   //    signal 的值可能是 ctrl.signal / controller.signal / abortRef.current.signal
@@ -65,13 +74,13 @@ console.log("=== P4-24 前端 SSE 取消通道 ===\n");
 }
 
 function page_has_ctrl() {
-  const page = readFileSync(join(root, "src", "app", "page.tsx"), "utf8");
+  const page = readFileSync(join(root, "src", "app", "page.tsx"), "utf8") + featureCode;
   return /AbortController/.test(page);
 }
 
 /* ---- ④ restart 是否中断旧流 ---- */
 {
-  const page = readFileSync(join(root, "src", "app", "page.tsx"), "utf8");
+  const page = readFileSync(join(root, "src", "app", "page.tsx"), "utf8") + featureCode;
   // 找 restart 函数体
   const m = page.match(/const restart = useCallback\(([\s\S]*?)\n  \}, \[/);
   const body = m ? m[1] : "";

@@ -182,7 +182,16 @@ console.log("\n【③ P1 成本与正确性】");
 /* ────────────── ④ P2：体验与工程债 ────────────── */
 console.log("\n【④ P2 体验与工程债】（a11y / 分割 / 字体 / 动效 / 定时器）");
 {
-  const page = readFileSync("src/app/page.tsx", "utf-8");
+  /**
+ * ⚠️⚠️ 2026-11-12 拆分：部分前端逻辑搬到了 src/features/divination/
+ *    → "前端有没有 X"这类断言必须把两处都算上
+ *    → 直接扩展 page 的值 → 所有 .test(page) 自动覆盖新位置 ✅
+ */
+const FEATURE_FILES = ["src/features/divination/useStreamRunner.ts","src/features/divination/useSseParser.ts","src/features/divination/useDeltaBuffer.ts","src/features/divination/useFlowEntries.ts","src/features/divination/useDivinationState.ts","src/features/divination/types.ts"];
+const featureCode = FEATURE_FILES.map((f) => {
+  try { return readFileSync(f, "utf-8"); } catch { return ""; }
+}).join("\n");
+const page = readFileSync("src/app/page.tsx", "utf-8") + featureCode;
   const pageCode = strip(page);
 
   // ⑯ 代码分割

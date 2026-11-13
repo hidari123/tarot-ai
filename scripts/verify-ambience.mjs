@@ -303,7 +303,16 @@ console.log("\n【③c 消除空鸣】（用户反馈「还是很长很长的空
 /* ────────────── ④ 页面接线 ────────────── */
 console.log("\n【④ 页面接线】");
 {
-  const page = readFileSync("src/app/page.tsx", "utf-8");
+  /**
+ * ⚠️⚠️ 2026-11-12 拆分：部分前端逻辑搬到了 src/features/divination/
+ *    → "前端有没有 X"这类断言必须把两处都算上
+ *    → 直接扩展 page 的值 → 所有 .test(page) 自动覆盖新位置 ✅
+ */
+const FEATURE_FILES = ["src/features/divination/useStreamRunner.ts","src/features/divination/useSseParser.ts","src/features/divination/useDeltaBuffer.ts","src/features/divination/useFlowEntries.ts","src/features/divination/useDivinationState.ts","src/features/divination/types.ts"];
+const featureCode = FEATURE_FILES.map((f) => {
+  try { return readFileSync(f, "utf-8"); } catch { return ""; }
+}).join("\n");
+const page = readFileSync("src/app/page.tsx", "utf-8") + featureCode;
   const toggle = readFileSync("src/components/AmbienceToggle.tsx", "utf-8");
 
   check("页面 import 了音频模块", /from "@\/lib\/audio\/ambient"/.test(page));

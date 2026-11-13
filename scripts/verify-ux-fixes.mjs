@@ -23,7 +23,16 @@ const check = (label, ok, detail = "") => {
 
 console.log("=== UX 修复验证（2026-11-04）===\n");
 
-const page = readFileSync("src/app/page.tsx", "utf-8");
+/**
+ * ⚠️⚠️ 2026-11-12 拆分：部分前端逻辑搬到了 src/features/divination/
+ *    → "前端有没有 X"这类断言必须把两处都算上
+ *    → 直接扩展 page 的值 → 所有 .test(page) 自动覆盖新位置 ✅
+ */
+const FEATURE_FILES = ["src/features/divination/useStreamRunner.ts","src/features/divination/useSseParser.ts","src/features/divination/useDeltaBuffer.ts","src/features/divination/useFlowEntries.ts","src/features/divination/useDivinationState.ts","src/features/divination/types.ts"];
+const featureCode = FEATURE_FILES.map((f) => {
+  try { return readFileSync(f, "utf-8"); } catch { return ""; }
+}).join("\n");
+const page = readFileSync("src/app/page.tsx", "utf-8") + featureCode;
 // ⚠️ 2026-11-12 拆分：状态搬进了 useDivinationState → 断言要同时看两处
 const stateHook = readFileSync(
   "src/features/divination/useDivinationState.ts",
