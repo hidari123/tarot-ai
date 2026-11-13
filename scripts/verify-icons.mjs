@@ -16,6 +16,25 @@
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 
+/**
+ * ⚠️⚠️ 2026-11-12 拆分：部分前端 UI 搬到了 src/features/divination/components/
+ *    → "主页用了 X"这类断言必须把两处都算上
+ *    → 定义必须在所有使用点之前（TDZ）✅
+ */
+const FEATURE_FILES = [
+  "src/features/divination/components/HeroSection.tsx",
+  "src/features/divination/components/EntryCards.tsx",
+  "src/features/divination/components/DivinationInput.tsx",
+  "src/features/divination/components/StageProgress.tsx",
+  "src/features/divination/useStreamRunner.ts",
+  "src/features/divination/useCardActions.ts",
+  "src/features/divination/useFollowup.ts",
+];
+const featureCode = FEATURE_FILES.map((f) => {
+  try { return readFileSync(f, "utf-8"); } catch { return ""; }
+}).join("\n");
+
+
 let pass = 0, fail = 0;
 const check = (label, ok, detail = "") => {
   console.log(`  ${ok ? "✓" : "✗"} ${label}${detail ? ` — ${detail}` : ""}`);
@@ -109,7 +128,7 @@ console.log("\n【② 主界面 emoji 清零】");
 /* ────────────── ③ 关键界面确实用了图标 ────────────── */
 console.log("\n【③ 关键界面已接入图标】");
 {
-  const page = readFileSync("src/app/page.tsx", "utf-8");
+  const page = readFileSync("src/app/page.tsx", "utf-8") + featureCode;
   const flow = readFileSync("src/components/DialogueFlow.tsx", "utf-8");
   const dash = readFileSync("src/app/dashboard/page.tsx", "utf-8");
   const review = readFileSync("src/components/ReviewCard.tsx", "utf-8");
@@ -117,6 +136,7 @@ console.log("\n【③ 关键界面已接入图标】");
   const trace = readFileSync("src/components/AgentTrace.tsx", "utf-8");
 
   check("主页 import 了图标组件", /from "@\/components\/icons"/.test(page));
+
   check("主页的阶段图标用了 Icon", /<Icon name=\{PHASE_TEXT/.test(page));
   check("对话流用了 Icon", /<Icon name=/.test(flow));
   check("观测面板用了 Icon", /<Icon name=/.test(dash));
@@ -138,7 +158,7 @@ console.log("\n【④ 翻牌面板展开/收起逻辑】");
   check("FlowSpreadCard 有 question 字段", /question\?: string/.test(flow));
   check("FlowSpreadCard 有 answer 字段", /answer\?: string/.test(flow));
 
-  const page = readFileSync("src/app/page.tsx", "utf-8");
+  const page = readFileSync("src/app/page.tsx", "utf-8") + featureCode;
   check("提问时同步 question 到牌阵条目", /question: q/.test(page));
   check("回答时同步 answer 回牌阵条目", /c\.question && !c\.answer \? \{ \.\.\.c, answer \}/.test(page));
 }

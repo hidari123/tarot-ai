@@ -316,7 +316,11 @@ const FEATURE_FILES = [
   "src/features/divination/useDivinationState.ts",
   "src/features/divination/types.ts",
   "src/features/divination/useCardActions.ts",
-  "src/features/divination/useFollowup.ts"
+  "src/features/divination/useFollowup.ts",
+  "src/features/divination/components/HeroSection.tsx",
+  "src/features/divination/components/EntryCards.tsx",
+  "src/features/divination/components/DivinationInput.tsx",
+  "src/features/divination/components/StageProgress.tsx"
 ];
 const featureCode = FEATURE_FILES.map((f) => {
   try { return readFileSync(f, "utf-8"); } catch { return ""; }

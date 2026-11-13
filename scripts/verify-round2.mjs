@@ -187,7 +187,20 @@ console.log("\n【④ P2 体验与工程债】（a11y / 分割 / 字体 / 动效
  *    → "前端有没有 X"这类断言必须把两处都算上
  *    → 直接扩展 page 的值 → 所有 .test(page) 自动覆盖新位置 ✅
  */
-const FEATURE_FILES = ["src/features/divination/useStreamRunner.ts","src/features/divination/useSseParser.ts","src/features/divination/useDeltaBuffer.ts","src/features/divination/useFlowEntries.ts","src/features/divination/useDivinationState.ts","src/features/divination/types.ts","src/features/divination/useCardActions.ts","src/features/divination/useFollowup.ts"];
+const FEATURE_FILES = [
+  "src/features/divination/useStreamRunner.ts",
+  "src/features/divination/useSseParser.ts",
+  "src/features/divination/useDeltaBuffer.ts",
+  "src/features/divination/useFlowEntries.ts",
+  "src/features/divination/useDivinationState.ts",
+  "src/features/divination/types.ts",
+  "src/features/divination/useCardActions.ts",
+  "src/features/divination/useFollowup.ts",
+  "src/features/divination/components/HeroSection.tsx",
+  "src/features/divination/components/EntryCards.tsx",
+  "src/features/divination/components/DivinationInput.tsx",
+  "src/features/divination/components/StageProgress.tsx"
+];
 const featureCode = FEATURE_FILES.map((f) => {
   try { return readFileSync(f, "utf-8"); } catch { return ""; }
 }).join("\n");

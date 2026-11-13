@@ -1,8 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import dynamic from "next/dynamic";
-import Link from "next/link";
 import { motion } from "framer-motion";
 import StardustCursor from "@/components/StardustCursor";
 /**
@@ -12,17 +11,14 @@ import StardustCursor from "@/components/StardustCursor";
  */
 import CelestialBackdrop from "@/components/CelestialBackdrop";
 import WitchOrb from "@/components/WitchOrb";
-import PersonaOrb from "@/components/PersonaOrb";
 import AgentTrace from "@/components/AgentTrace";
 import KnowledgePanel from "@/components/KnowledgePanel";
 import CitedReading from "@/components/CitedReading";
-import CardSpread from "@/components/CardSpread";
 import CardPreviewModal from "@/components/CardPreviewModal";
 import DialogueFlow from "@/components/DialogueFlow";
 import CardFan from "@/components/CardFan";
 import ReviewCard from "@/components/ReviewCard";
 import AmbienceToggle, { useAmbiencePhase } from "@/components/AmbienceToggle";
-import { MODE_PROFILES, type DivinationMode } from "@/lib/agent/divination-mode";
 import ClosingPanel from "@/components/ClosingPanel";
 import Icon from "@/components/icons";
 
@@ -67,135 +63,17 @@ import { useDeltaBuffer } from "@/features/divination/useDeltaBuffer";
 import { useStreamRunner } from "@/features/divination/useStreamRunner";
 import { useCardActions } from "@/features/divination/useCardActions";
 import { useFollowup } from "@/features/divination/useFollowup";
+import HeroSection from "@/features/divination/components/HeroSection";
+import EntryCards from "@/features/divination/components/EntryCards";
+import DivinationInput from "@/features/divination/components/DivinationInput";
+import StageProgress from "@/features/divination/components/StageProgress";
 import {
-  PHASE_ORDER,
-  PHASE_TEXT,
   type FlowEntry,
-  type Phase,
 } from "@/features/divination/types";
 
 
 /* ---------------- 星空 & 魔法阵 ---------------- */
 
-/**
- * ⚠️ 2026-11-05 视觉重设计：原来的 StarField 与 MagicCircle 已被替换。
- *   · StarField  → CelestialBackdrop（含星云/噪点/景深/暗角）
- *   · MagicCircle → AstralCircle（真 SVG：刻度/八芒星/星座环/元素符号）
- */
-
-/* ---------------- Agent 状态条 ---------------- */
-
-function AgentStatusBar({ phase }: { phase: Phase | null }) {
-  const order = useMemo(() => {
-    if (!phase) return PHASE_ORDER;
-    // wait_user / error 不在 PHASE_ORDER 里（是"横切状态"而非流程步骤）：
-    // 显示为在当前进度基础上叠加高亮，而不是把状态条塌缩成一项
-    const base = PHASE_ORDER.includes(phase as Phase) ? phase : null;
-    if (!base) {
-      // 横切状态：展示到 interpret 为止（等待/出错发生在解读流程中段）
-      return PHASE_ORDER.slice(0, 4);
-    }
-    const idx = PHASE_ORDER.indexOf(base);
-    return PHASE_ORDER.slice(0, Math.max(idx + 1, 1));
-  }, [phase]);
-  const curIdx = phase && PHASE_ORDER.includes(phase as Phase) ? PHASE_ORDER.indexOf(phase as Phase) : -1;
-
-  return (
-    /**
-     * ⚠️ 2026-11-05 视觉重设计：从「药丸步骤条」改成「符文路径」。
-     *
-     * ⚠️ 为什么改：
-     *   原来是一排圆角药丸 + "→" 箭头 —— 那是一个 **loading 步骤条**
-     *   （像 CI 进度条），完全没有"仪轨"的感觉。
-     *   → 改成：符文节点 + 发光连线（连续的光带 = 一条路）。
-     *   节点是符文（每个阶段一个符号），当前节点有呼吸光。
-     */
-    <div className="flex items-center gap-0 flex-wrap justify-center">
-      {order.map((p, i) => {
-        const active = i === curIdx;
-        const past = i < curIdx;
-        return (
-          <div key={p} className="flex items-center">
-            {i > 0 && (
-              /* 连线：已走过的是亮色光带，未走的是暗线 */
-              <span
-                className="w-5 sm:w-7 h-px mx-0.5 transition-colors duration-500"
-                style={{
-                  background: past
-                    ? "linear-gradient(90deg, rgba(212,175,55,0.6), rgba(168,85,247,0.5))"
-                    : "rgba(120,113,150,0.22)",
-                  boxShadow: past ? "0 0 6px rgba(168,85,247,0.4)" : undefined,
-                }}
-              />
-            )}
-            {/* 节点：符文 + 标题 */}
-            <div
-              className="flex items-center gap-1.5 px-1.5 transition-all duration-500"
-              style={{ opacity: active ? 1 : past ? 0.82 : 0.42 }}
-            >
-              <span
-                className={`w-6 h-6 rounded-full flex items-center justify-center transition-all duration-500 ${
-                  active ? "animate-pulse" : ""
-                }`}
-                style={{
-                  border: `1px solid ${
-                    active
-                      ? "rgba(212,175,55,0.75)"
-                      : past
-                        ? "rgba(168,85,247,0.45)"
-                        : "rgba(120,113,150,0.22)"
-                  }`,
-                  background: active
-                    ? "radial-gradient(circle at 34% 28%, rgba(120,72,190,0.85), rgba(20,10,42,0.9))"
-                    : past
-                      ? "rgba(30,18,58,0.7)"
-                      : "rgba(16,12,30,0.5)",
-                  boxShadow: active
-                    ? "0 0 16px rgba(212,175,55,0.45)"
-                    : past
-                      ? "0 0 8px rgba(139,92,246,0.2)"
-                      : undefined,
-                }}
-              >
-                <Icon
-                  name={PHASE_TEXT[p].icon}
-                  size={12}
-                  className={active ? "text-amber-100" : past ? "text-purple-200/80" : "text-purple-300/40"}
-                />
-              </span>
-              <span
-                className={`text-[11px] md:text-xs tracking-[0.1em] whitespace-nowrap ${
-                  active ? "text-amber-100" : past ? "text-purple-200/75" : "text-purple-300/40"
-                }`}
-              >
-                {PHASE_TEXT[p].title}
-              </span>
-            </div>
-          </div>
-        );
-      })}
-      {/* 横切状态徽章：wait_user / error 不属于流程步骤，单独追加显示 */}
-      {phase && !PHASE_ORDER.includes(phase as Phase) && phase !== null && PHASE_TEXT[phase] && (
-        <div className="flex items-center">
-          <span
-            className="w-5 sm:w-7 h-px mx-0.5"
-            style={{ background: "rgba(212,175,55,0.35)" }}
-          />
-          <div
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] md:text-xs animate-pulse ${
-              phase === "error"
-                ? "bg-rose-900/40 border border-rose-400/50 text-rose-100"
-                : "bg-amber-900/40 border border-amber-400/50 text-amber-100"
-            }`}
-          >
-            <Icon name={PHASE_TEXT[phase].icon} size={13} />
-            <span>{PHASE_TEXT[phase].title}</span>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 /**
  * 方向①：稳定用户标识（跨会话画像锚点）。
@@ -236,85 +114,6 @@ function extractShareSummary(reading: string): string {
   return summary;
 }
 
-/**
- * 等待反馈：显示已等待时长
- *
- * ⚠️⚠️ 2026-11-04 重写：**去技术化 + 分级**
- *
- * ⚠️ 之前的问题（用户诉求："别让用户感知到限流"）：
- *   原文案直接写了"正在控制请求节奏以避免服务端限流…"
- *   → 用户看到"限流"两个字立刻不安（而且他确实什么都没做错）。
- *   原文案还有"模型仍在思考…（模型较慢，可查看下方时间轴定位瓶颈）"
- *   → 把**内部术语**和**排查指引**塞进了主界面。
- *
- * ⚠️ 原则（写进注释，避免以后被改回去）：
- *   **内部术语（限流/429/配额/模型/超时/熔断）一律不出现在用户界面。**
- *   用户关心的是"占卜师在想"，不是"我们的 API 在限流"。
- *   技术细节属于**下方时间轴/诊断面板**（那才是给排查用的，且默认折叠）。
- *
- * ⚠️ 分级（为什么这样切）：
- *   · < 3s   → **什么都不显示**（用户注意不到；显示反而像"卡住了"）
- *   · 3~10s → 一句轻提示（"占卜师在斟酌…"）
- *   · > 10s → 换一句**有内容**的（占卜师口吻），让等待变成氛围的一部分
- */
-function WaitingHint({ since, rateLimited }: { since: number; rateLimited?: boolean }) {
-  const [elapsed, setElapsed] = useState(0);
-
-  useEffect(() => {
-    if (!since) return;
-    const t = setInterval(() => setElapsed(Math.floor((Date.now() - since) / 1000)), 500);
-    return () => clearInterval(t);
-  }, [since]);
-
-  if (!since || elapsed < 3) return null;
-  const slow = elapsed >= 10;
-  /**
-   * ⚠️ rateLimited 保留但**不用于文案**（2026-11-04）
-   *   原因：用户诉求"别让用户感知到限流"——
-   *   原文案直接写了"正在控制请求节奏以避免服务端限流"，
-   *   用户看到"限流"两个字立刻不安（而且他什么都没做错）。
-   *   → 两种等待（我们主动限速 / 模型真的慢）**对用户的感受是一样的**：
-   *     都是"占卜师在想"。文案不该区分，也**不该暴露技术细节**。
-   *   ⚠️ 参数保留是为了将来做**埋点**（想知道限流对等待时长的贡献有多大），
-   *   而不是为了显示给用户。
-   */
-  void rateLimited;
-
-  /**
-   * ⚠️ 占卜师口吻的短句池
-   *   · ⚠️ 刻意**不显示"限流"字样** —— 那是我们的内部实现细节
-   *   · rateLimited 与否，用户看到的都是"占卜师在斟酌"（两种情况的**感受**相同）
-   *   · 用轮换而不是固定文案：固定文案重复出现会显得很假
-   */
-  const PHRASES = [
-    "占卜师在斟酌这句话背后的意思…",
-    "让我再对照一下典籍里的说法…",
-    "稍等，我在想这张牌该怎么落…",
-    "有几处细节想再确认一下…",
-    "正在把牌面的话连成一条线…",
-  ];
-  // ⚠️ 用 elapsed 做索引 → 每隔几秒换一句（不随重渲染跳动）
-  const phrase = PHRASES[Math.floor(elapsed / 6) % PHRASES.length];
-
-  return (
-    <motion.p
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className={`mt-1.5 text-center text-xs tracking-wide ${
-        slow ? "text-purple-300/70" : "text-purple-400/50"
-      }`}
-    >
-      {slow ? (
-        <>
-          {phrase}
-          <span className="text-purple-400/40"> · 已等待 {elapsed}s</span>
-        </>
-      ) : (
-        <span className="text-purple-400/40">{elapsed}s</span>
-      )}
-    </motion.p>
-  );
-}
 
 /* ---------------- 主页面 ---------------- */
 
@@ -971,66 +770,7 @@ export default function TarotApp() {
         ⚠️ 2026-11-04 三改：底部大提示 + 悬浮月亮（AmbienceGate）已删除，
            首次提示改由右上角按钮旁的气泡承担（见 AmbienceToggle）。 */}
       {/* 标题 */}
-      <motion.h1
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8 }}
-        className="text-shimmer tracking-[0.3em] z-10 select-none text-center"
-        style={{
-          fontFamily: "Cinzel, Georgia, serif",
-          /**
-           * ⚠️⚠️ 字号 = `--font-title` × `--u`
-           * · 桌面端 --font-title: 75px（原 60px × 1.25）→ 随 --u 等比缩放 ✅
-           * · 移动端 --font-title: 34px（媒体查询覆盖）→ **不再溢出屏幕** ✅
-           */
-          fontSize: "calc(var(--font-title, 75px) * var(--u, 1))",
-          /**
-           * ⚠️ 移动端字间距收窄（用户要求「一行放不下 需要居中展示」）
-           * · 桌面端 0.3em 在 414px 屏上太宽 → 放不下
-           * · 移动端用 0.14em → 「MYSTIC TAROT」能放下
-           *   → 仍放不下时（更窄的屏）→ 由 `.title-line` 换行并居中 ✅
-           */
-          letterSpacing: "var(--tracking-title, 0.3em)",
-        }}
-      >
-        {/*
-         * ⚠️⚠️ 标题分成两段（用户要求「移动端大标题如果一行放不下 需要居中展示」）
-         * · 桌面端：inline → 「MYSTIC TAROT」一行
-         * · 移动端：block → 放不下时自然分两行，且**居中**
-         *   · 「MYSTIC」/「TAROT」两行居中，比溢出被切好 ✅
-         * ⚠️ 为什么不用 <br />：桌面端也会换行
-         */}
-        <span className="title-line">MYSTIC</span>
-        <span className="title-line">TAROT</span>
-      </motion.h1>
-      <motion.p
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.4, duration: 0.8 }}
-        className="mt-3 text-purple-200/75 z-10 text-center"
-        style={{
-          fontFamily: "'Ma Shan Zheng', serif",
-          /** ⚠️ 字号 = `--font-sub` × `--u`（桌面 25px / 移动端 17px） */
-          fontSize: "calc(var(--font-sub, 25px) * var(--u, 1))",
-          /** ⚠️ 字间距也用变量（移动端更紧，两行才放得下） */
-          letterSpacing: "var(--tracking-sub, 0.18em)",
-        }}
-      >
-        {/*
-         * ⚠️⚠️ 副标题**分两行**（用户要求：「副标题需要分成两行展示」）
-         * · 用两个 <span>，靠 CSS 切换布局：
-         *   · 桌面端：inline → 「倾听星辰的低语 · 窥探命运的轨迹」一行
-         *   · 移动端：block → 自然分成两行
-         * ⚠️ 为什么不用 <br />：
-         *   · <br /> 在桌面端也会换行 → 桌面端变两行（不想要）
-         *   · display:none 隐藏 <br /> → 两段文字粘连（没间隔）
-         * → span + 媒体查询切换 display ✅
-         */}
-        <span className="sub-line whitespace-nowrap">倾听星辰的低语</span>
-        <span className="sub-line whitespace-nowrap">
-          <span className="hidden md:inline"> · </span>窥探命运的轨迹
-        </span>
-      </motion.p>
+      <HeroSection />
 
       {/* ══════════════════════════════════════════════
        * 小女巫水晶球 · 单图方案（2026-11-10）
@@ -1084,105 +824,7 @@ export default function TarotApp() {
           ⚠️ 2026-11-05：从「文字胶囊」改成「图标卡片」——
             胶囊只有一行小字，在深色背景上几乎看不见（截图实测）；
             卡片有图标 + 标题 + 说明 → 既是入口，也是产品能力的展示。 */}
-      {stage === "input" && (
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.25, duration: 0.6 }}
-          className="w-full max-w-2xl z-10 -mt-2 mb-7"
-        >
-          {/**
-           * ⚠️ 2026-11-06 对比度修正（用户反馈："背景是紫色的，上面图标文字模块又都是紫色的 对比度太差"）。
-           *
-           * ⚠️ 根因：**紫底 + 紫组件 + 紫文字** = 三者同色系 → 全部糊在一起。
-           *   截图实测：入口卡片的 `bg-purple-950/25` 叠在紫背景上几乎看不出边界，
-           *   文字 `text-purple-300/40` 更是有字形都看不清。
-           *
-           * ⚠️ 解法（颜色分工）：
-           *   · **背景层**  保持紫色（深空氛围）
-           *   · **容器层**  深色实底（近黑紫 rgba(9,5,20,.78)）+ 玻璃模糊 → 有明确边界
-           *   · **描边层**  金色（rgba(212,175,55,.28)）→ 与紫底分离
-           *   · **图标层**  金色实心圈 + 金色图标 → 视觉焦点
-           *   · **文字层**  标题近白（琥珀白）、描述提亮到 68%
-           *   → 一句话：**背景紫、容器深、描边金、图标金、文字白**。
-           */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            {[
-              {
-                href: "/daily",
-                icon: "moon" as const,
-                img: "/images/celestial/icon-daily.webp",
-                title: "今日之牌",
-                desc: "今天与你有关的那张牌",
-              },
-              {
-                href: "/fortune",
-                icon: "orbit" as const,
-                img: "/images/celestial/icon-fortune.webp",
-                title: "运势专区",
-                desc: "每日 · 月 · 季 · 年运",
-              },
-              {
-                href: "/oracle",
-                icon: "crystal" as const,
-                img: "/images/celestial/icon-oracle.webp",
-                title: "问神谕",
-                desc: "不必抽牌，也能问",
-              },
-            ].map((e) => (
-              <Link
-                key={e.href}
-                href={e.href}
-                className="group relative rounded-2xl border border-[rgba(212,175,55,0.26)] bg-[rgba(9,5,20,0.78)] backdrop-blur-md px-4 py-4 transition-all duration-300 hover:border-[rgba(240,217,138,0.55)] hover:-translate-y-1"
-                style={{
-                  boxShadow:
-                    "0 8px 30px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.07)",
-                }}
-              >
-                {/* 悬停时的金色边光 */}
-                <span
-                  className="absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
-                  style={{
-                    boxShadow: "0 0 30px rgba(212,175,55,0.32), inset 0 0 20px rgba(212,175,55,0.08)",
-                  }}
-                />
-                <div className="flex items-start gap-3">
-                  {/**
-                   * ⚠️ 2026-11-06：图标改用 **AI 生成的金质纹样**（月+书 / 轨道 / 眼）。
-                   *
-                   * ⚠️⚠️ 为什么**去掉圆圈底**（用户反馈："图标外面还有白色的底色"）：
-                   *   ① AI 出的图标**本身就是完整的圆形纹样**（月+书 / 星盘 / 眼）
-                   *      → 再套一个圆圈 = 圆圈里挤一团金色 → 22px 下糊成一团，
-                   *      边缘的半透明渐变看起来就像"有白底"。
-                   *   ② 图标放大到 30px → 细节看得清。
-                   *   → 去掉底圈，直接放图标 + 金色微光。
-                   */}
-                  <span className="w-8 h-8 shrink-0 flex items-center justify-center">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={e.img}
-                      alt=""
-                      className="w-[30px] h-[30px] object-contain"
-                      style={{
-                        filter:
-                          "drop-shadow(0 0 6px rgba(240,217,138,0.55)) drop-shadow(0 0 14px rgba(212,175,55,0.25))",
-                      }}
-                    />
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block text-[13px] tracking-[0.12em] text-[rgba(255,248,235,0.96)] group-hover:text-amber-50">
-                      {e.title}
-                    </span>
-                    <span className="block text-[10px] text-[rgba(203,190,255,0.68)] mt-0.5 leading-snug">
-                      {e.desc}
-                    </span>
-                  </span>
-                </div>
-              </Link>
-            ))}
-          </div>
-        </motion.div>
-      )}
+      {stage === "input" && <EntryCards />}
 
       {/* ---------- 输入阶段 ---------- */}
       {stage === "input" && (
@@ -1192,193 +834,19 @@ export default function TarotApp() {
           transition={{ delay: 0.3, duration: 0.7 }}
           className="w-full max-w-xl z-10"
         >
-          {/* ---------- 人格选择（2026-11-05 视觉重设计）----------
-              ⚠️ 从「方块卡片」改成「圆形符文头像」：
-                六个同样的方块摆在那儿 → 视觉权重相同、没有主次、没有"人"的感觉。
-                圆形徽章是神秘学语境里最自然的载体，且天然有聚焦感。 */}
-          <div className="mb-7">
-            <p className="text-[11px] tracking-[0.28em] text-[rgba(212,175,55,0.72)] mb-4 text-center">
-              选 择 你 的 占 卜 师
-            </p>
-            {/**
-             * ⚠️ 2026-11-06：排列从 flex-wrap 改成 grid-cols-5。
-             * ⚠️ 为什么：flex-wrap 下 5 个徽章是「4 + 1」——
-             *   最后一个孤零零掉到第二行 → 视觉断裂（截图实测）。
-             * → grid-cols-5 保证一行五个、间距均匀。
-             *   移动端用 grid-cols-3（第二行两个居中）。
-             */}
-            <div className="grid grid-cols-3 sm:grid-cols-5 gap-x-3 gap-y-5 justify-items-center max-w-[560px] mx-auto">
-              {personas.map((p, pi) => (
-                <PersonaOrb
-                  key={p.id}
-                  id={p.id}
-                  name={p.name}
-                  tagline={p.desc}
-                  selected={persona?.id === p.id}
-                  onClick={() => setPersona(p)}
-                  index={pi}
-                />
-              ))}
-            </div>
-          </div>
-
-          {/* ---------- 占卜模式切换（2026-11-04 双模式）----------
-            ⚠️ 为什么放在输入框**上方**（而不是占卜开始后）：
-              用户在**提问之前**就该知道这次会得到什么 ——
-              "快速一问 vs 深度解读"是两种不同的**产品**，不是同一个东西的快慢版。
-              放在后面就变成了"已经开始了才告诉我会等很久"（预期错配）。 */}
-          <div className="flex items-center gap-2 mb-3 flex-wrap">
-            <span className="text-[11px] tracking-[0.2em] text-[rgba(212,175,55,0.62)]">占卜方式</span>
-            {(Object.keys(MODE_PROFILES) as DivinationMode[]).map((m) => {
-              const p = MODE_PROFILES[m];
-              const active = mode === m;
-              return (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setMode(m)}
-                  aria-pressed={active}
-                  title={`${p.tagline} · 约 ${p.estSeconds[0]}~${p.estSeconds[1]} 秒`}
-                  className={`px-3 py-1.5 rounded-full text-xs tracking-[0.15em] border transition-all ${
-                    active
-                      ? "border-purple-400/60 bg-purple-500/20 text-purple-100 shadow-[0_0_16px_rgba(168,85,247,0.28)]"
-                      : "border-white/10 bg-white/[0.03] text-purple-300/50 hover:text-purple-200/80 hover:border-purple-400/30"
-                  }`}
-                >
-                  {p.label}
-                  <span className="ml-1.5 text-[10px] opacity-55">
-                    {p.estSeconds[0]}~{p.estSeconds[1]}s
-                  </span>
-                </button>
-              );
-            })}
-            <span className="text-[10px] text-[rgba(196,181,253,0.55)] ml-1">
-              {MODE_PROFILES[mode].tagline}
-            </span>
-          </div>
-
-          <div className="flex flex-col sm:flex-row gap-3">
-            <div className="relative flex-1">
-              {/**
-               * ⚠️ 2026-11-06 对比度修正：
-               *   原来 `bg-purple-950/30` + `border-purple-500/30` 叠在紫背景上 → 输入框边界不清。
-               * → 改为**深色实底 + 金色描边**，聚焦时金色发光（与魔法阵呼应）。
-               */}
-              <input
-                className="w-full px-5 py-4 pr-12 text-lg rounded-2xl bg-[rgba(9,5,20,0.82)] backdrop-blur-md border border-[rgba(212,175,55,0.32)] text-[rgba(255,250,240,0.96)] placeholder-[rgba(190,178,235,0.42)] focus:outline-none focus:border-[rgba(240,217,138,0.75)] focus:shadow-[0_0_30px_rgba(212,175,55,0.30)] transition-all"
-                style={{ fontFamily: "'Ma Shan Zheng', serif" }}
-                placeholder="在此写下你的困惑…"
-                // ⚠️ P2-⑮：placeholder 不是可访问名称 —— 屏幕阅读器读不到。
-                //   加 aria-label 让输入框有真正的名字。
-                aria-label="写下你的问题"
-                value={question}
-                onChange={(e) => { setQuestion(e.target.value); setError(""); }}
-                onKeyDown={(e) => e.key === "Enter" && startDivination()}
-                maxLength={100}
-              />
-              <button
-                onClick={startVoice}
-                title="语音输入"
-                className={`absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center transition-all ${
-                  listening ? "bg-rose-500/30 text-rose-300 animate-pulse" : "text-[rgba(203,190,255,0.75)] hover:text-amber-200"
-                }`}
-              >
-                {listening ? (
-                  <span className="w-2.5 h-2.5 rounded-full bg-current animate-pulse" />
-                ) : (
-                  <Icon name="thought" size={15} />
-                )}
-              </button>
-            </div>
-            {/**
-             * ⚠️⚠️ 「开始占卜」按钮 —— 重新设计（2026-11-12）
-             *
-             * ⚠️ 用户要求：「开始占卜需要占满一行 可以重新设计按钮样式」
-             *
-             * ⚠️⚠️ 为什么丢掉旧的图片按钮（btn-start.png）：
-             *   · 那是一张 640×360 的巴洛克金框（羊皮纸底 + 卷草边框）
-             *   · 撑满一行（414px × 62px = 6.7:1）→ 框会被拉成一条线 ❌
-             *   · 而且它和输入框视觉语言完全不同（深底金边 vs 羊皮纸卷草）
-             *     → 并排放很别扭（这是用户最早提的问题）
-             *
-             * ⚠️ 新设计：深底 + 金色渐变描边（纯 CSS）
-             *   · 与输入框同族：深底 + 金描边 + 圆角 → 统一 ✅
-             *   · 纯 CSS → 任意宽度零变形 ✅
-             *   · 移动端 w-full 占满一行，桌面端固定 142px
-             */}
-            <motion.button
-              whileHover={{ scale: 1.03 }}
-              whileTap={{ scale: 0.97 }}
-              onClick={startDivination}
-              className="group relative w-full sm:w-[142px] sm:shrink-0 h-[62px] rounded-2xl
-                transition-all duration-300
-                hover:shadow-[0_0_30px_rgba(212,175,55,0.35)]"
-              style={{
-                /**
-                 * ⚠️⚠️ 底色用变量切换（移动端金色底 / 桌面端深底）
-                 * ⚠️ 移动端要求「btn需要底色是金色的 内部文字是深色」
-                 *   → 金底深字（对比强、像实体按钮）
-                 * ⚠️ 桌面端保持深底金字（与输入框同族、统一）
-                 */
-                background: "var(--btn-bg, rgba(9,5,20,0.82))",
-                backdropFilter: "var(--btn-backdrop, blur(12px))",
-                /**
-                 * ⚠️ 基础态描边：细金线（与输入框完全一致）
-                 * ⚠️ 渐变描边用**额外的 span + mask** 实现（见下）
-                 *   · border-image 会吃掉 border-width → 盒子尺寸会变 ❌
-                 *   → 双层法：外层画渐变框、mask 挖空中间 → 尺寸不变 ✅
-                 */
-                border: "1px solid var(--btn-border, rgba(212,175,55,0.32))",
-                boxShadow:
-                  "inset 0 0 22px rgba(212,175,55,0.10), 0 6px 20px rgba(0,0,0,0.45)",
-              }}
-            >
-              {/**
-               * ⚠️⚠️ 移动端：**金色底 + 深色字**（用户要求）
-               * ⚠️ 桌面端保持深底 + 金字（与输入框同族）
-               * → 用 CSS 变量控制，移动端在 globals.css 的媒体查询里切换
-               */}
-              <span
-                className="pointer-events-none absolute inset-0 rounded-2xl
-                  opacity-0 transition-opacity duration-300 group-hover:opacity-100"
-                style={{
-                  padding: "1px",
-                  background:
-                    "linear-gradient(135deg, #8a6a1e 0%, #e8c96a 38%, #f6e4a8 52%, #c9a24a 72%, #6d5216 100%)",
-                  WebkitMask:
-                    "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
-                  WebkitMaskComposite: "xor",
-                  maskComposite: "exclude",
-                }}
-              />
-              {/* 内部柔光（hover 时亮起） */}
-              <span
-                className="pointer-events-none absolute inset-0 rounded-2xl opacity-0
-                  transition-opacity duration-300 group-hover:opacity-100"
-                style={{
-                  background:
-                    "radial-gradient(ellipse 70% 120% at 50% 50%, rgba(240,205,120,0.16), transparent 72%)",
-                }}
-              />
-              {/* 文字 */}
-              <span
-                className="relative flex h-full items-center justify-center
-                  text-lg font-semibold tracking-[0.14em]"
-                style={{
-                  fontFamily: "'Ma Shan Zheng', serif",
-                  /**
-                   * ⚠️⚠️ 移动端：**深色字**（金色底上才看得清）
-                   * ⚠️ 桌面端：**金字**（深底上才看得清）
-                   * → 用变量切换（globals.css 的媒体查询）
-                   */
-                  color: "var(--btn-text, #f0d98c)",
-                  textShadow: "var(--btn-text-shadow, 0 0 12px rgba(212,175,55,0.45))",
-                }}
-              >
-                开始占卜
-              </span>
-            </motion.button>
-          </div>
+            <DivinationInput
+              personas={personas}
+              persona={persona}
+              onSelectPersona={setPersona}
+              mode={mode}
+              onChangeMode={setMode}
+              question={question}
+              onChangeQuestion={setQuestion}
+              onClearError={() => setError("")}
+              onStart={startDivination}
+              onVoice={startVoice}
+              listening={listening}
+            />
           {error && (
             <div className="mt-3 flex items-center gap-2 text-purple-400/90 text-sm text-center sm:text-left">
               <Icon name="orbit" size={15} />
@@ -1454,37 +922,18 @@ export default function TarotApp() {
           transition={{ duration: 0.6 }}
           className="w-full max-w-4xl z-10 flex flex-col items-center"
         >
-          {/* ---------- 牌阵横条（固定顶部，进度可见；与对话流牌阵同一份状态）---------- */}
-          {spread.length > 0 && (
-            <CardSpread cards={spread} onFlipCard={flipCard} onPreview={openCardPreview} />
-          )}
-
-          {/* ---------- Agent 状态条 ---------- */}
-          {(phase || streaming) && (
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mt-4">
-              <AgentStatusBar phase={phase} />
-              {phaseLabel && <p className="mt-2 text-center text-xs text-purple-400/60 tracking-wide">{phaseLabel}</p>}
-              {streaming && !ask && <WaitingHint since={streamStart} rateLimited={rateLimited} />}
-            </motion.div>
-          )}
-
-          {/* ---------- 方向⑤：仪轨计划（Plan-Execute 模式可见）---------- */}
-          {planSteps.length > 0 && (
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="mt-3 w-full max-w-2xl rounded-2xl border border-indigo-500/25 bg-indigo-950/15 backdrop-blur-md px-5 py-3"
-            >
-              <p className="text-[11px] text-indigo-300/70 tracking-[0.25em] mb-1.5">PLAN · 仪轨路线图</p>
-              <div className="flex flex-wrap gap-x-4 gap-y-1">
-                {planSteps.map((s, i) => (
-                  <span key={i} className="text-xs text-purple-200/75">
-                    <span className="text-indigo-400/80">{i + 1}.</span> {s.replace(/^[①②③④⑤⑥⑦⑧\d.、)\s]+/, "")}
-                  </span>
-                ))}
-              </div>
-            </motion.div>
-          )}
+          <StageProgress
+            spread={spread}
+            onFlipCard={flipCard}
+            onPreview={openCardPreview}
+            phase={phase}
+            phaseLabel={phaseLabel}
+            streaming={streaming}
+            hasAsk={!!ask}
+            streamStart={streamStart}
+            rateLimited={rateLimited}
+            planSteps={planSteps}
+          />
 
           {/* ---------- 对话流主体（问题与回答同区，逐张解读可折叠）---------- */}
           <DialogueFlow
