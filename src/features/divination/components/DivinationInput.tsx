@@ -62,7 +62,7 @@ export default function DivinationInput(props: DivinationInputProps) {
 
   return (
     <>
-    <div className="mb-7">
+    <div className="mb-4">
       <p className="text-[11px] tracking-[0.28em] text-[rgba(212,175,55,0.72)] mb-4 text-center">
         选 择 你 的 占 卜 师
       </p>

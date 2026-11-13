@@ -55,7 +55,7 @@ export default function EntryCards() {
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: 0.25, duration: 0.6 }}
-      className="w-full max-w-2xl z-10 -mt-2 mb-7"
+      className="w-full max-w-2xl z-10 -mt-2 mb-4"
     >
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {ENTRIES.map((e) => (

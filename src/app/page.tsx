@@ -715,7 +715,7 @@ export default function TarotApp() {
      */
     <main
       className="relative min-h-[100dvh] overflow-hidden flex flex-col items-center px-4"
-      style={{ paddingTop: "calc(48px * var(--u, 1))" }}
+      style={{ paddingTop: "calc(var(--home-pt, 48px) * var(--u, 1))" }}
     >
       {/*
         ⚠️⚠️ 为什么是 min-h-[100dvh] 而不是 min-h-screen（2026-11-04 修滚动条）：
