@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 
 import { DEFAULT_MODE, type DivinationMode } from "@/lib/agent/divination-mode";
+import type { RitualPhase } from "@/lib/agent/ritual-machine";
 
 import type {
   FanCard,
@@ -78,6 +79,15 @@ export interface DivinationStateApi {
   stage: Stage;
   sessionId: string;
   phase: Phase | null;
+  /**
+   * 仪式阶段（承约/呼召/选牌/讲牌/综合/收束）
+   *
+   * ⚠️ 与 `phase`（步骤标签）是**两回事**：
+   *   `phase` 是程序步骤（analyze/retrieve/draw/interpret/wait_user）→ 给进度条用
+   *   `ritualPhase` 是仪式节点 → 给**配乐切曲**和**阶段锣**用
+   *   两者值域完全不重叠，且 wait_user 被多个仪式阶段共用 → 不可互推。
+   */
+  ritualPhase: RitualPhase | null;
   phaseLabel: string;
   rateLimited: boolean;
   reading: string;
@@ -113,6 +123,7 @@ export interface DivinationStateApi {
   setStage: Setter<Stage>;
   setSessionId: Setter<string>;
   setPhase: Setter<Phase | null>;
+  setRitualPhase: Setter<RitualPhase | null>;
   setPhaseLabel: Setter<string>;
   setRateLimited: Setter<boolean>;
   setReading: Setter<string>;
@@ -157,6 +168,7 @@ export function useDivinationState(): DivinationStateApi {
   const [stage, setStage] = useState<Stage>("input");
   const [sessionId, setSessionId] = useState("");
   const [phase, setPhase] = useState<Phase | null>(null);
+  const [ritualPhase, setRitualPhase] = useState<RitualPhase | null>(null);
   const [phaseLabel, setPhaseLabel] = useState("");
   const [rateLimited, setRateLimited] = useState(false);
   const [reading, setReading] = useState("");
@@ -207,6 +219,8 @@ export function useDivinationState(): DivinationStateApi {
       setSessionId,
       phase,
       setPhase,
+      ritualPhase,
+      setRitualPhase,
       phaseLabel,
       setPhaseLabel,
       rateLimited,
@@ -263,7 +277,7 @@ export function useDivinationState(): DivinationStateApi {
       setEntries,
     }),
     [
-      question, persona, mode, personas, stage, sessionId, phase, phaseLabel,
+      question, persona, mode, personas, stage, sessionId, phase, ritualPhase, phaseLabel,
       rateLimited, reading, reasoning, tools, rounds, ragHits, ask, fanCards,
       fanCount, followup, subagentEvents, review, planSteps, personaSuggest,
       canFollowup, streaming, error, hint, listening, streamStart,

@@ -1,0 +1,319 @@
+{
+  "note": "离线分析生成（scripts/dev/analyze-score.mjs）—— gainDb 把门控响度对齐到 targetLufs；lowpassHz 是音色修正（把过亮的曲子压到风格目标重心）",
+  "targetLufs": -20,
+  "styleTargetCentroid": {
+    "A": 1300,
+    "B": 1000
+  },
+  "generatedAt": "2026-11-17",
+  "tracks": {
+    "score-A-idle": {
+      "style": "A",
+      "gainDb": -8.26,
+      "lowpassHz": 20000,
+      "duration": 104.98,
+      "lufs": -11.74,
+      "centroid": 1142,
+      "centroidAfter": 1142,
+      "styleTarget": 1300,
+      "rmsCv": 0.618,
+      "peak": 0.3834,
+      "lowPct": 6.1,
+      "midPct": 93.5,
+      "highPct": 0.5,
+      "seamRatio": 0.33,
+      "checks": {
+        "centroid": true,
+        "peak": true,
+        "dynamics": true,
+        "seamless": true
+      }
+    },
+    "score-A-contract": {
+      "style": "A",
+      "gainDb": -7.8,
+      "lowpassHz": 4400,
+      "duration": 40.01,
+      "lufs": -12.2,
+      "centroid": 2632,
+      "centroidAfter": 1260,
+      "styleTarget": 1300,
+      "rmsCv": 0.642,
+      "peak": 0.4071,
+      "lowPct": 18.2,
+      "midPct": 80.2,
+      "highPct": 1.6,
+      "seamRatio": 0.08,
+      "checks": {
+        "centroid": true,
+        "peak": true,
+        "dynamics": true,
+        "seamless": true
+      }
+    },
+    "score-A-invocation": {
+      "style": "A",
+      "gainDb": -3.18,
+      "lowpassHz": 11000,
+      "duration": 55.28,
+      "lufs": -16.82,
+      "centroid": 1318,
+      "centroidAfter": 1277,
+      "styleTarget": 1300,
+      "rmsCv": 0.551,
+      "peak": 0.6038,
+      "lowPct": 16.3,
+      "midPct": 83.5,
+      "highPct": 0.2,
+      "seamRatio": 0.51,
+      "checks": {
+        "centroid": true,
+        "peak": true,
+        "dynamics": true,
+        "seamless": true
+      }
+    },
+    "score-A-selection": {
+      "style": "A",
+      "gainDb": -11.67,
+      "lowpassHz": 5200,
+      "duration": 66.15,
+      "lufs": -8.33,
+      "centroid": 1655,
+      "centroidAfter": 1269,
+      "styleTarget": 1300,
+      "rmsCv": 0.488,
+      "peak": 0.2609,
+      "lowPct": 43.6,
+      "midPct": 54.1,
+      "highPct": 2.3,
+      "seamRatio": 2.68,
+      "checks": {
+        "centroid": true,
+        "peak": true,
+        "dynamics": true,
+        "seamless": true
+      }
+    },
+    "score-A-percard": {
+      "style": "A",
+      "gainDb": -10.84,
+      "lowpassHz": 9000,
+      "duration": 68.24,
+      "lufs": -9.16,
+      "centroid": 1328,
+      "centroidAfter": 1279,
+      "styleTarget": 1300,
+      "rmsCv": 0.556,
+      "peak": 0.2871,
+      "lowPct": 21.3,
+      "midPct": 78.2,
+      "highPct": 0.5,
+      "seamRatio": 0.04,
+      "checks": {
+        "centroid": true,
+        "peak": true,
+        "dynamics": true,
+        "seamless": true
+      }
+    },
+    "score-A-synthesis": {
+      "style": "A",
+      "gainDb": -6.47,
+      "lowpassHz": 3600,
+      "duration": 49.82,
+      "lufs": -13.53,
+      "centroid": 1965,
+      "centroidAfter": 1285,
+      "styleTarget": 1300,
+      "rmsCv": 0.695,
+      "peak": 0.4726,
+      "lowPct": 11,
+      "midPct": 86.8,
+      "highPct": 2.3,
+      "seamRatio": 0.26,
+      "checks": {
+        "centroid": true,
+        "peak": true,
+        "dynamics": true,
+        "seamless": true
+      }
+    },
+    "score-A-closing": {
+      "style": "A",
+      "gainDb": -10.6,
+      "lowpassHz": 3600,
+      "duration": 66.76,
+      "lufs": -9.4,
+      "centroid": 2125,
+      "centroidAfter": 1219,
+      "styleTarget": 1300,
+      "rmsCv": 0.62,
+      "peak": 0.2951,
+      "lowPct": 22.1,
+      "midPct": 76.7,
+      "highPct": 1.2,
+      "seamRatio": 0.87,
+      "checks": {
+        "centroid": true,
+        "peak": true,
+        "dynamics": true,
+        "seamless": true
+      }
+    },
+    "score-B-idle": {
+      "style": "B",
+      "gainDb": -7.15,
+      "lowpassHz": 2500,
+      "duration": 178.84,
+      "lufs": -12.85,
+      "centroid": 2764,
+      "centroidAfter": 1020,
+      "styleTarget": 1000,
+      "rmsCv": 0.58,
+      "peak": 0.4207,
+      "lowPct": 59.9,
+      "midPct": 38.2,
+      "highPct": 1.9,
+      "seamRatio": 0.05,
+      "checks": {
+        "centroid": true,
+        "peak": true,
+        "dynamics": true,
+        "seamless": true
+      }
+    },
+    "score-B-contract": {
+      "style": "B",
+      "gainDb": -5.16,
+      "lowpassHz": 20000,
+      "duration": 41.54,
+      "lufs": -14.84,
+      "centroid": 749,
+      "centroidAfter": 749,
+      "styleTarget": 1000,
+      "rmsCv": 0.553,
+      "peak": 0.5129,
+      "lowPct": 26.4,
+      "midPct": 73.2,
+      "highPct": 0.4,
+      "seamRatio": 0.49,
+      "checks": {
+        "centroid": true,
+        "peak": true,
+        "dynamics": true,
+        "seamless": true
+      }
+    },
+    "score-B-invocation": {
+      "style": "B",
+      "gainDb": -5.66,
+      "lowpassHz": 20000,
+      "duration": 69.49,
+      "lufs": -14.34,
+      "centroid": 781,
+      "centroidAfter": 781,
+      "styleTarget": 1000,
+      "rmsCv": 0.68,
+      "peak": 0.5011,
+      "lowPct": 21.4,
+      "midPct": 78.1,
+      "highPct": 0.4,
+      "seamRatio": 0.34,
+      "checks": {
+        "centroid": true,
+        "peak": true,
+        "dynamics": true,
+        "seamless": true
+      }
+    },
+    "score-B-selection": {
+      "style": "B",
+      "gainDb": -8.19,
+      "lowpassHz": 3600,
+      "duration": 222.87,
+      "lufs": -11.81,
+      "centroid": 1702,
+      "centroidAfter": 915,
+      "styleTarget": 1000,
+      "rmsCv": 0.675,
+      "peak": 0.3896,
+      "lowPct": 42.7,
+      "midPct": 54.7,
+      "highPct": 2.6,
+      "seamRatio": 0.06,
+      "checks": {
+        "centroid": true,
+        "peak": true,
+        "dynamics": true,
+        "seamless": true
+      }
+    },
+    "score-B-percard": {
+      "style": "B",
+      "gainDb": -7.51,
+      "lowpassHz": 9000,
+      "duration": 65.03,
+      "lufs": -12.49,
+      "centroid": 1262,
+      "centroidAfter": 995,
+      "styleTarget": 1000,
+      "rmsCv": 0.715,
+      "peak": 0.4094,
+      "lowPct": 45.4,
+      "midPct": 53.9,
+      "highPct": 0.7,
+      "seamRatio": 1.12,
+      "checks": {
+        "centroid": true,
+        "peak": true,
+        "dynamics": true,
+        "seamless": true
+      }
+    },
+    "score-B-synthesis": {
+      "style": "B",
+      "gainDb": -8.92,
+      "lowpassHz": 2500,
+      "duration": 56.63,
+      "lufs": -11.08,
+      "centroid": 1918,
+      "centroidAfter": 1013,
+      "styleTarget": 1000,
+      "rmsCv": 0.544,
+      "peak": 0.358,
+      "lowPct": 24.9,
+      "midPct": 67.1,
+      "highPct": 8,
+      "seamRatio": 0.08,
+      "checks": {
+        "centroid": true,
+        "peak": true,
+        "dynamics": true,
+        "seamless": true
+      }
+    },
+    "score-B-closing": {
+      "style": "B",
+      "gainDb": -5.75,
+      "lowpassHz": 3600,
+      "duration": 85.37,
+      "lufs": -14.25,
+      "centroid": 1491,
+      "centroidAfter": 986,
+      "styleTarget": 1000,
+      "rmsCv": 0.809,
+      "peak": 0.5072,
+      "lowPct": 22.4,
+      "midPct": 76.8,
+      "highPct": 0.8,
+      "seamRatio": 1.56,
+      "checks": {
+        "centroid": true,
+        "peak": true,
+        "dynamics": true,
+        "seamless": true
+      }
+    }
+  }
+}

@@ -74,6 +74,19 @@ export interface AgentEvent {
   /** ② 阶段切换（前端状态条） */
   phase?: "analyze" | "retrieve" | "draw" | "interpret" | "wait_user" | "review" | "done" | "error";
   label?: string;
+  /**
+   * 仪式阶段（承约/呼召/选牌/逐张讲牌/综合/收束）
+   *
+   * ⚠️⚠️ 为什么必须与 `phase` 分开（2026-11-17 修的隐蔽 bug）：
+   *   `phase` 是**程序步骤标签**（analyze/retrieve/draw/interpret…），
+   *   而仪式阶段只存在于服务端 `session.ritualPhase`，
+   *   两套值**完全不重叠**且 `wait_user` 被多个仪式阶段共用。
+   *   → 靠 `phase` 推不出当前在仪式的哪一步（实测：氛围层永远停在 idle、阶段锣从来没响）。
+   *   → 所以协议里必须**显式**带上仪式阶段，由 API 出口统一富化后下发。
+   * ⚠️ 本字段与 `src/lib/agent/schema.ts` 的 zod 声明必须同时存在：
+   *   zod 会**剥离**未声明的字段 → 少一边前端就收不到。
+   */
+  ritualPhase?: import("./ritual-machine").RitualPhase;
   /** ③ 思考链 */
   reasoning?: string;
   /** ④ 工具调用流水 */

@@ -2,7 +2,7 @@
 
 import { useCallback, useRef } from "react";
 
-import { playSfx } from "@/lib/audio/ambient";
+import { playSfx } from "@/lib/audio";
 
 import type { FlowEntry } from "./types";
 import type { AskPayload } from "./useDivinationState";

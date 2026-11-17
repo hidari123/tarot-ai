@@ -289,10 +289,17 @@ check(
 /* ────────────── ⑤ 回归防护 ────────────── */
 console.log("\n【⑤ 回归防护】（既有契约没被破坏）");
 {
-  const ambient = readFileSync("src/lib/audio/ambient.ts", "utf-8");
-  const ambientCode = strip(ambient);
-  check("音频引擎仍无持续音（第三轮改动的契约没被破坏）",
-    !/makeDrone/.test(ambientCode) && !/shimmerVoices/.test(ambientCode));
+  // ⚠️ 2026-11-17：旧的程序化合成（ambient.ts）已整体退役，
+  //    配乐改为「AI 生成 + 事件音效 + 空气层」三层架构。
+  //    所以这里断言的对象也换成了新架构。
+  const score = readFileSync("src/lib/audio/score.ts", "utf-8");
+  const sfx = readFileSync("src/lib/audio/sfx.ts", "utf-8");
+  const air = readFileSync("src/lib/audio/air.ts", "utf-8");
+  const audioCode = strip(score + sfx + air);
+  check("音频层仍无持续纯音（旧的「空鸣」来源没被引入）",
+    !/makeDrone/.test(audioCode) && !/shimmerVoices/.test(audioCode));
+  check("配乐层是文件播放（没有退回程序化合成）",
+    !/createOscillator/.test(strip(score)));
 
   const gate = existsSync("src/components/AmbienceGate.tsx");
   check("AmbienceGate 仍已删除", !gate);

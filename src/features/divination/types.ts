@@ -97,12 +97,20 @@ export const PHASE_ORDER: Phase[] = [
 ];
 
 /**
- * ⚠️ 召灵四阶段（用于进度指示）
+ * 阶段锣的关键节点（仪式推进时的一次性转段音）
+ *
+ * ⚠️ 为什么是这几个阶段（而不是每个阶段都敲）：
+ *   `contract` 是开场（用户刚提问）→ 敲锣太吵；
+ *   `per_card` 一次占卜会**重复 N 次**（3 张牌）→ 但阶段本身没变，
+ *   所以守卫 `prevRitual !== p.ritualPhase` 让它**只在第一次进入时响一次** ✅
+ *   → 讲牌（牌在说话）是仪式高潮，必须有转段音。
+ *
  * ⚠️ 原为 page.tsx 里的局部常量 `STAGE_GONG_PHASES`
  */
 export const STAGE_GONG_PHASES: string[] = [
   "invocation",
   "card_selection",
+  "per_card",
   "synthesis",
   "closing",
 ];

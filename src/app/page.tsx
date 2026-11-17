@@ -47,7 +47,7 @@ const SubAgentPipeline = dynamic(
   () => import("@/components/SubAgentPipeline").then((m) => m.default),
   { ssr: false, loading: () => null }
 );
-import { unlockAmbience, playSfx } from "@/lib/audio/ambient";
+import { unlockAmbience, playSfx } from "@/lib/audio";
 /* ---------------- 类型 ---------------- */
 
 /**
@@ -159,6 +159,7 @@ export default function TarotApp() {
     sessionId, setSessionId,
 
     phase, setPhase,
+    ritualPhase, setRitualPhase,
     phaseLabel, setPhaseLabel,
 
     rateLimited, setRateLimited,
@@ -206,10 +207,17 @@ export default function TarotApp() {
    *   深度模式留给愿意等的人。
    */
   /**
-   * 环境音：仪式阶段 → 氛围层的联动
-   * ⚠️ 只在"占卜进行中"时启用 —— 待机页不该有声音。
+   * 配乐：仪式阶段 → 配乐曲目的联动
+   *
+   * ⚠️ 用的是 **ritualPhase**（仪式阶段）而不是 phase（步骤标签）：
+   *   phase = analyze/retrieve/draw/interpret/wait_user（程序步骤，给进度条用）
+   *   ritualPhase = contract/invocation/card_selection/per_card/synthesis/closing
+   *   两套值完全不重叠，且 wait_user 被多个仪式阶段共用 → 不可互推。
+   *
+   * ⚠️ 首页（待机）也启用 —— 待机层是真正的"等待音乐"，不是底噪。
+   *   且浏览器自动播放策略决定了：用户不主动点，就永远不会响。
    */
-  useAmbiencePhase(phase, stage !== "input");
+  useAmbiencePhase(ritualPhase);
   /**
    * P2-⑪：当前是否处于"限速等待"
    * ⚠️ 与 phase 分开存 —— 它描述的是"等待的原因"而不是"流程处于哪一步"，
@@ -542,6 +550,7 @@ export default function TarotApp() {
     setSubagentEvents([]);
     setReview(null);
     setPhase(null);
+    setRitualPhase(null);
     setPhaseLabel("");
     setRateLimited(false); // P2-⑪：新一场占卜重置限速标记
     /* 仪式流程状态重置 */
@@ -693,6 +702,7 @@ export default function TarotApp() {
     setSubagentEvents([]);
     setReview(null);
     setPhase(null);
+    setRitualPhase(null);
     setPhaseLabel("");
     setRateLimited(false); // P2-⑪：新一场占卜重置限速标记
     /* 仪式流程状态重置 */

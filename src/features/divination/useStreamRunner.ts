@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 
 import { parseAgentEvent } from "@/lib/agent/schema";
-import { playSfx } from "@/lib/audio/ambient";
+import { playSfx } from "@/lib/audio";
 
 import { STAGE_GONG_PHASES } from "./types";
 import type { AgentCard, FlowEntry, SpreadCard } from "./types";
@@ -111,9 +111,18 @@ export function useStreamRunner(
     paramsRef.current = { state, extras };
   });
 
+  /**
+   * ⚠️ 上一个**仪式阶段**（不是步骤标签）
+   *
+   * ⚠️ 为什么需要它：
+   *   一次仪式阶段会产生**多个** phase 事件（步骤标签不同，但仪式阶段相同）。
+   *   → 只在仪式阶段**真的变了**时才播阶段锣，否则一个阶段会响好几次。
+   */
+  const lastRitualPhaseRef = useRef<string | null>(null);
+
   const dispatch = useCallback((p: NonNullable<ReturnType<typeof parseAgentEvent>>) => {
     const {
-      setSessionId, setPhase, setPhaseLabel, setRateLimited, setReasoning,
+      setSessionId, setPhase, setRitualPhase, setPhaseLabel, setRateLimited, setReasoning,
       setTools, setRagHits, setSpread, setAsk, setFanCards, setFanCount,
       setEntries, setSubagentEvents, setPlanSteps, setPersonaSuggest,
       setRounds, setReview, setError, setCanFollowup,
@@ -140,13 +149,33 @@ export function useStreamRunner(
             // P2-⑪：识别"限速等待"phase —— 让等待提示显示正确的原因
             if (p.label && p.label.includes("限流")) setRateLimited(true);
             /**
-             * ⚠️ 2026-11-04 新增：阶段转换的"锣"音效
-             * ⚠️ 目的：让用户感觉到"仪式在推进"（而不是"程序在等"）。
-             * ⚠️ 只在**关键阶段**播（不是每个 phase 都播）——
-             *    否则会变成噪音。关键节点 = 呼召 / 选牌 / 讲牌 / 综合 / 收束。
+             * ⚠️⚠️ 仪式阶段（承约/呼召/选牌/讲牌/综合/收束）
+             *
+             * ⚠️ 必须与 `p.phase`（**步骤标签**：analyze/retrieve/draw/interpret/wait_user）
+             *   **分开存** —— 两套值完全不重叠，且 wait_user 被多个仪式阶段共用
+             *   → 靠步骤标签推不出当前在仪式的哪一步。
+             *   （旧实现就是踩了这个坑：氛围层永远停在 idle、阶段锣从来没响过）
+             *
+             * ⚠️ 配乐切曲由 page.tsx 的 useAmbiencePhase(ritualPhase) 消费。
              */
-            if (p.phase && STAGE_GONG_PHASES.includes(p.phase)) {
-              void playSfx("gong");
+            if (p.ritualPhase !== undefined) {
+              const prevRitual = lastRitualPhaseRef.current;
+              lastRitualPhaseRef.current = p.ritualPhase;
+              setRitualPhase(p.ritualPhase);
+              /**
+               * ⚠️ 阶段转换的"锣"音效
+               * ⚠️ 目的：让用户感觉到"仪式在推进"（而不是"程序在等"）。
+               * ⚠️ 只在**仪式阶段真的变了**的那一下播（不是每个 phase 事件都播）
+               *    否则一个阶段会连响好几次 → 变成噪音。
+               *    关键节点 = 呼召 / 选牌 / 讲牌 / 综合 / 收束。
+               */
+              if (
+                prevRitual !== null &&
+                prevRitual !== p.ritualPhase &&
+                STAGE_GONG_PHASES.includes(p.ritualPhase)
+              ) {
+                void playSfx("gong");
+              }
             }
             if (p.label && (p.label.includes("收束") || p.label.includes("子 Agent 管线启动"))) {
               // 已有 scroll 条目则复用（收束语接在综合正文后）

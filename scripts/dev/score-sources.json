@@ -1,0 +1,24 @@
+{
+  "note": "AI 生成的配乐来源登记表。node_id 是 Matrix Drive 上的节点，用于重新下载/补齐 public/audio/ 下的音频文件。重新生成后请更新本文件。",
+  "generatedAt": "2026-11-17",
+  "style": {
+    "A": "星玻璃 (A minor / 60 BPM / 玻璃风铃+马林巴+钢片琴+拨弦)",
+    "B": "深海低语 (D minor / 52 BPM / 大提琴+钢琴泛音+弦乐垫+低音单簧管)"
+  },
+  "tracks": [
+    { "file_name": "score-A-idle.mp3", "node_id": "464266233713109", "style": "A", "phase": "idle" },
+    { "file_name": "score-A-contract.mp3", "node_id": "464266136723606", "style": "A", "phase": "contract" },
+    { "file_name": "score-A-invocation.mp3", "node_id": "464265712501107", "style": "A", "phase": "invocation" },
+    { "file_name": "score-A-selection.mp3", "node_id": "464265351094710", "style": "A", "phase": "selection" },
+    { "file_name": "score-A-percard.mp3", "node_id": "464266136723623", "style": "A", "phase": "perCard" },
+    { "file_name": "score-A-synthesis.mp3", "node_id": "464266166481596", "style": "A", "phase": "synthesis" },
+    { "file_name": "score-A-closing.mp3", "node_id": "464266927186113", "style": "A", "phase": "closing" },
+    { "file_name": "score-B-idle.mp3", "node_id": "464266231190014", "style": "B", "phase": "idle" },
+    { "file_name": "score-B-contract.mp3", "node_id": "464266229092528", "style": "B", "phase": "contract" },
+    { "file_name": "score-B-invocation.mp3", "node_id": "464266957938894", "style": "B", "phase": "invocation" },
+    { "file_name": "score-B-selection.mp3", "node_id": "464271159308628", "style": "B", "phase": "selection" },
+    { "file_name": "score-B-percard.mp3", "node_id": "464267048067221", "style": "B", "phase": "perCard" },
+    { "file_name": "score-B-synthesis.mp3", "node_id": "464266815029930", "style": "B", "phase": "synthesis" },
+    { "file_name": "score-B-closing.mp3", "node_id": "464267355792008", "style": "B", "phase": "closing" }
+  ]
+}

@@ -201,10 +201,32 @@ export async function POST(req: Request) {
 
         // ---- ② 正常跑一场 ----
         for await (const evt of runAgent(session, question, { followup })) {
+          /**
+           * ⚠️⚠️ 给 phase 事件补上**仪式阶段**（2026-11-17 修的隐蔽 bug）
+           *
+           * ⚠️ 为什么必须在这里补：
+           *   `phase` 字段装的是**步骤标签**（analyze/retrieve/draw/interpret/wait_user），
+           *   而前端要切配乐、播阶段锣，需要的是**仪式阶段**
+           *   （contract/invocation/card_selection/per_card/synthesis/closing）。
+           *   这两套值**完全不重叠**，且 wait_user 被多个仪式阶段共用
+           *   → 前端靠步骤标签**推不出**当前在仪式的哪一步。
+           *
+           * ⚠️ 为什么在**路由这一层**补，而不是在 supervisor 的每个 yield 点补：
+           *   supervisor 里有 ~15 处 `yield { type: "phase" }`，逐个加字段必然漏；
+           *   而这里是**唯一的事件出口** → 一次补齐，永不漏。
+           *
+           * ⚠️ 为什么 `session.ritualPhase` 读得到当前值：
+           *   session 是 store 里的**活对象**（路由自己也在写它：session.abortSignal = …），
+           *   supervisor 推进阶段时写的是同一个对象的同一个字段 → 读到的一定是最新值。
+           */
+          const enriched: AgentEvent =
+            evt.type === "phase" && session.ritualPhase
+              ? { ...evt, ritualPhase: session.ritualPhase }
+              : evt;
           // 记录事件（带 seq）→ 供断点续传补发 + 事件日志落库
-          const { seq } = recordEvent(sid, evt);
-          persistEvent(sid, seq, evt);
-          send(evt, seq);
+          const { seq } = recordEvent(sid, enriched);
+          persistEvent(sid, seq, enriched);
+          send(enriched, seq);
           if (aborted) break;
         }
         // 生成器结束但客户端已断开 → 标记为断开而非完成

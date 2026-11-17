@@ -39,6 +39,29 @@ export const PhaseSchema = z.enum([
   "analyze", "retrieve", "draw", "interpret", "wait_user", "review", "done", "error",
 ]);
 
+/**
+ * 仪式阶段（承约 → 呼召 → 选牌 → 逐张讲牌 → 综合 → 收束）
+ *
+ * ⚠️⚠️ 为什么必须与 `PhaseSchema` **分开**（这是 2026-11-17 修的一个隐蔽 bug）：
+ *
+ *   `PhaseSchema`（步骤标签）= 前端进度条用的**程序步骤**：
+ *     analyze / retrieve / draw / interpret / wait_user / review
+ *   仪式阶段（真正的流程节点）= 服务端 `session.ritualPhase`：
+ *     contract / invocation / card_selection / per_card / synthesis / closing
+ *
+ *   ⚠️ 这两套值**完全不重叠**，而且 `wait_user` 被**多个**仪式阶段共用
+ *     （承约确认 / 呼召三问 / 选牌 / 翻牌 / 讲牌确认 / 收束回响）
+ *     → 靠步骤标签**推不出**当前在仪式的哪一步。
+ *
+ *   后果（实测）：旧的 `ambienceForPhase(phase)` 拿步骤标签去匹配仪式阶段，
+ *     永远匹配不上 → 氛围层永远停在 idle；
+ *     `STAGE_GONG_PHASES.includes(phase)` 同理 → 阶段锣从来没响过。
+ *     → 协议里必须**显式**带上仪式阶段。
+ */
+export const RitualPhaseSchema = z.enum([
+  "contract", "invocation", "card_selection", "per_card", "synthesis", "closing", "done",
+]);
+
 /** 牌（⚠️ 防剧透：cards 事件里 nameZh/image 为空占位） */
 export const CardSchema = z.object({
   id: z.string(),
@@ -103,6 +126,13 @@ export const AgentEventSchema = z.discriminatedUnion("type", [
     type: z.literal("phase"),
     phase: PhaseSchema.optional(),
     label: z.string().optional(),
+    /**
+     * 仪式阶段（承约/呼召/选牌/讲牌/综合/收束）
+     *
+     * ⚠️ 必须在这里声明 —— **zod 会剥离 schema 里没声明的字段**：
+     *   前端 `parseAgentEvent` 走 zod 解析 → 不声明的话前端永远收不到。
+     */
+    ritualPhase: RitualPhaseSchema.optional(),
   }),
   z.object({ type: z.literal("reasoning"), reasoning: z.string() }),
   z.object({
