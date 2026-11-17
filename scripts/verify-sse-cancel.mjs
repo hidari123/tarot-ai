@@ -16,24 +16,15 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const root = join(__dirname, "..");
-
-let pass = 0, fail = 0;
-const check = (label, ok, detail = "") => {
-  console.log(`  ${ok ? "✓" : "✗"} ${label}${detail ? ` — ${detail}` : ""}`);
-  if (ok) pass++; else fail++;
-};
-
-console.log("=== P4-24 前端 SSE 取消通道 ===\n");
-
-/* ---- ① 前端有没有 AbortController ---- */
-{
-  
 /**
  * ⚠️⚠️ 2026-11-12 拆分：部分前端逻辑搬到了 src/features/divination/
  *    → "前端有没有 abort 通道"这类断言必须把两处都算上
  */
+
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const root = join(__dirname, "..");
+
 const FEATURE_FILES = [
   "src/features/divination/useStreamRunner.ts",
   "src/features/divination/useSseParser.ts",
@@ -51,6 +42,18 @@ const FEATURE_FILES = [
 const featureCode = FEATURE_FILES.map((f) => {
   try { return readFileSync(join(root, ...f.split("/")), "utf8"); } catch { return ""; }
 }).join("\n");
+
+
+let pass = 0, fail = 0;
+const check = (label, ok, detail = "") => {
+  console.log(`  ${ok ? "✓" : "✗"} ${label}${detail ? ` — ${detail}` : ""}`);
+  if (ok) pass++; else fail++;
+};
+
+console.log("=== P4-24 前端 SSE 取消通道 ===\n");
+
+/* ---- ① 前端有没有 AbortController ---- */
+{
 const page = readFileSync(join(root, "src", "app", "page.tsx"), "utf8") + featureCode;
   const hasCtrl = /new AbortController\(\)/.test(page);
   // ⚠️ 检测**语义**而非字面量：

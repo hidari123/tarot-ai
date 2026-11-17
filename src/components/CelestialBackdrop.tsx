@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import AstralCircle from "@/components/AstralCircle";
+import NebulaDrift from "@/components/NebulaDrift";
 
 /**
  * 深空占卜室 · 背景（2026-11-05 视觉重设计 · 第 1 批）
@@ -73,6 +74,18 @@ export default function CelestialBackdrop({
   imagePosition = "center center",
   /** AI 生成的魔法阵图（有则优先于 CSS SVG 版） */
   circleImage,
+  /**
+   * ⚠️ 流动星云图（2026-11-13 · 方案 A）
+   * ⚠️ 传了它就用**流动星云**替代静态底图（image 失效）
+   * ⚠️ 为什么替代而不是叠加：
+   *   · 两层星云叠加会显脏（层 1.6 的注释里早就写过这条）❌
+   *   · 流动星云本身就是完整的背景 → 直接替代 ✅
+   */
+  flowImage,
+  /** 流动星云的单段像素宽度（= 素材宽的一半） */
+  flowSegWidth = 1920,
+  /** 流动星云周期（秒） */
+  flowDuration = 90,
   className = "",
 }: {
   tint?: string;
@@ -84,6 +97,9 @@ export default function CelestialBackdrop({
   image?: string;
   imagePosition?: string;
   circleImage?: string;
+  flowImage?: string;
+  flowSegWidth?: number;
+  flowDuration?: number;
   className?: string;
 }) {
   const [stars, setStars] = useState<Star[]>([]);
@@ -148,16 +164,78 @@ export default function CelestialBackdrop({
        *   · background-image 无法做 srcset
        *   · Next 的 next/image 对背景图没有优化路径
        */}
-      {image && (
+      {/**
+       * ---- 层 1.5：流动星云（2026-11-13 · 方案 A）----
+       * ⚠️ 用户要求："背景我想要星云流动的感觉"
+       *
+       * ⚠️⚠️ 为什么用 NebulaDrift 替代静态底图（而不是叠加）：
+       *   · 两层星云叠加会显脏（见层 1.6 的注释）❌
+       *   · 流动星云本身就是完整背景 → 直接替代静态图 ✅
+       *
+       * ⚠️ 实现要点：
+       *   · 素材 = AI 星云图 + 水平镜像拼成的长图（可无缝平铺）
+       *   · background-size: cover → 永远铺满，无黑边（同静态图）
+       *   · background-position: 0% → -50% → 走完一段 → 无缝循环
+       *   · 周期 90 秒 + ease-in-out alternate → 像呼吸，不像传送带
+       */}
+      {flowImage ? (
+        <NebulaDrift
+          showStars
+          starDensity={3.4}
+          layers={[
+            {
+              src: flowImage,
+              segWidth: flowSegWidth,
+              duration: flowDuration,
+              alpha: 1,
+              /**
+               * ⚠️ 亮度：静态底图原来用 brightness(1.28)
+               * · 但那张图本身偏暗 → 1.28 提亮
+               * · 新素材（粉紫纱幕）本身偏亮 → 反而要压暗
+               * · 0.55 让它退成底纹，配合下面的中心挖空 → 不抢内容 ✅
+               */
+              brightness: 0.44,
+              stars: true,
+              /**
+               * ⚠️⚠️ 中心挖空（方案 B · 2026-11-13）
+               * ⚠️ 用户反馈："底色是粉色的这个动态的移动的背景
+               *    上面的小女孩和旋转的占卜的那个圆盘 都变得不清晰了"
+               *
+               * ⚠️ 为什么需要：
+               *   · 旧静态背景的构图 = 中心深色空场 + 外围星云
+               *     → 人物和魔法阵落在空场里 → 轮廓清晰 ✅
+               *   · 流动星云满屏弥散 → 人物周围没有暗区 → 剪影消失 ❌
+               *   → 在中心挖一个椭圆暗区 → 恢复原有构图逻辑 ✅
+               *
+               * ⚠️ 参数怎么定的：
+               *   · x=50% y=34% → 人物在页面上半部，洞要偏上
+               *   · w=52% h=46% → 覆盖魔法阵直径（620px @1200 屏 ≈ 52%）
+               *   · inner=0.88 → 中心几乎全黑（接近旧背景的暗度）
+               *   · core=42% → 中心 42% 半径内保持全黑（人物全身都在里面）
+               *   · outer=0.25 → 边缘保留 25% 星云（流动感还在）
+               */
+              centerHole: {
+                w: 52,
+                h: 46,
+                x: 50,
+                y: 34,
+                inner: 0.88,
+                core: 42,
+                outer: 0.25,
+              },
+            },
+          ]}
+        />
+      ) : (
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={image}
+          src={image!}
           alt=""
           className="absolute inset-0 w-full h-full object-cover"
           style={{
             objectPosition: imagePosition,
             /**
-             * ⚠️⚠️ 2026-11-10：给底图**提亮**（用户反馈「今日之牌没有背景图」）
+             * ⚠️⚠️ 2026-11-10：给底图提亮（用户反馈「今日之牌没有背景图」）
              * ⚠️ 为什么需要：
              *   AI 生成的底图本身就暗（bg-daily 平均亮度只有 rgb(31,14,38)），
              *   再叠暗角/噪点/辅光 → 中心几乎全黑 → 用户看不到背景。
@@ -383,9 +461,19 @@ export default function CelestialBackdrop({
                  *   （用户要的是"淡魔法阵做叠加装饰，不抢戏"）。
                  *   → 靠 opacity + 轻微模糊让它退成"底纹"，
                  *   但轮廓还在（这是"精密仪器"感的关键）。
+                 *
+                 * ⚠️⚠️ 2026-11-13（方案 C）：流动星云模式下**提亮**
+                 * ⚠️ 用户反馈："旋转的占卜的那个圆盘 都变得不清晰了"
+                 * ⚠️ 原因：
+                 *   · 静态背景时，魔法阵是叠在**深色空场**上 → 淡金线也看得清
+                 *   · 流动星云满屏明亮 → 淡金线（opacity 0.16）和亮背景的对比极低 ❌
+                 *   → 有了中心挖空（方案 B）后背景已经暗下来了 → 可以提亮 ✅
+                 * ⚠️ 提亮幅度：0.22 → 0.34（不回到 0.3 的老值，避免抢戏）
                  */
-                opacity: circleIntensity * 0.22,
-                filter: "drop-shadow(0 0 24px rgba(212,175,55,0.20)) blur(0.4px)",
+                opacity: circleIntensity * (flowImage ? 0.34 : 0.22),
+                filter: flowImage
+                  ? "drop-shadow(0 0 26px rgba(212,175,55,0.34)) blur(0.3px)"
+                  : "drop-shadow(0 0 24px rgba(212,175,55,0.20)) blur(0.4px)",
                 animation: "astral-spin 220s linear infinite",
               }}
             />
