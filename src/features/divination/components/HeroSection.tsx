@@ -16,6 +16,28 @@ import { motion } from "framer-motion";
 export default function HeroSection() {
   return (
     <>
+      {/* ══════════════════════════════════════════════
+       * 品牌标志（2026-11-18 · MOIRA）
+       * ⚠️ 用 <img> 而不是内联 SVG：
+       *   · SVG 文件已描摹好（1.6KB），改动时不用碰组件
+       *   · <img> 的 alt 文本对屏幕阅读器更友好
+       * ⚠️ 尺寸乘 --u → 和标题等比缩放 ✅
+       */}
+      <motion.img
+        src="/images/brand/moira-mark.svg"
+        alt="MOIRA"
+        initial={{ opacity: 0, scale: 0.9 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 1.1, ease: "easeOut" }}
+        className="relative z-10 mx-auto mb-2 block select-none"
+        style={{
+          width: "calc(58px * var(--u, 1))",
+          height: "calc(58px * var(--u, 1))",
+          filter: "drop-shadow(0 0 14px rgba(212,175,55,0.35))",
+        }}
+        draggable={false}
+      />
+
       {/* 标题 */}
       <motion.h1
         initial={{ opacity: 0, y: -20 }}
@@ -40,13 +62,14 @@ export default function HeroSection() {
         }}
       >
         {/*
-         * ⚠️⚠️ 标题分成两段（用户要求「移动端大标题如果一行放不下 需要居中展示」）
-         * · 桌面端：inline → 「MYSTIC TAROT」一行
-         * · 移动端：block → 放不下时自然分两行，且**居中**
-         *   · 「MYSTIC」/「TAROT」两行居中，比溢出被切好 ✅
+         * ⚠️⚠️ 标题（2026-11-18 品牌更名：MYSTIC TAROT → MOIRA）
+         * · MOIRA = 希腊神话中的命运女神 → 与「AI 占卜师」定位精准对应
+         * · 标题分成两段（用户要求「移动端大标题如果一行放不下 需要居中展示」）
+         *   · 桌面端：inline → 一行
+         *   · 移动端：block → 放不下时自然分两行，且**居中**
          * ⚠️ 为什么不用 <br />：桌面端也会换行
          */}
-        <span className="title-line">MYSTIC</span>
+        <span className="title-line">MOIRA</span>
         <span className="title-line">TAROT</span>
       </motion.h1>
       <motion.p

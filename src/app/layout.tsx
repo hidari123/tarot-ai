@@ -26,16 +26,29 @@ import ViewportScale from "@/components/ViewportScale";
 import MotionProvider from "@/components/MotionProvider";
 
 export const metadata: Metadata = {
-  title: "Mystic Tarot · AI 塔罗占卜",
-  description: "倾听星辰的低语，窥探命运的轨迹 —— AI Agent + RAG 驱动的塔罗占卜",
+  /**
+   * ⚠️⚠️ 品牌更名（2026-11-18）：Mystic Tarot → **MOIRA**
+   * · MOIRA = 希腊神话中的命运女神 → 与「AI 占卜师」定位精准对应
+   * · 副标题保留原文学句（品牌口号）
+   */
+  title: "MOIRA · AI 塔罗占卜",
+  description:
+    "倾听星辰的低语，窥探命运的轨迹 —— MOIRA 是多 Agent + RAG 驱动的 AI 塔罗占卜师",
   manifest: "/manifest.json",
+  applicationName: "MOIRA",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "Mystic Tarot",
+    title: "MOIRA",
   },
   icons: {
     icon: [
+      /**
+       * ⚠️ SVG 图标（2026-11-18）：新 logo 优先
+       * · 浏览器支持 SVG favicon → 矢量、任意尺寸清晰
+       * · ⚠️ 同时保留 PNG 兜底（老浏览器 / 部分平台的 manifest 解析）
+       */
+      { url: "/images/brand/moira-mark.svg", type: "image/svg+xml" },
       { url: "/icons/icon-64.png", sizes: "64x64", type: "image/png" },
       { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
     ],
