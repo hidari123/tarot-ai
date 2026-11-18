@@ -307,6 +307,26 @@ body {
  *   · 但星云层的星星是**近景**，要亮、要发光 ✅
  *   → 单独一个 keyframe，peak 到 1.0
  */
+/**
+ * 配乐按钮的「待开启」脉冲光圈（2026-11-13）
+ *
+ * ⚠️ 用户要求：「不用提示（图标脉冲提示）」
+ * ⚠️ 为什么脉冲比气泡好：
+ *   · 气泡是**额外元素** → 右上角永远占位 → 看着乱
+ *   · 脉冲是**图标自己的一部分** → 不增加视觉元素数量
+ *   → 业界做法（Spotify / YouTube / Notion）：未启用时图标有微弱呼吸 ✅
+ */
+@keyframes ambience-pulse {
+  0%, 100% {
+    opacity: 0.15;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(1.55);
+  }
+}
+
 @keyframes twinkle-bright {
   0%, 100% { opacity: 0.35; }
   50% { opacity: 1; }

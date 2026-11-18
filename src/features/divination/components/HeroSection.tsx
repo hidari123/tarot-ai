@@ -21,7 +21,7 @@ export default function HeroSection() {
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.8 }}
-        className="text-shimmer tracking-[0.3em] z-10 select-none text-center"
+        className="relative z-10 text-shimmer tracking-[0.3em] select-none text-center"
         style={{
           fontFamily: "Cinzel, Georgia, serif",
           /**
@@ -53,7 +53,7 @@ export default function HeroSection() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.4, duration: 0.8 }}
-        className="mt-3 text-purple-200/75 z-10 text-center"
+        className="relative z-10 mt-3 text-purple-200/75 text-center"
         style={{
           fontFamily: "'Ma Shan Zheng', serif",
           /** ⚠️ 字号 = `--font-sub` × `--u`（桌面 25px / 移动端 17px） */

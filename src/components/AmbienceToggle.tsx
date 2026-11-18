@@ -86,15 +86,42 @@ export default function AmbienceToggle() {
   const buttonRef = useRef<HTMLButtonElement | null>(null);
 
   /**
-   * ⚠️ 首次提示气泡的可见性
-   * 规则：音频**还没开声** → 显示提示。
-   * 一旦用户通过任何途径开声（点提示 / 点面板里的 ♪ / 点开始占卜），muted 变 false → 提示自动消失。
+   * ⚠️ 首次提示的可见性（2026-11-13 改版）
+   *
+   * ⚠️⚠️ 用户反馈：「右上角的本页有配乐那里很丑」
+   *   「打开之后怎么是两个按钮呢？应该只出现一个框才对」
+   *
+   * ⚠️⚠️ 旧设计的问题：
+   *   · 右上角**并排两个元素**（扬声器 + 紫底胶囊「本页有配乐·点击开启」）
+   *     → 看着像两个不相干的东西，且胶囊常驻占位 ❌
+   *   · 点了胶囊 → 扬声器按钮**还在** → 变成"两个按钮" ❌
+   *
+   * ⚠️ 改法（对齐业界：Spotify / YouTube / Notion 都是**单个图标**）：
+   *   · **删掉胶囊气泡** → 右上角只剩一个图标 ✅
+   *   · 未开启时给图标加**脉冲光圈** → 暗示"这里可以点"（不增加元素）✅
+   *   · 点击图标 → 弹出面板（音量 / 配乐开关 / 风格）✅
    */
   const showHint = isClient && !hintDismissed && muted;
 
   const togglePanel = useCallback(() => {
+    /**
+     * ⚠️⚠️ 2026-11-13 改版：**未开启时，第一次点击直接开声音**（不开面板）
+     * ⚠️ 用户反馈：「打开之后怎么是两个按钮呢？应该只出现一个框才对」
+     * ⚠️ 旧行为：点图标 → 只开面板 → 还要再点面板里的 ♪ 才有声音 → 两步
+     * ⚠️ 新行为（对齐手机静音键 / Spotify）：
+     *   · 静音状态点图标 → **直接开声音**（一次点击就有反馈）✅
+     *   · 已开启状态点图标 → **弹出面板**（调音量/风格）✅
+     */
+    if (muted) {
+      setHintDismissed(true);
+      void (async () => {
+        await unlockAmbience();
+        setMuted(false);
+      })();
+      return;
+    }
     setShowPanel((v) => !v);
-  }, []);
+  }, [muted]);
 
   /**
    * ⚠️ 面板里的配乐开关
@@ -155,53 +182,62 @@ export default function AmbienceToggle() {
   }
 
   return (
-    <div className="flex items-start gap-2">
+    <div className="relative">
       {/* ---------- 唯一常驻按钮：扬声器 ---------- */}
-      <button
-        ref={buttonRef}
-        type="button"
-        onClick={togglePanel}
-        aria-label={showPanel ? "收起音乐音量面板" : "打开音乐音量面板"}
-        aria-expanded={showPanel}
-        title="音乐与音量"
-        className="w-9 h-9 flex items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/60 hover:text-white/90 hover:bg-white/10 transition-colors"
-      >
-        {muted ? (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-            <path d="M11 5 6 9H2v6h4l5 4V5z" />
-            <path d="m22 9-6 6M16 9l6 6" />
-          </svg>
-        ) : (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-            <path d="M11 5 6 9H2v6h4l5 4V5z" />
-            <path d="M15.5 8.5a5 5 0 0 1 0 7" />
-            {volume > 0.5 && <path d="M18.5 5.5a9 9 0 0 1 0 13" />}
-          </svg>
-        )}
-      </button>
-
-      {/* ---------- 首次提示气泡 ---------- */}
-      <AnimatePresence>
-        {showHint && !showPanel && (
-          <motion.button
-            type="button"
-            initial={{ opacity: 0, x: 8, scale: 0.96 }}
-            animate={{ opacity: 1, x: 0, scale: 1 }}
-            exit={{ opacity: 0, x: 8, scale: 0.96 }}
-            transition={{ duration: 0.28 }}
-            onClick={() => {
-              setHintDismissed(true);
-              void (async () => {
-                await unlockAmbience();
-                setMuted(false);
-              })();
+      {/**
+       * ⚠️⚠️ 相对位置 + 脉冲光圈（2026-11-13 改版）
+       * ⚠️ 用户要求：「不用提示（图标脉冲提示）」
+       *
+       * ⚠️ 为什么脉冲圈要**绝对定位**在按钮**后面**：
+       *   · 光圈比按钮大 → 会溢出按钮的 border-radius 边界
+       *   · 用 relative 包裹 + absolute 光圈（z 低于按钮）→ 扩散在按钮外 ✅
+       *   · 不加 relative 的话光圈会撑开布局 → 右上角被顶偏 ❌
+       */}
+      <div className="relative">
+        {showHint && (
+          <span
+            aria-hidden
+            className="absolute inset-0 rounded-full pointer-events-none"
+            style={{
+              background:
+                "radial-gradient(circle, rgba(212,175,55,0.55) 0%, rgba(212,175,55,0) 70%)",
+              animation: "ambience-pulse 2.8s ease-in-out infinite",
             }}
-            className="whitespace-nowrap rounded-full border border-purple-400/30 bg-purple-950/60 backdrop-blur-sm px-3 py-1.5 text-[11px] tracking-[0.18em] text-purple-200/80 hover:text-purple-100 hover:bg-purple-900/70 transition-colors"
-          >
-            本页有配乐 · 点击开启
-          </motion.button>
+          />
         )}
-      </AnimatePresence>
+        <button
+          ref={buttonRef}
+          type="button"
+          onClick={togglePanel}
+          aria-label={
+            showPanel
+              ? "收起音乐音量面板"
+              : muted
+                ? "开启配乐"
+                : "打开音乐音量面板"
+          }
+          aria-expanded={showPanel}
+          title={showPanel ? "收起面板" : muted ? "开启配乐" : "音乐与音量"}
+          className={`relative w-9 h-9 flex items-center justify-center rounded-full border transition-colors ${
+            showPanel
+              ? "border-purple-400/40 bg-purple-500/15 text-purple-100"
+              : "border-white/10 bg-white/5 text-white/60 hover:text-white/90 hover:bg-white/10"
+          }`}
+        >
+          {muted ? (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+              <path d="M11 5 6 9H2v6h4l5 4V5z" />
+              <path d="m22 9-6 6M16 9l6 6" />
+            </svg>
+          ) : (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+              <path d="M11 5 6 9H2v6h4l5 4V5z" />
+              <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+              {volume > 0.5 && <path d="M18.5 5.5a9 9 0 0 1 0 13" />}
+            </svg>
+          )}
+        </button>
+      </div>
 
       {/* ---------- 弹出面板 ---------- */}
       <AnimatePresence>
@@ -212,7 +248,7 @@ export default function AmbienceToggle() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6, scale: 0.97 }}
             transition={{ duration: 0.18 }}
-            className="w-64 rounded-2xl border border-white/10 bg-[#14121f]/95 backdrop-blur-md shadow-2xl shadow-black/40 p-3"
+            className="absolute right-0 top-11 z-10 w-64 rounded-2xl border border-white/10 bg-[#14121f]/95 backdrop-blur-md shadow-2xl shadow-black/40 p-3"
           >
             {/* 标题行 */}
             <div className="flex items-center justify-between mb-2.5">

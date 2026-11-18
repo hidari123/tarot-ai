@@ -761,6 +761,9 @@ export default function TarotApp() {
         circleActive={stage !== "input"}
         image="/images/celestial/bg-home.webp"
         imagePosition="center center"
+        flowImage="/images/celestial/nebula-flow-a.webp"
+        flowSegWidth={1920}
+        flowDuration={73}
         circleImage="/images/celestial/magic-circle.png"
       />
 
@@ -842,7 +845,7 @@ export default function TarotApp() {
           initial={{ opacity: 0, y: 30 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.3, duration: 0.7 }}
-          className="w-full max-w-xl z-10"
+          className="relative z-10 w-full max-w-xl"
         >
             <DivinationInput
               personas={personas}
@@ -930,7 +933,7 @@ export default function TarotApp() {
           initial={{ opacity: 0, y: 24 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6 }}
-          className="w-full max-w-4xl z-10 flex flex-col items-center"
+          className="relative z-10 w-full max-w-4xl flex flex-col items-center"
         >
           <StageProgress
             spread={spread}
@@ -1194,7 +1197,7 @@ export default function TarotApp() {
       )}
 
       {/* 页脚 */}
-      <footer className="mt-auto pt-12 pb-6 text-center text-purple-400/25 text-xs tracking-[0.25em] z-10">
+      <footer className="relative z-10 mt-auto pt-12 pb-6 text-center text-purple-400/25 text-xs tracking-[0.25em]">
         MYSTIC TAROT · MULTI-AGENT × HYBRID RAG (BM25+VECTOR) × HITL × REFLEXION × SSE
       </footer>
 

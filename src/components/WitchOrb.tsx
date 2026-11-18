@@ -225,8 +225,16 @@ export default function WitchOrb() {
        *   用户要求「小女孩也是能随着页面跟球一样滚动的」
        *   → fixed 钉在视口 → 滚动时不动 ❌
        *   → absolute 在文档流里 → 跟着内容滚走 ✅
+       *
+       * ⚠️⚠️ z-index 为什么是 1（2026-11-13）：
+       *   用户要求图层顺序 = 「女孩 → 魔法阵 → 背景」
+       *   · 魔法阵在 CelestialBackdrop 内部 → 显式给 z-0
+       *   · 女孩层给 z-[1] → **在魔法阵之上** ✅
+       *   · 内容是 z-10 → 仍在女孩之上（标题不被女孩遮住）✅
+       *   ⚠️ 之前魔法阵是 auto（无 z-index）→ 女孩虽在 DOM 后面，
+       *     但女孩图是**半透明**的 → 阵线透过她的脸显出来 → 像"贴在脸上" ❌
        */
-      className="pointer-events-none absolute left-0 top-0 z-0 w-full overflow-hidden"
+      className="pointer-events-none absolute left-0 top-0 z-[1] w-full overflow-hidden"
       style={{ height: `calc(${DESIGN_H * 1.6}px * var(--u, 1))` }}
       aria-hidden="true"
     >

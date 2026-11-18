@@ -162,8 +162,19 @@ console.log("\n【④ 接线】（模块换了，调用点必须跟着换）");
   check("开关组件 import 新模块", /from "@\/lib\/audio"/.test(toggle));
   check("音乐开关会解锁并开声", /unlockAmbience\(\)/.test(toggle) && /setMuted\(false\)/.test(toggle));
   check(
-    "提示气泡可点击（点它即解锁 = 浏览器要的手势）",
-    /onClick=\{\(\) => \{[\s\S]{0,260}unlockAmbience\(\)/.test(toggle)
+    "点击图标即解锁并开声（浏览器要的用户手势）",
+    // ⚠️ 2026-11-13：提示气泡被删掉了（用户嫌右上角两个元素很丑）
+    //   → 解锁入口从「气泡」搬到了**图标按钮本身**
+    //   → 断言也跟着改：检查按钮的 onClick 里有没有 unlock
+    /onClick=\{togglePanel\}[\s\S]{0,900}unlockAmbience\(\)/.test(toggle) ||
+      /const togglePanel = useCallback\(\(\) => \{[\s\S]{0,600}unlockAmbience\(\)/.test(toggle)
+  );
+  check(
+    "未开启时图标有脉冲提示（不再用气泡）",
+    /ambience-pulse/.test(toggle) &&
+      // ⚠️ 只查 JSX 部分（去掉注释）→ 注释里提到「本页有配乐」是记录历史，
+      //    但**不该再有那个气泡按钮**
+      !/>\s*本页有配乐/.test(toggle)
   );
   check("提供风格切换（STYLE_ORDER）", /STYLE_ORDER/.test(toggle));
   check("状态用 useSyncExternalStore（不触发 set-state-in-effect）", /useSyncExternalStore/.test(toggle));

@@ -444,7 +444,7 @@ export default function CelestialBackdrop({
            ⚠️ AI 魔法阵必须**很淡**（circleIntensity × 0.3）：
              它在星云上只是"精密仪器"的一层叠加，不能抢主角。 */}
       {showCircle && (
-        <div className="absolute inset-0 flex items-center justify-center">
+        <div className="absolute inset-0 z-0 flex items-center justify-center">
           {circleImage ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
