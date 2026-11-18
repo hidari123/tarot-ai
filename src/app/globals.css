@@ -318,12 +318,12 @@ body {
  */
 @keyframes ambience-pulse {
   0%, 100% {
-    opacity: 0.15;
+    opacity: 0.25;
     transform: scale(1);
   }
   50% {
-    opacity: 0.55;
-    transform: scale(1.55);
+    opacity: 0.75;
+    transform: scale(1.7);
   }
 }
 

@@ -19,6 +19,7 @@ import DialogueFlow from "@/components/DialogueFlow";
 import CardFan from "@/components/CardFan";
 import ReviewCard from "@/components/ReviewCard";
 import AmbienceToggle, { useAmbiencePhase } from "@/components/AmbienceToggle";
+import MagicCircleLayer from "@/components/MagicCircleLayer";
 import ClosingPanel from "@/components/ClosingPanel";
 import Icon from "@/components/icons";
 
@@ -755,16 +756,31 @@ export default function TarotApp() {
        * ⚠️ 魔法阵的 opacity 由 CelestialBackdrop 内部乘 0.3 → 保持"淡"
        */}
       <CelestialBackdrop
-        showCircle
-        circleSize={620}
-        circleIntensity={0.72}
-        circleActive={stage !== "input"}
         image="/images/celestial/bg-home.webp"
         imagePosition="center center"
         flowImage="/images/celestial/nebula-flow-a.webp"
         flowSegWidth={1920}
         flowDuration={73}
-        circleImage="/images/celestial/magic-circle.png"
+      />
+
+      {/**
+       * ⚠️⚠️ 魔法阵：**独立层**（2026-11-18）
+       * ⚠️ 用户要求：「图层顺序 第一层小女孩 第二层魔法阵 第三层背景」
+       *
+       * ⚠️⚠️ 为什么必须独立（之前改了 z-index 还是不对）：
+       *   · 魔法阵在 CelestialBackdrop **内部** → 它的 <img> 是 static
+       *   · 魔法阵 opacity 0.22 + 女孩 opacity 0.245 → **两层半透明叠加**
+       *     → 阵线从女孩身上「渗」出来 ❌
+       *   → 拆成独立元素 → 有自己的 z-index → 顺序完全可控 ✅
+       *
+       * ⚠️ 顺序（从后到前）：
+       *   背景星云(auto) → 魔法阵(z-0) → 女孩(z-[1]) → 内容(z-10)
+       */}
+      <MagicCircleLayer
+        size={620}
+        intensity={0.72}
+        active={stage !== "input"}
+        image="/images/celestial/magic-circle.png"
       />
 
       {/* ---------- 环境音控制（固定右上角）----------

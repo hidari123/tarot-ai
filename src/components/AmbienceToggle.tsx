@@ -178,7 +178,7 @@ export default function AmbienceToggle() {
   }, [showPanel]);
 
   if (!isClient) {
-    return <div className="w-9 h-9" aria-hidden="true" />;
+    return <div className="w-10 h-10" aria-hidden="true" />;
   }
 
   return (
@@ -192,6 +192,12 @@ export default function AmbienceToggle() {
        *   · 光圈比按钮大 → 会溢出按钮的 border-radius 边界
        *   · 用 relative 包裹 + absolute 光圈（z 低于按钮）→ 扩散在按钮外 ✅
        *   · 不加 relative 的话光圈会撑开布局 → 右上角被顶偏 ❌
+       *
+       * ⚠️⚠️ 2026-11-18：按钮**加强可见度**
+       * ⚠️ 用户反馈：「配乐按钮不够明显」
+       * ⚠️ 原来的样式在深色背景上几乎看不见：
+       *   · 36px 圆 + `bg-white/5` + `border-white/10` + `text-white/60`
+       *   → 改：40px + **紫底 + 金色边框 + 金色图标** → 一眼能看见 ✅
        */}
       <div className="relative">
         {showHint && (
@@ -200,8 +206,8 @@ export default function AmbienceToggle() {
             className="absolute inset-0 rounded-full pointer-events-none"
             style={{
               background:
-                "radial-gradient(circle, rgba(212,175,55,0.55) 0%, rgba(212,175,55,0) 70%)",
-              animation: "ambience-pulse 2.8s ease-in-out infinite",
+                "radial-gradient(circle, rgba(212,175,55,0.75) 0%, rgba(168,85,247,0.35) 45%, rgba(212,175,55,0) 72%)",
+              animation: "ambience-pulse 2.4s ease-in-out infinite",
             }}
           />
         )}
@@ -218,19 +224,21 @@ export default function AmbienceToggle() {
           }
           aria-expanded={showPanel}
           title={showPanel ? "收起面板" : muted ? "开启配乐" : "音乐与音量"}
-          className={`relative w-9 h-9 flex items-center justify-center rounded-full border transition-colors ${
+          className={`relative w-10 h-10 flex items-center justify-center rounded-full border transition-all duration-300 ${
             showPanel
-              ? "border-purple-400/40 bg-purple-500/15 text-purple-100"
-              : "border-white/10 bg-white/5 text-white/60 hover:text-white/90 hover:bg-white/10"
+              ? "border-amber-300/70 bg-purple-500/35 text-amber-100 shadow-[0_0_20px_rgba(212,175,55,0.35)]"
+              : muted
+                ? "border-amber-300/60 bg-purple-950/70 text-amber-200 shadow-[0_0_16px_rgba(168,85,247,0.30)] hover:border-amber-300/90 hover:bg-purple-900/80 hover:text-amber-100"
+                : "border-purple-400/45 bg-purple-950/55 text-purple-100 hover:border-amber-300/60 hover:bg-purple-900/70 hover:text-amber-100"
           }`}
         >
           {muted ? (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round">
               <path d="M11 5 6 9H2v6h4l5 4V5z" />
               <path d="m22 9-6 6M16 9l6 6" />
             </svg>
           ) : (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round">
               <path d="M11 5 6 9H2v6h4l5 4V5z" />
               <path d="M15.5 8.5a5 5 0 0 1 0 7" />
               {volume > 0.5 && <path d="M18.5 5.5a9 9 0 0 1 0 13" />}

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import AstralCircle from "@/components/AstralCircle";
 import NebulaDrift from "@/components/NebulaDrift";
 
 /**
@@ -53,14 +52,6 @@ export default function CelestialBackdrop({
   tint = "rgba(139, 92, 246, 0.20)",
   /** 是否显示主光源（运势页可能不需要） */
   showPrimary = true,
-  /** 是否叠加星象魔法阵 */
-  showCircle = false,
-  /** 魔法阵尺寸 */
-  circleSize = 760,
-  /** 魔法阵强度 */
-  circleIntensity = 0.75,
-  /** 魔法阵是否"激活"（亮起） */
-  circleActive = false,
   /**
    * ⚠️ AI 生成的背景图（2026-11-06）
    * ⚠️ 为什么加这个开关：
@@ -72,8 +63,6 @@ export default function CelestialBackdrop({
   image,
   /** 背景图的光位（AI 出图时主体常在某个角落，cover 裁切时靠它取景） */
   imagePosition = "center center",
-  /** AI 生成的魔法阵图（有则优先于 CSS SVG 版） */
-  circleImage,
   /**
    * ⚠️ 流动星云图（2026-11-13 · 方案 A）
    * ⚠️ 传了它就用**流动星云**替代静态底图（image 失效）
@@ -90,13 +79,8 @@ export default function CelestialBackdrop({
 }: {
   tint?: string;
   showPrimary?: boolean;
-  showCircle?: boolean;
-  circleSize?: number;
-  circleIntensity?: number;
-  circleActive?: boolean;
   image?: string;
   imagePosition?: string;
-  circleImage?: string;
   flowImage?: string;
   flowSegWidth?: number;
   flowDuration?: number;
@@ -433,55 +417,6 @@ export default function CelestialBackdrop({
             : "radial-gradient(ellipse 75% 65% at 50% 45%, transparent 35%, rgba(2, 1, 6, 0.55) 100%)",
         }}
       />
-
-      {/* ---- 层 8：星象魔法阵（可选）----
-           ⚠️ 为什么魔法阵要放在**这个宿主里面**（而不是页面里自己定位）：
-             页面级定位（absolute/fixed + 百分比）会因为祖先的 transform /
-             filter / backdrop-filter 而偏移（实测三次都跑偏）。
-             → 让这个已经是 inset-0 的层做 flex 居中 → 位置永远正确。
-           ⚠️ 2026-11-06：优先用 **AI 生成的星盘图**（真实刻蚀质感，
-             比 CSS 画的精细几个量级），没有图时才退回 CSS 的 SVG 版本。
-           ⚠️ AI 魔法阵必须**很淡**（circleIntensity × 0.3）：
-             它在星云上只是"精密仪器"的一层叠加，不能抢主角。 */}
-      {showCircle && (
-        <div className="absolute inset-0 z-0 flex items-center justify-center">
-          {circleImage ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={circleImage}
-              alt=""
-              className="pointer-events-none select-none"
-              style={{
-                width: circleSize,
-                height: circleSize,
-                /**
-                 * ⚠️ 2026-11-06：整体再压暗（0.3 → 0.22）。
-                 * ⚠️ 为什么要压到这么淡：
-                 *   AI 星盘图的黄道符号非常清晰，如果不压暗会**抢主角**
-                 *   （用户要的是"淡魔法阵做叠加装饰，不抢戏"）。
-                 *   → 靠 opacity + 轻微模糊让它退成"底纹"，
-                 *   但轮廓还在（这是"精密仪器"感的关键）。
-                 *
-                 * ⚠️⚠️ 2026-11-13（方案 C）：流动星云模式下**提亮**
-                 * ⚠️ 用户反馈："旋转的占卜的那个圆盘 都变得不清晰了"
-                 * ⚠️ 原因：
-                 *   · 静态背景时，魔法阵是叠在**深色空场**上 → 淡金线也看得清
-                 *   · 流动星云满屏明亮 → 淡金线（opacity 0.16）和亮背景的对比极低 ❌
-                 *   → 有了中心挖空（方案 B）后背景已经暗下来了 → 可以提亮 ✅
-                 * ⚠️ 提亮幅度：0.22 → 0.34（不回到 0.3 的老值，避免抢戏）
-                 */
-                opacity: circleIntensity * (flowImage ? 0.34 : 0.22),
-                filter: flowImage
-                  ? "drop-shadow(0 0 26px rgba(212,175,55,0.34)) blur(0.3px)"
-                  : "drop-shadow(0 0 24px rgba(212,175,55,0.20)) blur(0.4px)",
-                animation: "astral-spin 220s linear infinite",
-              }}
-            />
-          ) : (
-            <AstralCircle size={circleSize} intensity={circleIntensity} active={circleActive} />
-          )}
-        </div>
-      )}
     </div>
   );
 }

@@ -2,36 +2,27 @@ import sharp from "sharp";
 import { statSync, existsSync, writeFileSync } from "node:fs";
 
 /**
- * ⚠️ 生成"横向流动"的星云长图
+ * ⚠️ 生成"横向流动"的星云长图（**只用 q5** · 翻转拼接）
  *
- * ⚠️⚠️ 用户最终决定（很明确）：
- *   "要么你直接用粉色那个nt6翻转一次好了"
+ * ⚠️ 用户选择：「5不错 先用5来进行一次当前的那种翻转拼接 替换掉现有的粉色看看效果 只用5哈」
  *
- *   → 源图 = **nt6**（粉色纱幕，最好看的那张）
- *   → 拼接 = **翻转一次**（镜像 + 原图）
- *   → 展��时是一整张长图，从左向右缓慢移动
+ * ⚠️ 拼接方式：原图 + 水平镜像 → 2 倍宽长图
+ *   · 接缝在中间，左右对称 → 无缝 ✅
+ *   · q5 是纱幕状（不是星系核心）→ 对称轴不明显 ✅
  *
- * ⚠️⚠️ 为什么镜像拼接这次可行（之前担心对称轴）：
- *   · 之前的对称轴问题出在"星云集中在中间"时
- *   · nt6 是**纱幕状**（左暗右亮，柔和过渡）→ 对称轴不明显 ✅
- *   · 而且展��时只看到图的一部分（视口宽度）→ 对称轴多在视野外 ✅
+ * ⚠️ 尺寸：q5 = 1280×720（16:9）
+ *   → 等比放大到 1920 宽 → 高 1080 ✅（够高，铺满 900+ 屏）
+ *   → 拼接 2 段 = 3840×1080
  *
- * ⚠️ 尺寸处理：
- *   · nt6 = 1344×576（21:9）
- *   → 等比放大到宽 1920 → 高 823（保持比例）
- *   → 拼接 2 段 = 3840×823
- *   → 展示时 `height:100% + width:auto` → 竖直铺满、零变形 ✅
+ * ⚠️ 为什么用 sharp 放大而不是浏览器拉伸：
+ *   浏览器拉伸会模糊 → Lanczos + 锐化保持清晰 ✅
  */
 
 const OUT_DIR = "public/images/celestial";
 
-/** 单段目标宽度（等比放大） */
-const SEG_W = 1920;
-
 /** [输出名, 源图, 质量] */
 const ITEMS = [
-  { out: "nebula-flow-a.webp", src: "shots/nt6.jpg", q: 84 },
-  { out: "nebula-flow-b.webp", src: "shots/nk6.jpg", q: 82 },
+  { out: "nebula-flow-a.webp", src: "shots/q5.jpg", q: 84 },
 ];
 
 for (const it of ITEMS) {
@@ -40,12 +31,13 @@ for (const it of ITEMS) {
     continue;
   }
 
-  const buf = await sharp(it.src).toBuffer();
-  const meta = await sharp(buf).metadata();
+  const src = await sharp(it.src).toBuffer();
+  const meta = await sharp(src).metadata();
+  console.log(`→ ${it.src}: ${meta.width}×${meta.height}`);
 
-  // ① 等比放大到 SEG_W（高度按比例）
-  const scaled = await sharp(buf)
-    .resize({ width: SEG_W, fit: "inside", kernel: "lanczos3" })
+  // ① 等比放大到宽 1920
+  const scaled = await sharp(src)
+    .resize({ width: 1920, fit: "inside", kernel: "lanczos3" })
     .sharpen({ sigma: 0.5 })
     .blur(0.8)
     .removeAlpha()
@@ -53,9 +45,7 @@ for (const it of ITEMS) {
     .toBuffer();
 
   const sMeta = await sharp(scaled).metadata();
-  console.log(
-    `→ ${it.src}: ${meta.width}×${meta.height} → 放大后 ${sMeta.width}×${sMeta.height}`
-  );
+  console.log(`  等比放大后: ${sMeta.width}×${sMeta.height}`);
 
   // ② 水平镜像
   const flipped = await sharp(scaled)
@@ -64,7 +54,7 @@ for (const it of ITEMS) {
     .toColourspace("srgb")
     .toBuffer();
 
-  // ③ 镜像 + 原图 → 2 倍宽（接缝在中间，左右对称 → 无缝）
+  // ③ 镜像 + 原图 → 2 倍宽
   const TOTAL_W = sMeta.width * 2;
   const out = await sharp({
     create: {
