@@ -784,37 +784,6 @@ export default function TarotApp() {
         image="/images/celestial/magic-circle.png"
       />
 
-      {/* ---------- 品牌标识（固定左上角）----------
-        ⚠️ 用户要求：「logo 放左边」
-        ⚠️ 为什么固定不滚动：它是**品牌锚点**（像网站的水印/导航），
-           页面很长时滚下去还能认得出是哪个产品。
-        ⚠️ 用**透明底的纯 logo**（不是紫底 app icon）：
-           左上角背景是星空（深色）→ 透明底更融合，不会「贴一个方块」。 */}
-      <div className="fixed left-4 top-4 z-30 flex items-center gap-2.5">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src="/images/brand/moira-logo.webp"
-          alt="MOIRA"
-          className="select-none"
-          style={{
-            width: "calc(34px * var(--u, 1))",
-            height: "calc(34px * var(--u, 1))",
-            objectFit: "contain",
-            filter: "drop-shadow(0 0 10px rgba(212,175,55,0.28))",
-          }}
-          draggable={false}
-        />
-        <span
-          className="font-[Cinzel,serif] text-purple-100/70"
-          style={{
-            fontSize: "calc(13px * var(--u, 1))",
-            letterSpacing: "0.34em",
-          }}
-        >
-          MOIRA
-        </span>
-      </div>
-
       {/* ---------- 环境音控制（固定右上角）----------
         ⚠️ 位置选择：固定在视口右上 —— 它是全局设置而不是内容流的一部分，
            不该随页面滚动（占卜页会很长，滚下去就找不到了）。

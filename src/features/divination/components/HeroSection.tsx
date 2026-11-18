@@ -17,61 +17,37 @@ export default function HeroSection() {
   return (
     <>
       {/* ══════════════════════════════════════════════
-       * 品牌标志（2026-11-18 · MOIRA）
-       * ⚠️ 用 <img> 而不是内联 SVG：
-       *   · 素材是 AI 生成后人工精修的 PNG（透明底）
-       *   · <img> 的 alt 文本对屏幕阅读器更友好
-       * ⚠️ 尺寸乘 --u → 和标题等比缩放 ✅
+      {/* ══════════════════════════════════════════════
+       * 品牌标志 + 标题（2026-11-18 · MOIRA）
+       *
+       * ⚠️⚠️ 为什么用**一张 lockup 图**而不是「图标 + 文字标题」两行：
+       *   · 用户要求：「中间的也要图标+文字的那个logo吧 不要这样分成两行了 占地方」
+       *   · 字体渲染的 MOIRA 和 logo 里的月亮**不是同一个设计** → 拼一起像两套东西
+       *   · 用同一张图 → 视觉完全统一 + 只占一行 ✅
+       *
+       * ⚠️ 尺寸乘 --u → 和整体等比缩放 ✅
+       * ⚠️ 宽度按 lockup 原比例（879×240 → 高是宽的 0.273）→ 不写死高度，
+       *   用 height:auto 让浏览器按比例算 ✅
        */}
-      <motion.img
-        src="/images/brand/moira-logo.webp"
-        alt="MOIRA"
-        initial={{ opacity: 0, scale: 0.9 }}
+      <motion.div
+        initial={{ opacity: 0, scale: 0.94 }}
         animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 1.1, ease: "easeOut" }}
-        className="relative z-10 mx-auto mb-1 block select-none"
-        style={{
-          width: "calc(72px * var(--u, 1))",
-          height: "calc(72px * var(--u, 1))",
-          objectFit: "contain",
-          filter: "drop-shadow(0 0 16px rgba(212,175,55,0.30))",
-        }}
-        draggable={false}
-      />
-
-      {/* 标题 */}
-      <motion.h1
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8 }}
-        className="relative z-10 text-shimmer tracking-[0.3em] select-none text-center"
-        style={{
-          fontFamily: "Cinzel, Georgia, serif",
-          /**
-           * ⚠️⚠️ 字号 = `--font-title` × `--u`
-           * · 桌面端 --font-title: 75px（原 60px × 1.25）→ 随 --u 等比缩放 ✅
-           * · 移动端 --font-title: 34px（媒体查询覆盖）→ **不再溢出屏幕** ✅
-           */
-          fontSize: "calc(var(--font-title, 75px) * var(--u, 1))",
-          /**
-           * ⚠️ 移动端字间距收窄（用户要求「一行放不下 需要居中展示」）
-           * · 桌面端 0.3em 在 414px 屏上太宽 → 放不下
-           * · 移动端用 0.14em → 「MYSTIC TAROT」能放下
-           *   → 仍放不下时（更窄的屏）→ 由 `.title-line` 换行并居中 ✅
-           */
-          letterSpacing: "var(--tracking-title, 0.3em)",
-        }}
+        transition={{ duration: 1, ease: "easeOut" }}
+        className="relative z-10 flex justify-center"
       >
-        {/*
-         * ⚠️⚠️ 标题（2026-11-18 品牌更名：MYSTIC TAROT → MOIRA）
-         * · MOIRA = 希腊神话中的命运女神 → 与「AI 占卜师」定位精准对应
-         * · 标题分成两段（用户要求「移动端大标题如果一行放不下 需要居中展示」）
-         *   · 桌面端：inline → 一行
-         *   · 移动端：block → 放不下时自然分两行，且**居中**
-         * ⚠️ 为什么不用 <br />：桌面端也会换行
-         */}
-        <span className="title-line">MOIRA</span>
-      </motion.h1>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/images/brand/moira-lockup.webp"
+          alt="MOIRA"
+          className="select-none"
+          style={{
+            width: "calc(340px * var(--u, 1))",
+            height: "auto",
+            filter: "drop-shadow(0 0 20px rgba(212,175,55,0.26))",
+          }}
+          draggable={false}
+        />
+      </motion.div>
       <motion.p
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
