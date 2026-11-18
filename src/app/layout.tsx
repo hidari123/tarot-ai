@@ -24,6 +24,7 @@ import "./globals.css";
 import PwaRegister from "@/components/PwaRegister";
 import ViewportScale from "@/components/ViewportScale";
 import MotionProvider from "@/components/MotionProvider";
+import { I18nProvider } from "@/lib/i18n";
 
 export const metadata: Metadata = {
   /**
@@ -44,15 +45,16 @@ export const metadata: Metadata = {
   icons: {
     icon: [
       /**
-       * ⚠️ SVG 图标（2026-11-18）：新 logo 优先
-       * · 浏览器支持 SVG favicon → 矢量、任意尺寸清晰
-       * · ⚠️ 同时保留 PNG 兜底（老浏览器 / 部分平台的 manifest 解析）
+       * ⚠️ favicon 用**带紫底的 app icon**（2026-11-18）
+       * ⚠️ 为什么不用透明底的纯 logo：
+       *   · 浏览器标签页背景是浅色/白色 → 透明底的黄月牙在白底上会「消失」
+       *   · 紫底 + 金月牙 → 任何底色上都清楚 ✅
        */
-      { url: "/images/brand/moira-mark.svg", type: "image/svg+xml" },
-      { url: "/icons/icon-64.png", sizes: "64x64", type: "image/png" },
-      { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/images/brand/moira-app-icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/images/brand/moira-app-icon-64.png", sizes: "64x64", type: "image/png" },
+      { url: "/images/brand/moira-app-icon.webp", type: "image/webp" },
     ],
-    apple: [{ url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" }],
+    apple: [{ url: "/images/brand/moira-app-icon-192.png", sizes: "192x192", type: "image/png" }],
   },
   formatDetection: { telephone: false },
 };
@@ -107,7 +109,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         {/* ⚠️ P2-⑳：动效降级包在最外层 —— framer-motion 的 JS 动画
             也跟随系统的 prefers-reduced-motion 设置 */}
         <MotionProvider>
-          {children}
+          {/**
+           * ⚠️ i18n Provider（2026-11-18 · MOIRA 中英切换）
+           * ⚠️ 放在 MotionProvider **内层**：
+           *   · 语言切换时子树要重渲染 → 放在外层更靠前，切换更跟手
+           *   · 动效降级（reduced-motion）与语言无关，两者互不干扰
+           */}
+          <I18nProvider>{children}</I18nProvider>
         </MotionProvider>
         {/* ⚠️ 全局等比缩放系数 --u（所有尺寸乘它 → 构图比例一致） */}
         <ViewportScale />

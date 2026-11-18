@@ -1,29 +1,32 @@
 {
-  "name": "Mystic Tarot · AI 塔罗占卜",
-  "short_name": "Mystic Tarot",
-  "description": "倾听星辰的低语，窥探命运的轨迹 —— AI Agent + RAG 驱动的塔罗占卜",
+  "name": "MOIRA · AI 塔罗占卜",
+  "short_name": "MOIRA",
+  "description": "倾听星辰的低语，窥探命运的轨迹 —— MOIRA 是多 Agent + RAG 驱动的 AI 塔罗占卜师",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0b0514",
   "theme_color": "#7c3aed",
   "lang": "zh-CN",
   "orientation": "portrait-primary",
-  "categories": ["entertainment", "lifestyle"],
+  "categories": [
+    "entertainment",
+    "lifestyle"
+  ],
   "icons": [
     {
-      "src": "/icons/icon-192.png",
+      "src": "/images/brand/moira-app-icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/icon-512.png",
+      "src": "/images/brand/moira-app-icon.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/icon-maskable-512.png",
+      "src": "/images/brand/moira-app-icon.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"

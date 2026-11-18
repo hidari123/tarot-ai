@@ -19,21 +19,22 @@ export default function HeroSection() {
       {/* ══════════════════════════════════════════════
        * 品牌标志（2026-11-18 · MOIRA）
        * ⚠️ 用 <img> 而不是内联 SVG：
-       *   · SVG 文件已描摹好（1.6KB），改动时不用碰组件
+       *   · 素材是 AI 生成后人工精修的 PNG（透明底）
        *   · <img> 的 alt 文本对屏幕阅读器更友好
        * ⚠️ 尺寸乘 --u → 和标题等比缩放 ✅
        */}
       <motion.img
-        src="/images/brand/moira-mark.svg"
+        src="/images/brand/moira-logo.webp"
         alt="MOIRA"
         initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 1.1, ease: "easeOut" }}
-        className="relative z-10 mx-auto mb-2 block select-none"
+        className="relative z-10 mx-auto mb-1 block select-none"
         style={{
-          width: "calc(58px * var(--u, 1))",
-          height: "calc(58px * var(--u, 1))",
-          filter: "drop-shadow(0 0 14px rgba(212,175,55,0.35))",
+          width: "calc(72px * var(--u, 1))",
+          height: "calc(72px * var(--u, 1))",
+          objectFit: "contain",
+          filter: "drop-shadow(0 0 16px rgba(212,175,55,0.30))",
         }}
         draggable={false}
       />
@@ -70,7 +71,6 @@ export default function HeroSection() {
          * ⚠️ 为什么不用 <br />：桌面端也会换行
          */}
         <span className="title-line">MOIRA</span>
-        <span className="title-line">TAROT</span>
       </motion.h1>
       <motion.p
         initial={{ opacity: 0 }}
