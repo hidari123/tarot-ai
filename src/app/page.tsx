@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { motion } from "framer-motion";
 import StardustCursor from "@/components/StardustCursor";
@@ -20,6 +20,9 @@ import CardFan from "@/components/CardFan";
 import ReviewCard from "@/components/ReviewCard";
 import AmbienceToggle, { useAmbiencePhase } from "@/components/AmbienceToggle";
 import LangToggle from "@/components/LangToggle";
+import TypeGrid from "@/features/divination/components/TypeGrid";
+import PersonaPicker from "@/features/divination/components/PersonaPicker";
+import { getType, type DivinationType } from "@/features/divination/types/divination-types";
 import MagicCircleLayer from "@/components/MagicCircleLayer";
 import ClosingPanel from "@/components/ClosingPanel";
 import Icon from "@/components/icons";
@@ -148,6 +151,17 @@ export default function TarotApp() {
 
    */
 
+
+  /**
+   * ⚠️⚠️ 首页重排（2026-11-18 · MOIRA）：两级选择
+   *   · 第一级：选**问什么**（8 个主题）→ 用户心智里的目标
+   *   · 第二级：选**谁来说**（占卜师，可跳过）→ 风格参数，不是准入条件
+   * ⚠️ 原来的首页把占卜师放第一位 → 用户分不清 5 个风格的区别 → 随便点 ❌
+   */
+  /** 已选中的分类（第一级） */
+  const [typeId, setTypeId] = useState<string | null>(null);
+  /** 占卜师选择面板是否展开（第二级） */
+  const [showPersona, setShowPersona] = useState(false);
   const stateApi = useDivinationState();
   const {
 
@@ -856,10 +870,68 @@ export default function TarotApp() {
           ⚠️ 2026-11-05：从「文字胶囊」改成「图标卡片」——
             胶囊只有一行小字，在深色背景上几乎看不见（截图实测）；
             卡片有图标 + 标题 + 说明 → 既是入口，也是产品能力的展示。 */}
+      {/* ══════════════════════════════════════════════
+       * 第一级：选**问什么**（8 个主题）
+       * ⚠️ 用户心智是「我想问什么」，不是「用谁来说」
+       * → 主题在前，占卜师退到第二级（可跳过）
+       */}
+
+      {/* ---------- 功能说明（调研 P0-1）----------
+       * ⚠️⚠️ 为什么加这一句：
+       *   · 副标题「倾听星辰的低语 · 窥探命运的轨迹」是**文学口号**
+       *     → 有氛围但不回答任何功能性问题
+       *   · 用户决定要不要投入注意力时，需要知道「这东西怎么用」
+       *   → 加一句**功能说明**，文学句退到下面当副行 ✅
+       */}
+      {stage === "input" && (
+        <p
+          className="relative z-10 max-w-xl text-center text-[13px] leading-relaxed text-[rgba(255,248,235,0.62)]"
+          style={{
+            textShadow: "0 1px 10px rgba(8,4,20,0.9), 0 0 24px rgba(8,4,20,0.8)",
+          }}
+        >
+          写下你的困惑，占卜师会与你对话澄清、亲手选牌、给出结合牌义与典籍的解读
+        </p>
+      )}
+
+      {/* ---------- 次要入口（下移 + 降级 · 调研 P0-3）----------
+       * ⚠️ 为什么从输入框**上方**移到下面：
+       *   · 原来三张入口卡（今日之牌/运势/神谕）渲染在输入框**上方**
+       *   · 视觉权重和主 CTA 一样 → 用户不知道该点哪个 ❌
+       *   · 竞品（CHANI / 占星 App）都把这类入口做成**顶栏或底部 tab**
+       *   → 移到主流程之后 → 主次分明 ✅
+       */}
       {stage === "input" && <EntryCards />}
 
-      {/* ---------- 输入阶段 ---------- */}
       {stage === "input" && (
+        <div className="w-full flex flex-col items-center gap-6">
+          <TypeGrid
+            selected={typeId}
+            onSelect={(t: DivinationType) => {
+              setTypeId(t.id);
+              setShowPersona(true);
+              // ⚠️ 按分类推荐一个占卜师（用户仍可改）
+              const rec = t.defaultPersona;
+              setPersona(personas.find((p) => p.id === rec) ?? null);
+            }}
+          />
+
+          {/* ---------- 第二级：选占卜师（可跳过）---------- */}
+          {showPersona && (
+            <PersonaPicker
+              selected={persona?.id ?? null}
+              recommended={getType(typeId)?.defaultPersona}
+              onSelect={(id) => {
+                setPersona(personas.find((p) => p.id === id) ?? null);
+              }}
+              onSkip={() => setShowPersona(false)}
+            />
+          )}
+        </div>
+      )}
+
+      {/* ---------- 输入阶段 ---------- */}
+
         <motion.div
           initial={{ opacity: 0, y: 30 }}
           animate={{ opacity: 1, y: 0 }}
@@ -912,6 +984,7 @@ export default function TarotApp() {
                 {hint}
               </span>
             </motion.div>
+
           )}
           {/* 上次会话可继续（刷新后 sessionId 已从 localStorage 恢复）。
               ⚠️ 2026-11-04：恢复时按服务端的 canFollowup 判断（不是"有 sessionId 就行"）——
@@ -944,7 +1017,6 @@ export default function TarotApp() {
             {persona ? `${persona.emoji} ${persona.name}将主持这场占卜` : "AI 占卜师与你对话澄清 · 亲手选牌 · 典籍引用 · 审校质检"}
           </p>
         </motion.div>
-      )}
 
       {/* ---------- 占卜阶段 ---------- */}
       {stage !== "input" && (
@@ -1217,7 +1289,8 @@ export default function TarotApp() {
 
       {/* 页脚 */}
       <footer className="relative z-10 mt-auto pt-12 pb-6 text-center text-purple-400/25 text-xs tracking-[0.25em]">
-        MYSTIC TAROT · MULTI-AGENT × HYBRID RAG (BM25+VECTOR) × HITL × REFLEXION × SSE
+        {/* ⚠️ 2026-11-18 品牌更名：MYSTIC TAROT → MOIRA */}
+        MOIRA · MULTI-AGENT × HYBRID RAG (BM25+VECTOR) × HITL × REFLEXION × SSE
       </footer>
 
       {/* 牌面放大预览（点击已翻开的牌 → 只是看，不翻回去） */}
