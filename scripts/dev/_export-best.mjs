@@ -24,7 +24,7 @@ import { existsSync } from "node:fs";
 /** [目标名, 源 jpg] */
 const PICKS = [
   ["love", "v6-w-love"],
-  ["career", "v6-t-career"],
+  ["career", "v5-k-career"],
   ["wealth", "v6-w-wealth"],
   ["crossroads", "v6-v-crossroads"],
   ["tides", "v6-u-tides"],
