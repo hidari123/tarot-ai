@@ -64,10 +64,33 @@ export async function extract(src, out) {
   const height = Math.min(OH - top, maxY - minY + padY * 2);
 
   // ② 裁出并放大（图形变大 → 全局阈值就准）
+  /**
+   * ⚠️⚠️⚠️ 用户反馈：「你怎么都拉伸图片了 这些icon里很多你都拉伸图片了
+   *   你按照原有比例来」
+   *
+   * ⚠️ 之前的 bug：`.resize(Z, Z, { fit: "fill" })`
+   *   → 把裁剪出的 bbox（**非正方形**）强行拉成 Z×Z
+   *   → 图形被**拉伸变形**（山变胖、波浪被压扁、眼睛被拉宽）❌
+   *
+   * ⚠️ 正确：**保持原比例**
+   *   1. 按 bbox 的原比例放大（长边到 Z，短边按比例）
+   *   2. 再放进 Z×Z 的正方形画布（contain，透明填充）
+   *   → 图形既放大又不变形 ✅
+   */
   const Z = 900;
+  const scale = Z / Math.max(width, height);
+  const zw = Math.max(1, Math.round(width * scale));
+  const zh = Math.max(1, Math.round(height * scale));
   const zoomed = await sharp(src)
     .extract({ left, top, width, height })
-    .resize(Z, Z, { fit: "fill", kernel: "lanczos3" })
+    .resize(zw, zh, { fit: "fill", kernel: "lanczos3" }) // 等比缩放到 zw×zh
+    .extend({
+      top: Math.floor((Z - zh) / 2),
+      bottom: Math.ceil((Z - zh) / 2),
+      left: Math.floor((Z - zw) / 2),
+      right: Math.ceil((Z - zw) / 2),
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
     .ensureAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
