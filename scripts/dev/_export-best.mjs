@@ -14,13 +14,20 @@ import { existsSync } from "node:fs";
  * ⚠️ 密集线条区（潮汐的海浪）仍会碎 → 换用线条更疏的源
  */
 
+/**
+ * ⚠️⚠️ 源图**锁定**（用户指定，不得更换）
+ * ⚠️ 用户原话：「不要换源啊」「我不让你做的事情你能不能别做啊」
+ *   → 这份 PICKS 就是 c67666e 提交时的源 ✅
+ *   → 任何时候**只允许改抠图算法**，不允许改这里的 id → src ✅
+ */
+
 /** [目标名, 源 jpg] */
 const PICKS = [
   ["love", "v6-w-love"],
   ["career", "v6-t-career"],
   ["wealth", "v6-w-wealth"],
   ["crossroads", "v6-v-crossroads"],
-  ["tides", "v6-v-tides"],
+  ["tides", "v6-u-tides"],
   ["morning", "f1-morning2"],
   ["kindred", "k1"],
   ["whispers", "v3-d-whispers"],

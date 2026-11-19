@@ -88,8 +88,8 @@ export async function extract(src, out) {
   for (let i = 0; i < n; i++) bin[i] = lum[i] - bgL > TH ? 1 : 0;
 
   // ④ 形态学：闭运算（补细缝）→ 填洞（补内部）
-  const closed = close(bin, W, H, 2);
-  const filled = fillHoles(closed, W, H);
+  const closed = bin; // TEMP: 关闭形态学
+  const filled = closed; // TEMP: 关闭填洞
 
   // ⑤ 输出
   const outBuf = Buffer.alloc(n * 4);
