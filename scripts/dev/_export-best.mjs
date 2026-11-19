@@ -29,7 +29,7 @@ const PICKS = [
   ["crossroads", "v6-v-crossroads"],
   ["tides", "v6-u-tides"],
   ["morning", "f1-morning2"],
-  ["kindred", "k1"],
+  ["kindred", "kb6"],
   ["whispers", "v3-d-whispers"],
 ];
 
