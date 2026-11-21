@@ -4,27 +4,20 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 
 /**
- * EntryCards —— 首页的三个入口卡片（2026-11-12 拆分自 src/app/page.tsx）
+ * EntryCards —— 首页的三个入口（2026-11-19 移到**页面左上角**）
  *
- * ⚠️⚠️ 为什么单独抽出来：
- *   · 三个入口是**产品的能力展示**（不只是导航）
- *   · 竞品对标：Tarot Run 顶栏有「每日塔罗」，Tarotap 有 5 种运势
- *   · 放在副标题下（而不是右上角）→ 用户刚进站、正准备提问时
- *     看到"今天也有牌"能降低"必须提问才能用"的门槛 ✅
+ * ⚠️⚠️ 用户要求（原文）：
+ *   「今日运势这些可以放在页面左上角」
+ *   「第一页不展示对话框 只展示今日运势这些和8张卡片」
  *
- * ⚠️⚠️ 2026-11-06 对比度修正（用户反馈："背景是紫色的，上面图标文字模块又都是紫色的 对比度太差"）
+ * ⚠️⚠️ 为什么从「副标题下方」改成「左上角固定」：
+ *   · 原来三张大卡片横排在副标题下 → **占掉一整屏**（y=450~520）
+ *   · 现在首页的主内容是「水晶球弧线 + 8 张写实卡片」→ 入口卡不该占这个位置
+ *   · 竞品（Tarot Run / Tarotap）都把「每日运势」做成**顶栏入口**
+ *   → 移到左上角，**竖排紧凑**，不再抢主流程的视觉 ✅
  *
- * ⚠️ 根因：**紫底 + 紫组件 + 紫文字** = 三者同色系 → 全部糊在一起。
- *   截图实测：入口卡片的 `bg-purple-950/25` 叠在紫背景上几乎看不出边界，
- *   文字 `text-purple-300/40` 更是有字形都看不清。
- *
- * ⚠️ 解法（颜色分工）：
- *   · **背景层**  保持紫色（深空氛围）
- *   · **容器层**  深色实底（近黑紫 rgba(9,5,20,.78)）+ 玻璃模糊 → 有明确边界
- *   · **描边层**  金色（rgba(212,175,55,.28)）→ 与紫底分离
- *   · **图标层**  金色实心纹样 → 视觉焦点
- *   · **文字层**  标题近白（琥珀白）、描述提亮到 68%
- *   → 一句话：**背景紫、容器深、描边金、图标金、文字白**。
+ * ⚠️ 保留的对比度修正（2026-11-06 踩坑）：
+ *   背景紫 / 容器深 / 描边金 / 图标金 / 文字白
  */
 
 /** 三个入口（数据与渲染分离 → 以后加第四个入口只改这里） */
@@ -51,66 +44,57 @@ const ENTRIES = [
 
 export default function EntryCards() {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: 0.25, duration: 0.6 }}
-      className="relative z-10 w-full max-w-2xl -mt-2 mb-4"
+    <motion.nav
+      initial={{ opacity: 0, x: -16 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ delay: 0.3, duration: 0.6 }}
+      className="fixed left-4 top-4 z-30 flex flex-col gap-1.5"
+      aria-label="运势入口"
     >
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {ENTRIES.map((e) => (
-          <Link
-            key={e.href}
-            href={e.href}
-            className="group relative rounded-2xl border border-[rgba(212,175,55,0.26)] bg-[rgba(9,5,20,0.78)] backdrop-blur-md px-4 py-4 transition-all duration-300 hover:border-[rgba(240,217,138,0.55)] hover:-translate-y-1"
+      {ENTRIES.map((e) => (
+        <Link
+          key={e.href}
+          href={e.href}
+          className="group relative flex items-center gap-2 rounded-xl border border-[rgba(212,175,55,0.24)] bg-[rgba(9,5,20,0.72)] backdrop-blur-md px-2.5 py-1.5 transition-all duration-300 hover:border-[rgba(240,217,138,0.55)] hover:bg-[rgba(20,10,42,0.85)]"
+          style={{
+            boxShadow:
+              "0 6px 22px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)",
+          }}
+        >
+          {/* 悬停时的金色边光 */}
+          <span
+            className="absolute inset-0 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
             style={{
               boxShadow:
-                "0 8px 30px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.07)",
+                "0 0 22px rgba(212,175,55,0.3), inset 0 0 14px rgba(212,175,55,0.08)",
             }}
-          >
-            {/* 悬停时的金色边光 */}
-            <span
-              className="absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
-              style={{
-                boxShadow:
-                  "0 0 30px rgba(212,175,55,0.32), inset 0 0 20px rgba(212,175,55,0.08)",
-              }}
-            />
-            <div className="flex items-start gap-3">
-              {/**
-               * ⚠️ 2026-11-06：图标改用 **AI 生成的金质纹样**（月+书 / 轨道 / 眼）。
-               *
-               * ⚠️⚠️ 为什么**去掉圆圈底**（用户反馈："图标外面还有白色的底色"）：
-               *   ① AI 出的图标**本身就是完整的圆形纹样**（月+书 / 星盘 / 眼）
-               *      → 再套一个圆圈 = 圆圈里挤一团金色 → 22px 下糊成一团，
-               *      边缘的半透明渐变看起来就像"有白底"。
-               *   ② 图标放大到 30px → 细节看得清。
-               *   → 去掉底圈，直接放图标 + 金色微光。
-               */}
-              <span className="w-8 h-8 shrink-0 flex items-center justify-center">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={e.img}
-                  alt=""
-                  className="w-[30px] h-[30px] object-contain"
-                  style={{
-                    filter:
-                      "drop-shadow(0 0 6px rgba(240,217,138,0.55)) drop-shadow(0 0 14px rgba(212,175,55,0.25))",
-                  }}
-                />
-              </span>
-              <span className="min-w-0">
-                <span className="block text-[13px] tracking-[0.12em] text-[rgba(255,248,235,0.96)] group-hover:text-amber-50">
-                  {e.title}
-                </span>
-                <span className="block text-[10px] text-[rgba(203,190,255,0.68)] mt-0.5 leading-snug">
-                  {e.desc}
-                </span>
-              </span>
-            </div>
-          </Link>
-        ))}
-      </div>
-    </motion.div>
+          />
+          {/* 图标（金色 AI 纹样，无底圈） */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={e.img}
+            alt=""
+            className="h-[22px] w-[22px] shrink-0 object-contain transition-transform duration-300 group-hover:scale-110"
+            style={{
+              filter:
+                "drop-shadow(0 0 5px rgba(240,217,138,0.6)) drop-shadow(0 0 12px rgba(212,175,55,0.28))",
+            }}
+          />
+          <span className="min-w-0 leading-tight">
+            <span className="block text-[12px] tracking-[0.1em] text-[rgba(255,248,235,0.94)] group-hover:text-amber-50">
+              {e.title}
+            </span>
+            {/**
+             * ⚠️ 描述只在**桌面端**显示（`hidden md:block`）
+             * ⚠️ 为什么：移动端左上角只有 420px 宽 → 竖排三张卡会**压住标题**
+             *   （实测 MOIRA 被挡）→ 移动端只留图标 + 标题 ✅
+             */}
+            <span className="hidden text-[9px] text-[rgba(203,190,255,0.6)] md:block">
+              {e.desc}
+            </span>
+          </span>
+        </Link>
+      ))}
+    </motion.nav>
   );
 }

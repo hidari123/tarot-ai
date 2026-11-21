@@ -54,7 +54,7 @@ console.log("=== P4-24 前端 SSE 取消通道 ===\n");
 
 /* ---- ① 前端有没有 AbortController ---- */
 {
-const page = readFileSync(join(root, "src", "app", "page.tsx"), "utf8") + featureCode;
+const page = readFileSync(join(root, "src", "features", "divination", "components", "TarotApp.tsx"), "utf8") + featureCode;
   const hasCtrl = /new AbortController\(\)/.test(page);
   // ⚠️ 检测**语义**而非字面量：
   //    signal 的值可能是 ctrl.signal / controller.signal / abortRef.current.signal
@@ -90,13 +90,13 @@ const page = readFileSync(join(root, "src", "app", "page.tsx"), "utf8") + featur
 }
 
 function page_has_ctrl() {
-  const page = readFileSync(join(root, "src", "app", "page.tsx"), "utf8") + featureCode;
+  const page = readFileSync(join(root, "src", "features", "divination", "components", "TarotApp.tsx"), "utf8") + featureCode;
   return /AbortController/.test(page);
 }
 
 /* ---- ④ restart 是否中断旧流 ---- */
 {
-  const page = readFileSync(join(root, "src", "app", "page.tsx"), "utf8") + featureCode;
+  const page = readFileSync(join(root, "src", "features", "divination", "components", "TarotApp.tsx"), "utf8") + featureCode;
   // 找 restart 函数体
   const m = page.match(/const restart = useCallback\(([\s\S]*?)\n  \}, \[/);
   const body = m ? m[1] : "";

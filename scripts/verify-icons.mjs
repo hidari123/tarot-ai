@@ -128,7 +128,7 @@ console.log("\n【② 主界面 emoji 清零】");
 /* ────────────── ③ 关键界面确实用了图标 ────────────── */
 console.log("\n【③ 关键界面已接入图标】");
 {
-  const page = readFileSync("src/app/page.tsx", "utf-8") + featureCode;
+  const page = readFileSync("src/features/divination/components/TarotApp.tsx", "utf-8") + featureCode;
   const flow = readFileSync("src/components/DialogueFlow.tsx", "utf-8");
   const dash = readFileSync("src/app/dashboard/page.tsx", "utf-8");
   const review = readFileSync("src/components/ReviewCard.tsx", "utf-8");
@@ -158,7 +158,7 @@ console.log("\n【④ 翻牌面板展开/收起逻辑】");
   check("FlowSpreadCard 有 question 字段", /question\?: string/.test(flow));
   check("FlowSpreadCard 有 answer 字段", /answer\?: string/.test(flow));
 
-  const page = readFileSync("src/app/page.tsx", "utf-8") + featureCode;
+  const page = readFileSync("src/features/divination/components/TarotApp.tsx", "utf-8") + featureCode;
   check("提问时同步 question 到牌阵条目", /question: q/.test(page));
   check("回答时同步 answer 回牌阵条目", /c\.question && !c\.answer \? \{ \.\.\.c, answer \}/.test(page));
 }

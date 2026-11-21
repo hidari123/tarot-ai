@@ -45,7 +45,7 @@ const FEATURE_FILES = [
 const featureCode = FEATURE_FILES.map((f) => {
   try { return readFileSync(f, "utf-8"); } catch { return ""; }
 }).join("\n");
-const page = readFileSync("src/app/page.tsx", "utf-8") + featureCode;
+const page = readFileSync("src/features/divination/components/TarotApp.tsx", "utf-8") + featureCode;
 // ⚠️ 2026-11-12 拆分：状态搬进了 useDivinationState → 断言要同时看两处
 const stateHook = readFileSync(
   "src/features/divination/useDivinationState.ts",

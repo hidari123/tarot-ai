@@ -138,7 +138,7 @@ console.log("\n【③ 曲目文件与 manifest】（资源完整性）");
 /* ══════════ ④ 页面与组件接线 ══════════ */
 console.log("\n【④ 接线】（模块换了，调用点必须跟着换）");
 {
-  const page = read("src/app/page.tsx");
+  const page = read("src/features/divination/components/TarotApp.tsx");
   check("页面 import 了新音频模块", /from "@\/lib\/audio"/.test(page));
   check("页面不再 import 已删除的 ambient", !/from "@\/lib\/audio\/ambient"/.test(page));
   check("占卜开始仍解锁音频", /void unlockAmbience\(\)/.test(page));
@@ -263,7 +263,7 @@ console.log("\n【⑥ 协议契约】（仪式阶段 → 前端配乐联动）")
   const types = read("src/lib/agent/types.ts");
   const route = read("src/app/api/interpret/route.ts");
   const runner = read("src/features/divination/useStreamRunner.ts");
-  const page = read("src/app/page.tsx");
+  const page = read("src/features/divination/components/TarotApp.tsx");
   const phaseSrc = read("src/lib/audio/phase.ts");
 
   /* ---- ① 协议声明：zod 与手写 interface 必须同时有 ---- */

@@ -3,10 +3,8 @@
 import { motion } from "framer-motion";
 
 import Icon from "@/components/icons";
-import PersonaOrb from "@/components/PersonaOrb";
 import { MODE_PROFILES, type DivinationMode } from "@/lib/agent/divination-mode";
 
-import type { PersonaView } from "../types";
 
 /**
  * DivinationInput —— 输入阶段的三块 UI（2026-11-12 拆分自 src/app/page.tsx）
@@ -22,11 +20,8 @@ import type { PersonaView } from "../types";
 
 export interface DivinationInputProps {
   /** 可选的占卜师列表 */
-  personas: PersonaView[];
   /** 当前选中的占卜师 */
-  persona: PersonaView | null;
   /** 选择占卜师 */
-  onSelectPersona: (p: PersonaView) => void;
   /** 当前占卜模式 */
   mode: DivinationMode;
   /** 切换占卜模式 */
@@ -47,9 +42,6 @@ export interface DivinationInputProps {
 
 export default function DivinationInput(props: DivinationInputProps) {
   const {
-    personas,
-    persona,
-    onSelectPersona,
     mode,
     onChangeMode,
     question,

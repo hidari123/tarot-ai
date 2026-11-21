@@ -204,6 +204,28 @@ export default function WitchOrb() {
 
       setBall((prev) => {
         const next = { x: bx, y: by, d, mask };
+        /**
+         * ⚠️⚠️ 输出球心 CSS 变量（2026-11-19 · 水晶球环形图标）
+         * ⚠️ 用户要求：「这些icon是应该排布到水晶球这一圈的 icon+名称」
+         * → OrbCategoryRing 需要知道球心在哪 → 由这里（唯一算球心的地方）提供
+         * ⚠️⚠️ 为什么用**百分比**而不是 px：
+         *   · 环形组件挂在 `<main>` 的 absolute 层里
+         *   · main 的坐标系 = bgRef 的坐标系（bgRef 是 `absolute left-0 top-0 w-full`）
+         *   · 但 main 的**高度**会随内容变（bgRef 只有 DESIGN_H×1.6 高）
+         *   → 用 px 的 Y 会因为参照系不同而偏移 ❌
+         *   → 统一用**相对 main 高度**的百分比 → 天然一致 ✅
+         */
+        const mainEl = bgRef.current?.parentElement;
+        const mainH = mainEl?.getBoundingClientRect().height || bgRect.height;
+        document.documentElement.style.setProperty(
+          "--orb-ball-cx",
+          `${((bx / bgRect.width) * 100).toFixed(3)}%`
+        );
+        document.documentElement.style.setProperty(
+          "--orb-ball-cy",
+          `${((by / mainH) * 100).toFixed(3)}%`
+        );
+        document.documentElement.style.setProperty("--orb-ball-d", `${d}px`);
         if (
           prev &&
           Math.abs(prev.x - next.x) < 0.5 &&
@@ -309,7 +331,7 @@ export default function WitchOrb() {
            *   · 移动端 = -140px（在 globals.css 的媒体查询里覆盖）
            * → 变量单位是「基准 px」，实际值再乘 --u
            */
-          transform: `translateX(-50%) translateY(calc(var(--orb-shift, ${BALL_SHIFT}px) * var(--u, 1)))`,
+          transform: `translateX(calc(-50% + var(--orb-shift-x, 0px))) translateY(calc(var(--orb-shift, ${BALL_SHIFT}px) * var(--u, 1)))`,
           /**
            * ⚠️⚠️ 渐变遮罩（2026-11-18 · 方向 2 第一步）
            * ⚠️ 用户反馈：「小女孩现在有点模糊 跟底色有点像了」
@@ -364,7 +386,7 @@ export default function WitchOrb() {
            *   · 移动端 = -140px（在 globals.css 的媒体查询里覆盖）
            * → 变量单位是「基准 px」，实际值再乘 --u
            */
-          transform: `translateX(-50%) translateY(calc(var(--orb-shift, ${BALL_SHIFT}px) * var(--u, 1)))`,
+          transform: `translateX(calc(-50% + var(--orb-shift-x, 0px))) translateY(calc(var(--orb-shift, ${BALL_SHIFT}px) * var(--u, 1)))`,
             maskImage: ball.mask,
             WebkitMaskImage: ball.mask,
             /**

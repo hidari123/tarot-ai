@@ -61,7 +61,7 @@ const FEATURE_FILES = [
 const featureCode = FEATURE_FILES.map((f) => {
   try { return read(f); } catch { return ""; }
 }).join("\n");
-const page = read("src/app/page.tsx") + featureCode;
+const page = read("src/features/divination/components/TarotApp.tsx") + featureCode;
 const rag = read("src/lib/agent/tools/rag.ts");
 const fb = read("src/lib/agent/fallback.ts");
 const vec = read("src/lib/vector-engine.ts");

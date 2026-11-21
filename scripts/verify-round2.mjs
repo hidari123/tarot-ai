@@ -204,7 +204,7 @@ const FEATURE_FILES = [
 const featureCode = FEATURE_FILES.map((f) => {
   try { return readFileSync(f, "utf-8"); } catch { return ""; }
 }).join("\n");
-const page = readFileSync("src/app/page.tsx", "utf-8") + featureCode;
+const page = readFileSync("src/features/divination/components/TarotApp.tsx", "utf-8") + featureCode;
   const pageCode = strip(page);
 
   // ⑯ 代码分割
@@ -306,7 +306,7 @@ console.log("\n【⑤ 回归防护】（既有契约没被破坏）");
 
   // ⚠️ 2026-11-12 拆分：翻牌音效搬到了 useCardActions.ts
   //    → "前端有没有音效"必须把 page.tsx 和 features/divination 一起看
-  const page = readFileSync("src/app/page.tsx", "utf-8") +
+  const page = readFileSync("src/features/divination/components/TarotApp.tsx", "utf-8") +
     ["src/features/divination/useCardActions.ts","src/features/divination/useFollowup.ts","src/features/divination/useStreamRunner.ts"]
       .map((f) => { try { return readFileSync(f, "utf-8"); } catch { return ""; } })
       .join("\n");

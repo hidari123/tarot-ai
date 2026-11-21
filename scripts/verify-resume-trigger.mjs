@@ -85,7 +85,7 @@ console.log("=== P0-1 断点续传闭包过期 ===\n");
   const { join, dirname } = await import("node:path");
   const { fileURLToPath } = await import("node:url");
   const __dirname = dirname(fileURLToPath(import.meta.url));
-  const src = readFileSync(join(__dirname, "..", "src", "app", "page.tsx"), "utf8");
+  const src = readFileSync(join(__dirname, "..", "src", "features", "divination", "components", "TarotApp.tsx"), "utf8");
 
   const hasRef = /sessionIdRef/.test(src);
   check(

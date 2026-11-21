@@ -160,12 +160,21 @@ export interface DivinationStateApi {
  *     → page.tsx 的 useCallback 依赖数组检查全挂（实测 30 个警告）❌
  *   → useState 版本：警告消失，且状态依然集中管理 ✅
  */
-export function useDivinationState(): DivinationStateApi {
+/**
+ * ⚠️⚠️ `initialStage`（2026-11-19 · 第二页）
+ * ⚠️ 第二页（/reading）从 URL query 带分类进来 → 直接进占卜阶段
+ * ⚠️ 为什么做成参数而不是全局状态：
+ *   · 首页和第二页是**两个独立路由** → 各自一个组件实例 → 各自的 state ✅
+ *   · 不需要跨页传状态（分类在 URL 里）✅
+ */
+export function useDivinationState(
+  initialStage: Stage = "input"
+): DivinationStateApi {
   const [question, setQuestion] = useState("");
   const [persona, setPersona] = useState<PersonaView | null>(null);
   const [mode, setMode] = useState<DivinationMode>(DEFAULT_MODE);
   const [personas, setPersonas] = useState<PersonaView[]>([]);
-  const [stage, setStage] = useState<Stage>("input");
+  const [stage, setStage] = useState<Stage>(initialStage);
   const [sessionId, setSessionId] = useState("");
   const [phase, setPhase] = useState<Phase | null>(null);
   const [ritualPhase, setRitualPhase] = useState<RitualPhase | null>(null);
